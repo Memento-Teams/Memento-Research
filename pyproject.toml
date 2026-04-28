@@ -25,6 +25,8 @@ dependencies = [
     "InquirerPy>=0.3",
     "datasets>=4.8.3",
     "ddgs>=8.0",
+    "chromadb>=1.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
