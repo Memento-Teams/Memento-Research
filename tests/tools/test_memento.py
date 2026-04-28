@@ -60,3 +60,51 @@ def test_recall_requires_employee_context(employee_root):
 
     assert result["status"] == "error"
     assert "employee context" in result["message"].lower()
+
+
+def test_store_rejects_empty_turns(employee_root, fake_vessel):
+    from company.assets.tools.memento.memento import store
+
+    with _with_vessel(fake_vessel):
+        result = store.invoke({"turns": []})
+
+    assert result["status"] == "error"
+    assert "non-empty" in result["message"].lower()
+
+
+def test_store_rejects_non_list_turns(employee_root, fake_vessel):
+    from company.assets.tools.memento.memento import store
+
+    with _with_vessel(fake_vessel):
+        # LangChain @tool runs Pydantic validation that may reject a string
+        # before our handler — accept either a tool error or our own error.
+        try:
+            result = store.invoke({"turns": "not a list"})
+        except Exception as exc:
+            assert "list" in str(exc).lower() or "valid" in str(exc).lower()
+            return
+
+    assert result["status"] == "error"
+    assert "list" in result["message"].lower()
+
+
+def test_store_rejects_turn_missing_role(employee_root, fake_vessel):
+    from company.assets.tools.memento.memento import store
+
+    with _with_vessel(fake_vessel):
+        result = store.invoke({"turns": [{"content": "hi"}]})
+
+    assert result["status"] == "error"
+    assert "role" in result["message"].lower()
+
+
+def test_store_rejects_invalid_role(employee_root, fake_vessel):
+    from company.assets.tools.memento.memento import store
+
+    with _with_vessel(fake_vessel):
+        result = store.invoke({
+            "turns": [{"role": "system", "content": "hi"}]
+        })
+
+    assert result["status"] == "error"
+    assert "invalid role" in result["message"].lower() or "role" in result["message"].lower()

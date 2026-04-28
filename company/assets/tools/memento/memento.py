@@ -23,6 +23,26 @@ from onemancompany.core.vessel import _current_vessel
 _VALID_ROLES = {"user", "assistant"}
 
 
+def _validate_turns(turns) -> str | None:
+    """Return error message string, or None if turns is valid."""
+    if not isinstance(turns, list):
+        return "turns must be a non-empty list of {role, content} dicts"
+    if not turns:
+        return "turns must be a non-empty list of {role, content} dicts"
+    for i, turn in enumerate(turns):
+        if not isinstance(turn, dict):
+            return f"turn {i}: must be a dict with 'role' and 'content'"
+        role = turn.get("role")
+        content = turn.get("content")
+        if not role:
+            return f"turn {i}: missing 'role'"
+        if role not in _VALID_ROLES:
+            return f"turn {i}: invalid role '{role}' (must be 'user' or 'assistant')"
+        if not isinstance(content, str) or not content.strip():
+            return f"turn {i}: missing or empty 'content'"
+    return None
+
+
 def _resolve_employee_id() -> str:
     vessel = _current_vessel.get(None)
     if vessel is None:
@@ -61,6 +81,10 @@ def store(turns: list[dict]) -> dict:
         employee_id = _resolve_employee_id()
     except RuntimeError as exc:
         return {"status": "error", "message": str(exc)}
+
+    err = _validate_turns(turns)
+    if err is not None:
+        return {"status": "error", "message": err}
 
     return {"status": "error", "message": "not implemented yet"}
 
