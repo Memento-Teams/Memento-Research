@@ -60,6 +60,112 @@ def _employee_memory_dirs(employee_id: str) -> tuple[Path, Path]:
     return mem_root, sessions_dir
 
 
+def _next_session_num(sessions_dir: Path) -> int:
+    """Highest existing session_num + 1, ignoring non-NNN.json files."""
+    highest = 0
+    for path in sessions_dir.glob("*.json"):
+        stem = path.stem
+        if stem.isdigit():
+            highest = max(highest, int(stem))
+    return highest + 1
+
+
+def _load_existing_sessions(sessions_dir: Path):
+    """Return sorted list of memento Session objects."""
+    from onemancompany.core.memory import Session, Turn
+
+    sessions = []
+    for path in sorted(sessions_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("[memento] skipping unreadable session {}: {}", path.name, exc)
+            continue
+        try:
+            num = int(data["session_num"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        turns = [
+            Turn(speaker=t.get("role", "user"), text=t.get("content", ""))
+            for t in data.get("turns", [])
+            if isinstance(t, dict) and t.get("content")
+        ]
+        sessions.append(Session(session_num=num, turns=turns, date_time=data.get("date_time", "")))
+    return sessions
+
+
+def _write_session_file(sessions_dir: Path, session_num: int, turns: list[dict]) -> Path:
+    """Atomically write the session JSON. Returns the final path."""
+    target = sessions_dir / f"{session_num:03d}.json"
+    payload = {
+        "session_num": session_num,
+        "date_time": datetime.now(timezone.utc).isoformat(),
+        "turns": [{"role": t["role"], "content": t["content"]} for t in turns],
+    }
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(target)
+    return target
+
+
+def _build_conversation(sessions_dir: Path, employee_id: str):
+    """Load all session files and wrap them in a Conversation."""
+    from onemancompany.core.memory import Conversation
+    sessions = _load_existing_sessions(sessions_dir)
+    return Conversation(
+        conv_id=abs(hash(employee_id)) % (10**8),
+        sessions=sessions,
+    )
+
+
+async def _run_ingest(adapter, conv, conv_id):
+    await adapter.setup()
+    await adapter.ingest(conv, conv_id=conv_id)
+
+
+async def _run_recall(adapter, conv, conv_id, query):
+    await adapter.setup()
+    await adapter.ingest(conv, conv_id=conv_id)
+    return await adapter.recall(query, conv_id=conv_id)
+
+
+def _build_store_result(mem_root: Path, employee_id: str, session_num: int) -> dict:
+    """Read back the new SessionNode + edge counts to populate the result."""
+    from onemancompany.core.memory.memento_v4.causal.storage import (
+        find_session_node, load_all_edges,
+    )
+
+    session_id = f"conv{employee_id}_sess{session_num}"
+    memory_dir = mem_root / f"conv_{employee_id}"
+    node = find_session_node(memory_dir, session_id) if memory_dir.exists() else None
+    edges = load_all_edges(memory_dir) if memory_dir.exists() else []
+    edges_for_this = [e for e in edges if e.source_session == session_id]
+
+    sidecar_path = memory_dir / "_v4_meta.json"
+    supersede_added = 0
+    if sidecar_path.exists():
+        try:
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            sup = sidecar.get("superseded", {})
+            for entries in sup.values():
+                supersede_added += sum(
+                    1 for e in entries
+                    if isinstance(e, dict) and e.get("superseded_by") == session_id
+                )
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "session_num": session_num,
+        "title": node.title if node else "",
+        "outcome": node.outcome if node else "partial",
+        "edges_added": len(edges_for_this),
+        "supersede_added": supersede_added,
+    }
+
+
 @tool
 def store(turns: list[dict]) -> dict:
     """Persist a finished session into your private long-term memory.
@@ -86,7 +192,34 @@ def store(turns: list[dict]) -> dict:
     if err is not None:
         return {"status": "error", "message": err}
 
-    return {"status": "error", "message": "not implemented yet"}
+    mem_root, sessions_dir = _employee_memory_dirs(employee_id)
+    session_num = _next_session_num(sessions_dir)
+
+    try:
+        _write_session_file(sessions_dir, session_num, turns)
+    except OSError as exc:
+        return {"status": "error", "message": f"session write failed: {exc}"}
+
+    from onemancompany.core.memory import AblationFlags
+
+    adapter = MemoryV4Adapter(
+        memory_root=mem_root,
+        ablation=AblationFlags(reflect_synthesis=False),
+    )
+    conv = _build_conversation(sessions_dir, employee_id)
+
+    try:
+        asyncio.run(_run_ingest(adapter, conv, employee_id))
+    except Exception as exc:
+        logger.exception("[memento] store ingest failed for {}: {}", employee_id, exc)
+        return {
+            "status": "error",
+            "message": f"finalize failed: {exc}",
+            "session_num": session_num,
+            "note": "transcript persisted; will retry on next store/recall",
+        }
+
+    return _build_store_result(mem_root, employee_id, session_num)
 
 
 @tool

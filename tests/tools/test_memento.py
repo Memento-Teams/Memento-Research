@@ -108,3 +108,77 @@ def test_store_rejects_invalid_role(employee_root, fake_vessel):
 
     assert result["status"] == "error"
     assert "invalid role" in result["message"].lower() or "role" in result["message"].lower()
+
+
+def test_store_happy_path_patches_adapter(employee_root, fake_vessel, monkeypatch):
+    """store writes the session JSON, then ingests via the adapter."""
+    from company.assets.tools.memento import memento as memento_mod
+
+    captured = {}
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            captured["init_kwargs"] = kwargs
+            self._memory_root = kwargs["memory_root"]
+
+        async def setup(self):
+            captured["setup_called"] = True
+
+        async def ingest(self, conv, conv_id):
+            captured["ingest_conv_id"] = conv_id
+            captured["ingest_session_count"] = len(conv.sessions)
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _FakeAdapter)
+
+    with _with_vessel(fake_vessel):
+        result = memento_mod.store.invoke({
+            "turns": [
+                {"role": "user", "content": "find auth bug"},
+                {"role": "assistant", "content": "reproduced AUTH-742"},
+            ]
+        })
+
+    assert result["status"] == "ok", result
+    assert result["session_num"] == 1
+    assert result["session_id"].endswith("_sess1")
+
+    sessions_dir = employee_root / "E00006" / "memory" / "sessions"
+    written = sorted(sessions_dir.glob("*.json"))
+    assert len(written) == 1
+    payload = json.loads(written[0].read_text())
+    assert payload["session_num"] == 1
+    assert len(payload["turns"]) == 2
+    assert payload["turns"][0]["content"] == "find auth bug"
+
+    assert captured["ingest_conv_id"] == "E00006"
+    assert captured["ingest_session_count"] == 1
+
+
+def test_store_increments_session_num(employee_root, fake_vessel, monkeypatch):
+    """Three consecutive stores produce session_nums 1, 2, 3 with 001/002/003.json."""
+    from company.assets.tools.memento import memento as memento_mod
+
+    class _NoopAdapter:
+        def __init__(self, **_):
+            pass
+
+        async def setup(self):
+            pass
+
+        async def ingest(self, *_a, **_kw):
+            pass
+
+    monkeypatch.setattr(memento_mod, "MemoryV4Adapter", _NoopAdapter)
+
+    with _with_vessel(fake_vessel):
+        r1 = memento_mod.store.invoke({"turns": [{"role": "user", "content": "task one"}]})
+        r2 = memento_mod.store.invoke({"turns": [{"role": "user", "content": "task two"}]})
+        r3 = memento_mod.store.invoke({"turns": [{"role": "user", "content": "task three"}]})
+
+    assert r1["session_num"] == 1
+    assert r2["session_num"] == 2
+    assert r3["session_num"] == 3
+
+    sessions_dir = employee_root / "E00006" / "memory" / "sessions"
+    written = sorted(p.name for p in sessions_dir.glob("*.json"))
+    assert written == ["001.json", "002.json", "003.json"]
