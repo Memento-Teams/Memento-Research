@@ -1,0 +1,68 @@
+{
+  "id": "experiment_runner",
+  "name": "Experiment Runner",
+  "version": "1.0.0",
+  "role": "Analyst",
+  "hosting": "company",
+  "settings": {
+    "sections": [
+      {
+        "id": "monitoring",
+        "title": "Monitoring",
+        "fields": [
+          {
+            "key": "monitor_backend",
+            "type": "select",
+            "label": "Metric backend",
+            "default": "auto",
+            "options": ["auto", "jsonl", "tensorboard", "wandb"]
+          },
+          {
+            "key": "metric_dir",
+            "type": "text",
+            "label": "Metric/log directory"
+          },
+          {
+            "key": "poll_interval_seconds",
+            "type": "number",
+            "label": "Poll interval seconds",
+            "default": 60,
+            "min": 1,
+            "max": 600,
+            "step": 1
+          },
+          {
+            "key": "warmup_seconds",
+            "type": "number",
+            "label": "Warmup seconds",
+            "default": 120,
+            "min": 0,
+            "max": 3600,
+            "step": 10
+          }
+        ]
+      },
+      {
+        "id": "platform",
+        "title": "Platform",
+        "fields": [
+          {
+            "key": "device_backend",
+            "type": "select",
+            "label": "Device backend",
+            "default": "auto",
+            "options": ["auto", "cpu", "macos", "apple_silicon", "nvidia"]
+          }
+        ]
+      }
+    ]
+  },
+  "prompts": {
+    "skills": ["skills/*/SKILL.md"]
+  },
+  "tools": {
+    "builtin": [],
+    "custom": []
+  },
+  "platform_capabilities": []
+}

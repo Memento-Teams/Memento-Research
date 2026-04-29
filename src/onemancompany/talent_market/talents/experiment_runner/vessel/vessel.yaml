@@ -1,0 +1,31 @@
+runner:
+  module: experiment_runner
+  class_name: ExperimentRunnerAgent
+hooks:
+  module: ""
+  pre_task: ""
+  post_task: ""
+context:
+  prompt_sections:
+    - name: experiment_runner_system
+      file: prompt_sections/system.md
+      priority: 22
+    - name: experiment_runner_receive
+      file: prompt_sections/receive.md
+      priority: 23
+    - name: experiment_runner_report
+      file: prompt_sections/report.md
+      priority: 24
+  inject_progress_log: false
+  inject_task_history: false
+limits:
+  max_retries: 1
+  retry_delays: [5]
+  max_subtask_iterations: 1
+  max_subtask_depth: 1
+  task_timeout_seconds: 86400
+capabilities:
+  file_upload: false
+  websocket: false
+  sandbox: false
+  image_generation: false

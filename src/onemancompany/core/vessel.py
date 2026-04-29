@@ -1575,7 +1575,7 @@ class EmployeeManager:
                 task_with_ctx = task_with_ctx[:half] + "\n\n[... context truncated ...]\n\n" + task_with_ctx[-half:]
 
             # Universal timeout — asyncio.wait_for wraps ALL executor types.
-            task_timeout = node.timeout_seconds or 3600
+            task_timeout = node.timeout_seconds or (cfg.limits.task_timeout_seconds if cfg else 3600)
             # For SubprocessExecutor: set its internal timeout slightly longer
             # so the outer wait_for fires first. If the outer cancellation
             # somehow fails, the inner timeout still kills the subprocess.
