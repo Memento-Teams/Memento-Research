@@ -1,11 +1,11 @@
 # Memento Memory Tool
 
 Long-term cross-session memory for OMC employees. Two LangChain tools
-(`store`, `recall`) backed by the vendored `memento_v4` package
-(causal graph + hybrid vector/BM25/BFS retrieval). Each employee has
-a private memory store; the tool resolves `employee_id` server-side
-from the active `Vessel` ContextVar, so an LLM cannot read or write
-another employee's memory.
+(`store`, `recall`) backed by the `memory-os-causal` PyPI package
+(causal graph + hybrid vector/BM25/BFS retrieval, import name
+`memento_v4`). Each employee has a private memory store; the tool
+resolves `employee_id` server-side from the active `Vessel`
+ContextVar, so an LLM cannot read or write another employee's memory.
 
 ## When to use this
 
@@ -207,6 +207,27 @@ employee from your own code, set the ContextVar yourself (the
   pattern OMC's "default memory" uses), wrap the agent with a
   pre-run step that calls `recall.invoke(...)` and prepends the
   context to the LLM's input.
+
+## Bumping the underlying library
+
+The retrieval / finalize logic ships as `memory-os-causal` on PyPI.
+To pull in an upstream fix or feature:
+
+1. In the upstream repo (`/home/memento_v4`), apply the fix and add
+   tests. Bump `version` in `pyproject.toml` to the next patch
+   (`0.1.N+1`) — semver applies, breaking changes need a minor bump.
+2. `python -m build` → `twine upload dist/*` — the GitHub Actions
+   workflow does this automatically on `git tag v0.1.N+1` once
+   Phase C lands.
+3. In OMC, edit the dependency pin in `pyproject.toml`:
+
+   ```toml
+   "memory-os-causal>=0.1.N+1,<0.2"
+   ```
+
+4. `uv lock` → `pip install -e .` to refresh the env.
+5. Re-run the four test layers in the **Tests** section. No
+   regressions vs the previous baseline before merging.
 
 ## Tests
 
