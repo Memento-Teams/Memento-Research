@@ -25,13 +25,19 @@ async function init() {
 
   try {
     await client.connect();
+    setConnectionStatus(true);
     addEvent('stag', 'Connected to OMC backend.');
     document.getElementById('dirStatus').textContent = 'Connected — ready';
   } catch (err) {
+    setConnectionStatus(false);
     addEvent('stag', `Connection failed: ${err.message || 'unreachable'}. Running in demo mode.`);
     document.getElementById('dirStatus').textContent = 'Offline — demo mode';
     return false;
   }
+
+  // Track connection state changes
+  client.ws.addEventListener('close', () => setConnectionStatus(false));
+
   return true;
 }
 
@@ -57,6 +63,13 @@ async function launchPipeline(topic) {
   window._currentProjectId = result.project_id;
   addEvent('dtag', `Task accepted. Project: ${result.project_id}`);
   document.getElementById('dirStatus').textContent = 'Pipeline running...';
+}
+
+function setConnectionStatus(connected) {
+  const el = document.getElementById('connStatus');
+  if (!el) return;
+  el.className = connected ? 'conn-status connected' : 'conn-status';
+  el.querySelector('.conn-label').textContent = connected ? 'Connected' : 'Offline';
 }
 
 // Expose for HTML

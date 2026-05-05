@@ -45,6 +45,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .director-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--green);margin-bottom:4px;font-weight:600}
 .director-name{font-family:var(--serif);font-size:1rem;font-weight:600;margin-bottom:2px}
 .director-status{font-size:.75rem;color:var(--text3)}
+.conn-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:.7rem;color:var(--text4)}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
+.conn-status.connected .conn-dot{background:var(--green)}
+.conn-status.connected .conn-label{color:var(--green)}
 
 /* ── Pipeline Stages with Breakpoints ── */
 .section-label{font-family:var(--mono);font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text4);padding:0 20px;margin-bottom:8px}
@@ -324,6 +328,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
       <div class="director-label">Research Director</div>
       <div class="director-name">Dr. Pipeline</div>
       <div class="director-status" id="dirStatus">Idle</div>
+      <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
     </div>
 
     <div class="section-label">Pipeline Stages</div>
