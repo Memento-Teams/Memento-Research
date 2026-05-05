@@ -568,6 +568,10 @@ function addActionBar(card,stageId){
     this.textContent='Continuing...';
     this.disabled=true;
     addEvent('stag','User approved Stage '+stageId+'. Continuing...');
+    // Signal OMC backend if connected
+    if (window.resumeBreakpoint) {
+      window.resumeBreakpoint('');
+    }
     resumePipeline();
   });
 }

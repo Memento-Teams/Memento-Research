@@ -65,4 +65,24 @@ export class OmcClient {
     });
     return res.json();
   }
+
+  async resumeAfterBreakpoint(projectId, stageId, userFeedback = '') {
+    const res = await fetch(`${this.baseUrl}/api/task/${projectId}/followup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        message: userFeedback || `Stage ${stageId} approved. Continue.`,
+      }),
+    });
+    return res.json();
+  }
+
+  async sendOneOnOneMessage(employeeId, message) {
+    const res = await fetch(`${this.baseUrl}/api/oneonone/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ employee_id: employeeId, message }),
+    });
+    return res.json();
+  }
 }

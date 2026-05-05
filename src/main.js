@@ -61,6 +61,7 @@ async function launchPipeline(topic) {
 
 // Expose for HTML
 window.launchPipeline = launchPipeline;
+window.resumeBreakpoint = (feedback) => controller.resumeBreakpoint(feedback);
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {

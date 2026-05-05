@@ -133,12 +133,33 @@ export class PipelineController {
   }
 
   _triggerBreakpoint(stageId, card) {
+    this.pausedStageId = stageId;
     setStage(stageId, 'paused');
     if (card) card.classList.add('paused');
     addActionBar(card, stageId);
     addEvent('stag', `Breakpoint on Stage ${stageId}. Waiting for user.`);
     const dirStatus = document.getElementById('dirStatus');
     if (dirStatus) dirStatus.textContent = `Paused at Stage ${stageId} — waiting for user`;
+  }
+
+  async resumeBreakpoint(feedback = '') {
+    if (!this.pausedStageId) return;
+    const sid = this.pausedStageId;
+    this.pausedStageId = null;
+
+    const card = this.meetingCards[sid];
+    if (card) card.classList.remove('paused');
+
+    document.getElementById('action-panel-global')?.remove();
+    setStage(sid, 'done');
+    addEvent('dtag', `Stage ${sid} approved by user. Proceeding.`);
+
+    // Signal OMC to continue
+    if (window._omcClient && window._currentProjectId) {
+      await window._omcClient.resumeAfterBreakpoint(
+        window._currentProjectId, sid, feedback
+      );
+    }
   }
 
   // --- Stage metadata ---
