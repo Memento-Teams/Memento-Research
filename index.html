@@ -356,7 +356,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
           <div class="config-group"><label class="config-label">Model</label><select class="config-select"><option>Claude Opus 4.6</option><option>GPT-4o</option><option>DeepSeek R1</option></select></div>
           <div class="config-group"><label class="config-label">Template</label><select class="config-select"><option>NeurIPS 2026</option><option>ICML 2026</option><option>arXiv</option></select></div>
           <div class="config-group"><label class="config-label">Critic</label><select class="config-select"><option>Strict</option><option>Balanced</option><option>Gentle</option></select></div>
-          <button class="btn-launch" id="launchBtn" onclick="startDemo()">Launch Pipeline</button>
+          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}else{startDemo()}">Launch Pipeline</button>
         </div>
       </div>
     </div>
