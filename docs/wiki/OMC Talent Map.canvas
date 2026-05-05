@@ -1,0 +1,37 @@
+{
+	"nodes":[
+		{"id":"director","type":"text","text":"## Research Director\n**Role:** COO-level orchestrator\n**Skills:** pipeline-orchestration, pivot-decision, task-delegation\n**Delegates to all producers**","x":100,"y":-440,"width":320,"height":180,"color":"5"},
+		{"id":"g-producers","type":"text","text":"**Producers**","x":-230,"y":-120,"width":140,"height":50,"color":"4"},
+		{"id":"market","type":"text","text":"## Talent Market\nCommunity can contribute:\n- Domain-specific producers\n- Specialized critics\n- Custom tools","x":780,"y":430,"width":260,"height":250,"color":"5"},
+		{"id":"t-lit","type":"text","text":"**Literature Surveyor** `LS`\nStage 2\narxiv, semantic-scholar\ngap-analysis, openalex","x":640,"y":-260,"width":180,"height":80,"color":"4"},
+		{"id":"critic","type":"text","text":"## Adversarial Critic\n**Role:** Red-Team Reviewer\n**Skills:**\n- novelty-assessment\n- methodology-critique\n- experiment-validation\n- citation-verify\n*Shared across ALL stages*","x":750,"y":230,"width":240,"height":120,"color":"1"},
+		{"id":"t-idea","type":"text","text":"**Idea Generator** `IG`\nStage 3\nhypothesis-generation\nnovelty-framing","x":460,"y":-95,"width":220,"height":120,"color":"4"},
+		{"id":"t-expr","type":"text","text":"**Experimentalist** `EX`\nStage 5-6\ncode-generation\nexperiment-execution","x":250,"y":-15,"width":210,"height":135,"color":"4"},
+		{"id":"t-topic","type":"text","text":"**Topic Refiner** `TR`\nStage 1\ntopic-refinement.md","x":-160,"y":130,"width":200,"height":100,"color":"4"},
+		{"id":"t-expd","type":"text","text":"**Experiment Designer**\nStage 5\nexperiment-design.md","x":13,"y":25,"width":215,"height":95,"color":"4"},
+		{"id":"t-method","type":"text","text":"**Methodology Designer** `MD`\nStage 4\nmethodology-design\ntheory-inference","x":-440,"y":195,"width":210,"height":165,"color":"4"},
+		{"id":"t-analyst","type":"text","text":"**Result Analyst**\nStage 7\ndata-analysis\nfigure-generation","x":-300,"y":380,"width":210,"height":130,"color":"4"},
+		{"id":"t-writer","type":"text","text":"**Paper Writer** `PW`\nStage 8\nacademic-writing\nlatex-formatting","x":400,"y":395,"width":190,"height":115,"color":"4"},
+		{"id":"hosting","type":"text","text":"## Hosting Modes\n| Mode | How |\n|------|-----|\n| Company | LangChain internal |\n| Self | Claude Code CLI |\n| OpenClaw | Subprocess |\n| Remote | HTTP polling |","x":13,"y":525,"width":307,"height":255,"color":"3"},
+		{"id":"tools","type":"text","text":"## Shared Tools\n- `semantic_scholar` — paper search + citation verify\n- `arxiv` — preprint search + download\n- `sandbox` — Docker experiment execution\n- `latex` — paper compilation\n- `calibration` — confidence logging","x":-370,"y":555,"width":350,"height":285,"color":"3"},
+		{"id":"t-review","type":"text","text":"**Peer Reviewer** x3\nStage 9\nmethodology-review\nnovelty-review\nclarity-review","x":395,"y":570,"width":200,"height":165,"color":"6"},
+		{"id":"title","type":"text","text":"# OMC Research Lab — Talent Map\nWho does what, and how they connect","x":120,"y":-600,"width":450,"height":105,"color":"5"}
+	],
+	"edges":[
+		{"id":"d1","fromNode":"director","fromSide":"bottom","toNode":"t-topic","toSide":"top","color":"5","label":"delegate S1"},
+		{"id":"d2","fromNode":"director","fromSide":"bottom","toNode":"t-lit","toSide":"top","color":"5","label":"delegate S2"},
+		{"id":"d3","fromNode":"director","fromSide":"bottom","toNode":"t-idea","toSide":"top","color":"5","label":"delegate S3"},
+		{"id":"d4","fromNode":"director","fromSide":"bottom","toNode":"t-method","toSide":"top","color":"5"},
+		{"id":"d5","fromNode":"director","fromSide":"bottom","toNode":"t-expd","toSide":"top","color":"5"},
+		{"id":"d6","fromNode":"director","fromSide":"bottom","toNode":"t-expr","toSide":"top","color":"5"},
+		{"id":"c1","fromNode":"t-topic","fromSide":"right","toNode":"critic","toSide":"left","color":"1","label":"meeting"},
+		{"id":"c2","fromNode":"t-lit","fromSide":"right","toNode":"critic","toSide":"left","color":"1","label":"meeting"},
+		{"id":"c3","fromNode":"t-idea","fromSide":"right","toNode":"critic","toSide":"left","color":"1","label":"meeting"},
+		{"id":"c4","fromNode":"t-method","fromSide":"right","toNode":"critic","toSide":"left","color":"1"},
+		{"id":"c5","fromNode":"t-expd","fromSide":"right","toNode":"critic","toSide":"left","color":"1"},
+		{"id":"c6","fromNode":"t-expr","fromSide":"right","toNode":"critic","toSide":"left","color":"1"},
+		{"id":"c7","fromNode":"t-analyst","fromSide":"right","toNode":"critic","toSide":"left","color":"1"},
+		{"id":"c8","fromNode":"t-writer","fromSide":"right","toNode":"critic","toSide":"left","color":"1"},
+		{"id":"m1","fromNode":"market","fromSide":"top","toNode":"critic","toSide":"bottom","color":"5","label":"extend"}
+	]
+}

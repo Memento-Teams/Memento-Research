@@ -1,0 +1,268 @@
+[2026-04-23T21:00:58.270Z] [log] JQMIGRATE: Migrate is installed, version 3.4.1
+[2026-04-23T21:00:58.400Z] [log] 🐛 Debug mode active
+[2026-04-23T21:00:58.412Z] [log] Consent: CookieControl already ready on DOM load
+[2026-04-23T21:00:58.412Z] [log] Scripts.js: DOMContentLoaded fired, initializing modules
+[2026-04-23T21:00:58.412Z] [log] OpenTable postMessage listener initialized
+[2026-04-23T21:00:58.412Z] [log] OpenTable GTM bridge initialized
+[2026-04-23T21:00:58.413Z] [log] UnifiedSearchManager: Initialized with 47 restaurants
+[2026-04-23T21:00:58.413Z] [log] RestaurantSearchManager: Initialized with unified search base
+[2026-04-23T21:00:58.413Z] [log] UnifiedSearchManager: Initialized with 47 restaurants
+[2026-04-23T21:00:58.413Z] [log] PDRSearchManager: Initializing
+[2026-04-23T21:00:58.413Z] [log] PDRSearchManager: Enriched 55 PDR spaces with location data from linked restaurants
+[2026-04-23T21:00:58.413Z] [log] PDRSearchManager: Loaded 39 restaurants with private dining
+[2026-04-23T21:00:58.413Z] [log] OpenTableBookingManager initialized
+[2026-04-23T21:00:58.413Z] [log] RestaurantRedirectManager: Link and button handlers initialized
+[2026-04-23T21:00:58.413Z] [log] RestaurantRedirectManager: Consent already ready
+[2026-04-23T21:00:58.413Z] [log] LatestEventsFilter: No selected restaurant (client-side); skipping filter
+[2026-04-23T21:00:58.413Z] [log] Scripts.js: Core modules initialized successfully
+[2026-04-23T21:00:58.414Z] [log] EnquiryBot script injected
+[2026-04-23T21:00:58.414Z] [log] GF Prefill: no restaurant, using placeholder
+[2026-04-23T21:00:58.425Z] [log] GF Prefill: no restaurant, using placeholder
+[2026-04-23T21:00:58.485Z] [log] SmoothScroll: initialized
+[2026-04-23T21:00:58.524Z] [warning] Google Maps JavaScript API has been loaded directly without loading=async. This can result in suboptimal performance. For best-practice loading patterns please see https://goo.gle/js-api-loading
+[2026-04-23T21:00:58.544Z] [log] Carousels module initialized
+[2026-04-23T21:00:58.545Z] [log] Header module initialized
+[2026-04-23T21:00:58.549Z] [log] BgPin: Pin created for section JSHandle@node JSHandle@node
+[2026-04-23T21:00:58.549Z] [log] Background pins module initialized
+[2026-04-23T21:00:58.549Z] [log] Map modal initialized
+[2026-04-23T21:00:58.554Z] [log] Diamond pattern module initialized
+[2026-04-23T21:00:58.556Z] [log] BookingModalManager: initializing forms {isReinit: false}
+[2026-04-23T21:00:58.556Z] [log] BookingModalManager: Found 2 modal tabs
+[2026-04-23T21:00:58.556Z] [log] BookingModalManager: Defaulted to table booking tab
+[2026-04-23T21:00:58.556Z] [log] BookingModalManager: Found 6 modal selects
+[2026-04-23T21:00:58.557Z] [log] Modal PDR form submission handled by PDRSearchManager
+[2026-04-23T21:00:58.557Z] [log] RestaurantSearchManager: No stored restaurant selection found
+[2026-04-23T21:00:58.557Z] [log] UnifiedSearchManager: Search initialized for .modal-form--table
+[2026-04-23T21:00:58.557Z] [log] BookingModal: Restaurant search initialized for table booking
+[2026-04-23T21:00:58.557Z] [log] Booking modal initialized
+[2026-04-23T21:00:58.623Z] [log] DOB placeholder overlay initialized
+[2026-04-23T21:00:58.623Z] [log] GF masked date placeholder applied
+[2026-04-23T21:00:58.624Z] [log] FormTabs: Defaulted to table booking tab
+[2026-04-23T21:00:58.624Z] [log] Form tabs module initialized
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Initializing
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Initial form data attributes for select 0: {data-guest-number: NOT SET, data-max-booking-capacity: NOT SET, data-max-booking-message: NOT SET}
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Starting to watch hidden input #table-guests-hidden. Initial value: "2"
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Initialized select 0
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Initial form data attributes for select 1: {data-guest-number: NOT SET, data-max-booking-capacity: NOT SET, data-max-booking-message: NOT SET}
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Starting to watch hidden input #table-guests-hidden. Initial value: "2"
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Initialized select 1
+[2026-04-23T21:00:58.624Z] [log] TableGuestTooltip: Global hide handlers registered
+[2026-04-23T21:00:58.624Z] [log] Table Guest Tooltip module initialized
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Initializing
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Gravity Form field_2_9 not found
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Initialized select 0
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Select 1 not found, skipping
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Initialized select 2
+[2026-04-23T21:00:58.624Z] [log] PDRGuestTooltip: Global hide handlers registered
+[2026-04-23T21:00:58.624Z] [log] PDR Guest Tooltip module initialized
+[2026-04-23T21:00:58.625Z] [log] custom-select #0 initialized
+[2026-04-23T21:00:58.625Z] [log] Custom selects module initialized
+[2026-04-23T21:00:58.625Z] [log] Hero form JS loaded
+[2026-04-23T21:00:58.625Z] [log] RestaurantSearchManager: No stored restaurant selection found
+[2026-04-23T21:00:58.625Z] [log] UnifiedSearchManager: Search initialized for .hero-form--table
+[2026-04-23T21:00:58.625Z] [log] Hero form: Restaurant search initialized for table booking
+[2026-04-23T21:00:58.625Z] [log] Hero Form module initialized
+[2026-04-23T21:00:58.625Z] [log] All modules loaded successfully
+[2026-04-23T21:00:58.633Z] [log] [launcher] Forced to use event server
+[2026-04-23T21:00:58.634Z] [log] [launcher] Using socket server {useEventServer: true, URL: cta.enquirybot.com}
+[2026-04-23T21:00:58.712Z] [error] Access to XMLHttpRequest at 'https://cta.enquirybot.com/socket.io/?EIO=3&transport=polling&t=Psy9LsA' from origin 'https://ivycollection.com' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: Redirect is not allowed for a preflight request.
+[2026-04-23T21:00:58.713Z] [error] Failed to load resource: net::ERR_FAILED
+[2026-04-23T21:00:58.738Z] [log] Initializing hero forms
+[2026-04-23T21:00:58.738Z] [log] Found 6 selects
+[2026-04-23T21:00:58.739Z] [log] Initializing select 0
+[2026-04-23T21:00:58.739Z] [log] Initializing select 1
+[2026-04-23T21:00:58.739Z] [log] Initializing select 2
+[2026-04-23T21:00:58.739Z] [log] Initializing select 3
+[2026-04-23T21:00:58.739Z] [log] Initializing select 4
+[2026-04-23T21:00:58.739Z] [log] Initializing select 5
+[2026-04-23T21:00:58.739Z] [log] Table form found: true
+[2026-04-23T21:00:58.739Z] [log] PDR form submission handled by PDRSearchManager
+[2026-04-23T21:00:58.739Z] [log] Hero form: Keyboard avoidance binding for 4 containers
+[2026-04-23T21:00:58.739Z] [log] Initializing PDR search in hero forms
+[2026-04-23T21:00:58.768Z] [error] Failed to load resource: the server responded with a status of 403 ()
+[2026-04-23T21:00:58.915Z] [log] UnifiedSearchManager: Search initialized for .hero-form--pdr
+[2026-04-23T21:00:58.915Z] [log] PDRSearchManager: Hero PDR search initialized
+[2026-04-23T21:00:58.915Z] [log] UnifiedSearchManager: Search initialized for .modal-form--pdr
+[2026-04-23T21:00:58.915Z] [log] PDRSearchManager: Modal PDR search initialized
+[2026-04-23T21:00:58.915Z] [log] PDRSearchManager: Form submission handler setup for hero-form--pdr
+[2026-04-23T21:00:58.915Z] [log] PDRSearchManager: Form submission handler setup for modal-form--pdr
+[2026-04-23T21:00:59.125Z] [log] TableGuestTooltip: Running initial check after 500ms delay
+[2026-04-23T21:00:59.125Z] [log] TableGuestTooltip: Running initial check after 500ms delay
+[2026-04-23T21:00:59.414Z] [log] GF Prefill: no restaurant, using placeholder
+[2026-04-23T21:00:59.472Z] [log] Consent: CookieControl onLoad callback fired, listeners initialized
+[2026-04-23T21:00:59.489Z] [log] Consent: CookieControl onLoad callback fired, listeners initialized
+[2026-04-23T21:01:00.845Z] [log] [launcher] GA4 Enabled. Fetched Client ID: null
+[2026-04-23T21:01:01.948Z] [log] [AutoOpen] Auto-open not enabled for this device
+[2026-04-23T21:01:03.376Z] [log] TableGuestTooltip: Poll check #20 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:03.376Z] [log] TableGuestTooltip: Poll check #20 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:08.376Z] [log] TableGuestTooltip: Poll check #40 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:08.376Z] [log] TableGuestTooltip: Poll check #40 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:13.376Z] [log] TableGuestTooltip: Poll check #60 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:13.376Z] [log] TableGuestTooltip: Poll check #60 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:18.375Z] [log] TableGuestTooltip: Poll check #80 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:18.375Z] [log] TableGuestTooltip: Poll check #80 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:23.376Z] [log] TableGuestTooltip: Poll check #100 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:23.376Z] [log] TableGuestTooltip: Poll check #100 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:28.374Z] [log] TableGuestTooltip: Poll check #120 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:28.375Z] [log] TableGuestTooltip: Poll check #120 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:33.377Z] [log] TableGuestTooltip: Poll check #140 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:33.377Z] [log] TableGuestTooltip: Poll check #140 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:38.377Z] [log] TableGuestTooltip: Poll check #160 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:38.377Z] [log] TableGuestTooltip: Poll check #160 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:43.377Z] [log] TableGuestTooltip: Poll check #180 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:43.378Z] [log] TableGuestTooltip: Poll check #180 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:48.376Z] [log] TableGuestTooltip: Poll check #200 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:48.376Z] [log] TableGuestTooltip: Poll check #200 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:53.376Z] [log] TableGuestTooltip: Poll check #220 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:53.376Z] [log] TableGuestTooltip: Poll check #220 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:58.376Z] [log] TableGuestTooltip: Poll check #240 - hidden input value: "2" (last: "2")
+[2026-04-23T21:01:58.376Z] [log] TableGuestTooltip: Poll check #240 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:03.377Z] [log] TableGuestTooltip: Poll check #260 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:03.377Z] [log] TableGuestTooltip: Poll check #260 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:08.376Z] [log] TableGuestTooltip: Poll check #280 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:08.376Z] [log] TableGuestTooltip: Poll check #280 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:13.376Z] [log] TableGuestTooltip: Poll check #300 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:13.376Z] [log] TableGuestTooltip: Poll check #300 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:18.376Z] [log] TableGuestTooltip: Poll check #320 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:18.376Z] [log] TableGuestTooltip: Poll check #320 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:23.375Z] [log] TableGuestTooltip: Poll check #340 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:23.376Z] [log] TableGuestTooltip: Poll check #340 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:28.377Z] [log] TableGuestTooltip: Poll check #360 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:28.377Z] [log] TableGuestTooltip: Poll check #360 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:33.377Z] [log] TableGuestTooltip: Poll check #380 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:33.377Z] [log] TableGuestTooltip: Poll check #380 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:38.377Z] [log] TableGuestTooltip: Poll check #400 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:38.377Z] [log] TableGuestTooltip: Poll check #400 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:43.377Z] [log] TableGuestTooltip: Poll check #420 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:43.377Z] [log] TableGuestTooltip: Poll check #420 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:48.377Z] [log] TableGuestTooltip: Poll check #440 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:48.377Z] [log] TableGuestTooltip: Poll check #440 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:53.376Z] [log] TableGuestTooltip: Poll check #460 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:53.376Z] [log] TableGuestTooltip: Poll check #460 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:58.377Z] [log] TableGuestTooltip: Poll check #480 - hidden input value: "2" (last: "2")
+[2026-04-23T21:02:58.377Z] [log] TableGuestTooltip: Poll check #480 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:03.375Z] [log] TableGuestTooltip: Poll check #500 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:03.375Z] [log] TableGuestTooltip: Poll check #500 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:08.377Z] [log] TableGuestTooltip: Poll check #520 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:08.377Z] [log] TableGuestTooltip: Poll check #520 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:13.375Z] [log] TableGuestTooltip: Poll check #540 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:13.375Z] [log] TableGuestTooltip: Poll check #540 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:18.378Z] [log] TableGuestTooltip: Poll check #560 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:18.378Z] [log] TableGuestTooltip: Poll check #560 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:23.377Z] [log] TableGuestTooltip: Poll check #580 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:23.377Z] [log] TableGuestTooltip: Poll check #580 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:28.377Z] [log] TableGuestTooltip: Poll check #600 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:28.377Z] [log] TableGuestTooltip: Poll check #600 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:33.378Z] [log] TableGuestTooltip: Poll check #620 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:33.378Z] [log] TableGuestTooltip: Poll check #620 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:38.377Z] [log] TableGuestTooltip: Poll check #640 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:38.377Z] [log] TableGuestTooltip: Poll check #640 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:43.378Z] [log] TableGuestTooltip: Poll check #660 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:43.378Z] [log] TableGuestTooltip: Poll check #660 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:48.378Z] [log] TableGuestTooltip: Poll check #680 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:48.378Z] [log] TableGuestTooltip: Poll check #680 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:53.378Z] [log] TableGuestTooltip: Poll check #700 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:53.378Z] [log] TableGuestTooltip: Poll check #700 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:58.378Z] [log] TableGuestTooltip: Poll check #720 - hidden input value: "2" (last: "2")
+[2026-04-23T21:03:58.378Z] [log] TableGuestTooltip: Poll check #720 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:03.378Z] [log] TableGuestTooltip: Poll check #740 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:03.378Z] [log] TableGuestTooltip: Poll check #740 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:08.377Z] [log] TableGuestTooltip: Poll check #760 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:08.377Z] [log] TableGuestTooltip: Poll check #760 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:13.377Z] [log] TableGuestTooltip: Poll check #780 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:13.377Z] [log] TableGuestTooltip: Poll check #780 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:18.377Z] [log] TableGuestTooltip: Poll check #800 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:18.377Z] [log] TableGuestTooltip: Poll check #800 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:23.377Z] [log] TableGuestTooltip: Poll check #820 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:23.377Z] [log] TableGuestTooltip: Poll check #820 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:28.378Z] [log] TableGuestTooltip: Poll check #840 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:28.378Z] [log] TableGuestTooltip: Poll check #840 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:33.378Z] [log] TableGuestTooltip: Poll check #860 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:33.378Z] [log] TableGuestTooltip: Poll check #860 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:38.377Z] [log] TableGuestTooltip: Poll check #880 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:38.377Z] [log] TableGuestTooltip: Poll check #880 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:43.377Z] [log] TableGuestTooltip: Poll check #900 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:43.377Z] [log] TableGuestTooltip: Poll check #900 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:48.377Z] [log] TableGuestTooltip: Poll check #920 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:48.377Z] [log] TableGuestTooltip: Poll check #920 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:53.377Z] [log] TableGuestTooltip: Poll check #940 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:53.378Z] [log] TableGuestTooltip: Poll check #940 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:58.376Z] [log] TableGuestTooltip: Poll check #960 - hidden input value: "2" (last: "2")
+[2026-04-23T21:04:58.376Z] [log] TableGuestTooltip: Poll check #960 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:03.376Z] [log] TableGuestTooltip: Poll check #980 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:03.376Z] [log] TableGuestTooltip: Poll check #980 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:08.376Z] [log] TableGuestTooltip: Poll check #1000 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:08.376Z] [log] TableGuestTooltip: Poll check #1000 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:13.377Z] [log] TableGuestTooltip: Poll check #1020 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:13.378Z] [log] TableGuestTooltip: Poll check #1020 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:18.379Z] [log] TableGuestTooltip: Poll check #1040 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:18.379Z] [log] TableGuestTooltip: Poll check #1040 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:23.377Z] [log] TableGuestTooltip: Poll check #1060 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:23.377Z] [log] TableGuestTooltip: Poll check #1060 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:28.377Z] [log] TableGuestTooltip: Poll check #1080 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:28.377Z] [log] TableGuestTooltip: Poll check #1080 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:33.377Z] [log] TableGuestTooltip: Poll check #1100 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:33.377Z] [log] TableGuestTooltip: Poll check #1100 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:38.376Z] [log] TableGuestTooltip: Poll check #1120 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:38.376Z] [log] TableGuestTooltip: Poll check #1120 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:43.377Z] [log] TableGuestTooltip: Poll check #1140 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:43.377Z] [log] TableGuestTooltip: Poll check #1140 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:48.377Z] [log] TableGuestTooltip: Poll check #1160 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:48.377Z] [log] TableGuestTooltip: Poll check #1160 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:53.377Z] [log] TableGuestTooltip: Poll check #1180 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:53.377Z] [log] TableGuestTooltip: Poll check #1180 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:58.378Z] [log] TableGuestTooltip: Poll check #1200 - hidden input value: "2" (last: "2")
+[2026-04-23T21:05:58.378Z] [log] TableGuestTooltip: Poll check #1200 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:03.377Z] [log] TableGuestTooltip: Poll check #1220 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:03.377Z] [log] TableGuestTooltip: Poll check #1220 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:08.377Z] [log] TableGuestTooltip: Poll check #1240 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:08.377Z] [log] TableGuestTooltip: Poll check #1240 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:13.378Z] [log] TableGuestTooltip: Poll check #1260 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:13.378Z] [log] TableGuestTooltip: Poll check #1260 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:18.378Z] [log] TableGuestTooltip: Poll check #1280 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:18.378Z] [log] TableGuestTooltip: Poll check #1280 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:23.378Z] [log] TableGuestTooltip: Poll check #1300 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:23.378Z] [log] TableGuestTooltip: Poll check #1300 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:28.377Z] [log] TableGuestTooltip: Poll check #1320 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:28.377Z] [log] TableGuestTooltip: Poll check #1320 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:33.378Z] [log] TableGuestTooltip: Poll check #1340 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:33.378Z] [log] TableGuestTooltip: Poll check #1340 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:38.378Z] [log] TableGuestTooltip: Poll check #1360 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:38.378Z] [log] TableGuestTooltip: Poll check #1360 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:43.379Z] [log] TableGuestTooltip: Poll check #1380 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:43.379Z] [log] TableGuestTooltip: Poll check #1380 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:48.378Z] [log] TableGuestTooltip: Poll check #1400 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:48.378Z] [log] TableGuestTooltip: Poll check #1400 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:53.378Z] [log] TableGuestTooltip: Poll check #1420 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:53.378Z] [log] TableGuestTooltip: Poll check #1420 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:58.378Z] [log] TableGuestTooltip: Poll check #1440 - hidden input value: "2" (last: "2")
+[2026-04-23T21:06:58.378Z] [log] TableGuestTooltip: Poll check #1440 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:03.378Z] [log] TableGuestTooltip: Poll check #1460 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:03.378Z] [log] TableGuestTooltip: Poll check #1460 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:08.378Z] [log] TableGuestTooltip: Poll check #1480 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:08.378Z] [log] TableGuestTooltip: Poll check #1480 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:13.378Z] [log] TableGuestTooltip: Poll check #1500 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:13.378Z] [log] TableGuestTooltip: Poll check #1500 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:18.377Z] [log] TableGuestTooltip: Poll check #1520 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:18.377Z] [log] TableGuestTooltip: Poll check #1520 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:23.377Z] [log] TableGuestTooltip: Poll check #1540 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:23.377Z] [log] TableGuestTooltip: Poll check #1540 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:28.378Z] [log] TableGuestTooltip: Poll check #1560 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:28.378Z] [log] TableGuestTooltip: Poll check #1560 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:33.377Z] [log] TableGuestTooltip: Poll check #1580 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:33.377Z] [log] TableGuestTooltip: Poll check #1580 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:38.378Z] [log] TableGuestTooltip: Poll check #1600 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:38.378Z] [log] TableGuestTooltip: Poll check #1600 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:43.379Z] [log] TableGuestTooltip: Poll check #1620 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:43.379Z] [log] TableGuestTooltip: Poll check #1620 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:48.378Z] [log] TableGuestTooltip: Poll check #1640 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:48.379Z] [log] TableGuestTooltip: Poll check #1640 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:53.378Z] [log] TableGuestTooltip: Poll check #1660 - hidden input value: "2" (last: "2")
+[2026-04-23T21:07:53.378Z] [log] TableGuestTooltip: Poll check #1660 - hidden input value: "2" (last: "2")
+[2026-04-23T22:25:01.228Z] [log] pauseResolve: function () { [native code] }
+[2026-04-23T22:25:01.228Z] [log] after resume, pauseResolve: null
+[2026-04-23T22:28:38.910Z] [log] === BREAKPOINT TEST ===
+[2026-04-23T22:28:38.910Z] [log] 1. pauseResolve before: object
+[2026-04-23T22:28:38.910Z] [log] 2. pauseResolve after waitForUser: function
+[2026-04-23T22:28:38.910Z] [log] 3. pauseResolve after resume: object
+[2026-04-23T22:28:38.910Z] [log] 4. Promise resolved

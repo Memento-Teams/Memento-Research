@@ -1,0 +1,25 @@
+{
+	"nodes":[
+		{"id":"title","type":"text","x":50,"y":-300,"width":500,"height":60,"color":"6","text":"# Automated Research Tool Landscape\nPositioned by automation scope vs quality mechanism"},
+		{"id":"axis-x","type":"text","x":-350,"y":-200,"width":140,"height":40,"text":"**Narrow scope** ←"},
+		{"id":"axis-x2","type":"text","x":750,"y":-200,"width":140,"height":40,"text":"→ **Full pipeline**"},
+		{"id":"axis-y","type":"text","x":-350,"y":-150,"width":140,"height":40,"text":"**Low rigor** ↓"},
+		{"id":"axis-y2","type":"text","x":-350,"y":500,"width":140,"height":40,"text":"↑ **High rigor**"},
+		{"id":"autoresearch","type":"text","x":400,"y":350,"width":260,"height":140,"color":"4","text":"## AutoResearch (Ours)\n**Scope:** Full 9-stage pipeline\n**Quality:** Adversarial critic at EVERY stage\n**Backbone:** OMC\n**Model:** Agnostic\n**Stars:** Building\n**Differentiator:** Rigor over throughput"},
+		{"id":"claw","type":"text","x":500,"y":50,"width":250,"height":120,"color":"3","text":"## AutoResearchClaw\n**Scope:** 23-stage full pipeline\n**Quality:** Human-in-loop co-pilot\n**Model:** OpenAI primary\n**Stars:** ~11.6K\n**Gap:** No adversarial gate per stage"},
+		{"id":"karpathy","type":"text","x":-200,"y":200,"width":230,"height":110,"color":"5","text":"## karpathy/autoresearch\n**Scope:** Single-file training loop\n**Quality:** Val loss comparison\n**Model:** Agent-agnostic\n**Stars:** ~76K\n**Gap:** No paper, no literature"},
+		{"id":"ai-sci","type":"text","x":200,"y":-100,"width":240,"height":120,"color":"1","text":"## AI-Scientist (Sakana)\n**Scope:** End-to-end\n**Quality:** Self peer review\n**Published:** Nature 2026\n**Stars:** ~5K\n**Gap:** \"Mediocre\" output quality"},
+		{"id":"orchestra","type":"text","x":500,"y":-150,"width":240,"height":110,"color":"3","text":"## PaperOrchestra (Google)\n**Scope:** Paper writing only\n**Quality:** 45-48 citations avg\n**Model:** GPT-4o\n**Gap:** Doesn't run experiments"},
+		{"id":"udit","type":"text","x":-200,"y":-50,"width":220,"height":90,"color":"6","text":"## uditgoenka/autoresearch\n**Scope:** Code improvement loops\n**NOT academic research**\n**Stars:** ~4K\n*Name overlap only*"},
+		{"id":"paperqa","type":"text","x":0,"y":100,"width":200,"height":80,"color":"3","text":"## PaperQA2 (FutureHouse)\n**Scope:** Literature Q&A\n**Quality:** RAG-based\n**Best for:** Lit review only"},
+		{"id":"chemcrow","type":"text","x":-200,"y":400,"width":200,"height":80,"color":"5","text":"## ChemCrow / Coscientist\n**Scope:** Chemistry only\n**Quality:** Domain-specific tools\n**Gap:** Single domain"},
+		{"id":"insight","type":"text","x":100,"y":550,"width":400,"height":80,"color":"4","text":"**Key Insight:** Every competitor optimizes for COMPLETION.\nAutoResearch optimizes for RIGOR. The adversarial architecture\nis the only approach that addresses LLM overconfidence directly."}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"karpathy","toNode":"autoresearch","fromSide":"right","toSide":"left","color":"4","label":"inspired concept"},
+		{"id":"e2","fromNode":"claw","toNode":"autoresearch","fromSide":"bottom","toSide":"top","color":"1","label":"closest competitor"},
+		{"id":"e3","fromNode":"ai-sci","toNode":"claw","fromSide":"right","toSide":"left","color":"3","label":"influenced"},
+		{"id":"e4","fromNode":"orchestra","toNode":"autoresearch","fromSide":"bottom","toSide":"right","color":"3","label":"decoupling insight"},
+		{"id":"e5","fromNode":"paperqa","toNode":"autoresearch","fromSide":"bottom","toSide":"left","color":"3","label":"lit review reference"}
+	]
+}
