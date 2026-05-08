@@ -381,8 +381,8 @@ class PipelineEngine:
     @staticmethod
     def _parse_confidence(result: str) -> float | None:
         import re
-        # Match patterns like "confidence: 0.72", "Confidence Score: 0.8", "0.65"
-        m = re.search(r'confidence[:\s]*([01]\.?\d*)', result, re.IGNORECASE)
+        # Match patterns like "confidence: 0.72" or "Confidence Score: 0.8".
+        m = re.search(r'confidence(?:\s+score)?[:\s]*([01]\.?\d*)', result, re.IGNORECASE)
         if m:
             try:
                 return float(m.group(1))
