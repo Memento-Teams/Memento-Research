@@ -514,6 +514,7 @@ async def ceo_submit_task(
     project_name: str = Form(""),
     product_id: str = Form(""),
     mode: str = Form("standard"),
+    stage_assignments: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
     """CEO submits a task with optional files, routed to EA via persistent loop."""
@@ -577,11 +578,26 @@ async def ceo_submit_task(
         lines = [f"- Attachment: {a['filename']} (saved at {a['path']})" for a in attachments]
         attach_info = "\n\nCEO attached the following files:\n" + "\n".join(lines)
 
+    # Build stage assignment hints for EA
+    assign_info = ""
+    if stage_assignments:
+        try:
+            import json
+            assignments = json.loads(stage_assignments)
+            if assignments:
+                lines = [f"- Stage {sid}: assign to employee {eid}" for sid, eid in assignments.items()]
+                assign_info = (
+                    "\n\nCEO has specified employee preferences for pipeline stages. "
+                    "You MUST dispatch these stages to the specified employees:\n" + "\n".join(lines)
+                )
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
     loop = get_agent_loop(EA_ID)
     if loop:
         ea_task = (
             f"CEO has assigned a new task. Please analyze and dispatch to the appropriate owner:\n\n"
-            f"Task: {task}{attach_info}\n\n"
+            f"Task: {task}{attach_info}{assign_info}\n\n"
             f"[Project ID: {ctx_id}] [Project workspace: {pdir}]"
         )
         # Initialize task tree: CEO node as root, EA as child
