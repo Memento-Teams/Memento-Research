@@ -3695,13 +3695,13 @@ class TestSalesSettleNotFound:
 
 
 # ---------------------------------------------------------------------------
-# CEO task — EA routing fallback (lines 446-453)
+# CEO task — pipeline does not require EA loop
 # ---------------------------------------------------------------------------
 
 
 class TestCeoTaskEAFallback:
-    async def test_ceo_task_ea_not_available(self):
-        """When no EA loop, returns 503."""
+    async def test_ceo_task_starts_without_ea_loop(self):
+        """Standard CEO task dispatch starts the pipeline without requiring an EA loop."""
         state = _make_state()
         bus = EventBus()
 
@@ -3715,8 +3715,10 @@ class TestCeoTaskEAFallback:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 resp = await c.post("/api/ceo/task", data={"task": "Do something"})
 
-        assert resp.status_code == 503
-        assert "not available" in resp.json()["detail"]
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "processing"
+        assert data["project_id"] == "p1"
 
 
 # ---------------------------------------------------------------------------

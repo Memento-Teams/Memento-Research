@@ -576,7 +576,7 @@ async def ceo_submit_task(
 
     # Initialize task tree and start pipeline engine
     try:
-        from onemancompany.core.task_tree import TaskTree, evict_tree
+        from onemancompany.core.task_tree import TaskTree, evict_tree, register_tree
         from onemancompany.core.vessel import _save_project_tree
         from onemancompany.core.pipeline_engine import PipelineEngine
 
@@ -586,7 +586,7 @@ async def ceo_submit_task(
         if iter_id and tree_path.exists():
             from onemancompany.core.agent_loop import employee_manager
             from onemancompany.core.project_archive import load_named_project
-            meta = load_named_project(project_id) if project_id else {}
+            meta = (load_named_project(project_id) if project_id else {}) or {}
             iters = meta.get("iterations", [])
             if len(iters) >= 2:
                 prev_iter = iters[-2]
@@ -606,6 +606,7 @@ async def ceo_submit_task(
         ceo_root = tree.create_root(employee_id=CEO_ID, description=task)
         ceo_root.node_type = NodeType.CEO_PROMPT
         ceo_root.set_status(TaskPhase.PROCESSING)
+        register_tree(tree_path, tree)
         _save_project_tree(pdir, tree)
 
         # Create project conversation
