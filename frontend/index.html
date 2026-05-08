@@ -1,748 +1,1572 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ONE MAN COMPANY</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
-  <script defer src="https://cloud.umami.is/script.js" data-website-id="e72ced7e-c551-40a9-b60e-18bb7db0592f"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoResearch — OMC Research Lab v3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F5F3ED;--white:#FDFCFA;
+  --green:#245A40;--green-light:#367A56;--green-subtle:#E4EDE8;
+  --gold:#C5A55A;--gold-light:#D4B96E;--gold-subtle:#FAF5E8;
+  --coral:#B85C4A;--coral-subtle:#F6ECE8;
+  --text:#1A1A18;--text2:#3D3B36;--text3:#746144;--text4:#6B6560;
+  --border:#DDD9D0;--border-light:#EAE7E0;
+  --shadow-sm:0 1px 3px rgba(36,90,64,.04);
+  --shadow-md:0 4px 14px rgba(36,90,64,.07);
+  --shadow-lg:0 8px 28px rgba(36,90,64,.09);
+  --r:12px;--r-lg:16px;--pill:999px;
+  --serif:'Fraunces',serif;--sans:'DM Sans',sans-serif;--mono:'JetBrains Mono',monospace;
+}
+html{font-size:15px}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.6;-webkit-font-smoothing:antialiased}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+*:focus-visible{outline:2px solid var(--green);outline-offset:2px;border-radius:4px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:0.01ms!important;transition-duration:0.01ms!important}}
+
+.app{display:flex;height:100vh;overflow:hidden}
+
+/* ══ SIDEBAR ══ */
+.sidebar{width:272px;min-width:272px;background:var(--white);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+.sidebar-head{padding:20px 20px 0;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.brand-icon{width:34px;height:34px;background:var(--green);border-radius:9px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(36,90,64,.2)}
+.brand-icon svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2}
+.brand-name{font-family:var(--serif);font-size:1.15rem;font-weight:600;letter-spacing:-.02em}
+.lab-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--pill);background:var(--gold-subtle);border:1px solid var(--gold);font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);letter-spacing:.05em;text-transform:uppercase}
+
+/* Director */
+.director-card{margin:0 16px 16px;padding:14px;background:var(--green-subtle);border:1px solid var(--border);border-radius:var(--r);position:relative}
+.director-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green);border-radius:3px 0 0 3px}
+.director-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--green);margin-bottom:4px;font-weight:600}
+.director-name{font-family:var(--serif);font-size:1rem;font-weight:600;margin-bottom:2px}
+.director-status{font-size:.75rem;color:var(--text3)}
+
+/* Active agent status bar */
+.active-agent-bar{display:flex;align-items:center;gap:8px;padding:8px 16px;margin:0 0 8px;background:var(--green-subtle);border:1px solid var(--green);border-radius:var(--r);font-size:.78rem;font-weight:550;color:var(--green);position:sticky;top:0;z-index:10}
+.agent-pulse{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
+.active-agent-bar.reviewing{background:var(--gold-subtle);border-color:var(--gold);color:#8B7332}
+.active-agent-bar.reviewing .agent-pulse{background:var(--gold)}
+.conn-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:.7rem;color:var(--text4)}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
+.conn-status.connected .conn-dot{background:var(--green)}
+.conn-status.connected .conn-label{color:var(--green)}
+
+/* ── Pipeline Stages with Breakpoints ── */
+.section-label{font-family:var(--mono);font-size:.65rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text4);padding:0 20px;margin-bottom:8px}
+
+.stage-list{padding:0 12px;margin-bottom:16px}
+.stage-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--r);cursor:pointer;transition:background .12s;margin-bottom:1px;position:relative}
+.stage-row:hover{background:var(--bg)}
+.stage-row.active{background:var(--green-subtle)}
+
+/* Breakpoint toggle */
+.bp-toggle{width:14px;height:14px;border-radius:50%;border:2px solid var(--border);background:var(--white);cursor:pointer;transition:all .15s;flex-shrink:0;transition:all .15s;position:relative}
+.bp-toggle:hover{border-color:var(--coral)}
+.bp-toggle.set{background:var(--coral);border-color:var(--coral)}
+.bp-toggle.set::after{content:'';position:absolute;inset:2px;border-radius:50%;background:var(--white);width:4px;height:4px;margin:auto}
+
+/* Stage dot + connector */
+.stage-dot{width:10px;height:10px;border-radius:50%;background:var(--border);flex-shrink:0;transition:all .3s;border:2px solid var(--bg);box-shadow:0 0 0 1.5px var(--border)}
+.stage-dot.running{background:var(--green);box-shadow:0 0 0 1.5px var(--green),0 0 6px rgba(36,90,64,.3)}
+.stage-dot.done{background:var(--green);box-shadow:0 0 0 1.5px var(--green)}
+.stage-dot.paused{background:var(--gold);box-shadow:0 0 0 1.5px var(--gold)}
+.stage-dot.reviewing{background:var(--gold);box-shadow:0 0 0 1.5px var(--gold);animation:pulse-dot 1.5s ease-in-out infinite}
+.stage-dot.failed{background:var(--coral);box-shadow:0 0 0 1.5px var(--coral)}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.5}}
+
+.stage-info{flex:1;min-width:0}
+.stage-name{font-size:.8rem;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stage-meta{font-size:.68rem;color:var(--text4);font-family:var(--mono)}
+.stage-agent{width:100%;margin-top:2px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:.62rem;color:var(--text3);background:var(--white);cursor:pointer;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath d='M2 3l2 2 2-2' fill='none' stroke='%23746144' stroke-width='1'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 3px center;padding-right:14px}
+.stage-agent:focus{border-color:var(--green);outline:none}
+
+.stage-connector{width:1.5px;height:8px;background:var(--border);margin-left:27px}
+.stage-connector.done{background:var(--green)}
+
+/* Context menu on stage */
+.stage-actions{display:none;position:absolute;right:8px;top:50%;transform:translateY(-50%);gap:4px}
+.stage-row:hover .stage-actions{display:flex}
+.stage-act-btn{width:22px;height:22px;border-radius:4px;border:1px solid var(--border);background:var(--white);color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.6rem;transition:all .12s}
+.stage-act-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+.stage-act-btn.rerun:hover{border-color:var(--gold);color:var(--gold);background:var(--gold-subtle)}
+
+/* Projects list */
+.projects{margin-top:auto;padding:0 12px 16px;overflow-y:auto;max-height:40vh}
+.proj-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r);cursor:pointer;transition:background .12s;margin-bottom:2px;border:1.5px solid transparent}
+.proj-item:hover{background:var(--bg)}
+.proj-item.active{background:var(--green-subtle);border-color:var(--green)}
+.proj-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.proj-dot.running{background:var(--green);box-shadow:0 0 4px rgba(36,90,64,.3)}
+.proj-dot.paused{background:var(--gold)}
+.proj-dot.completed{background:var(--green)}
+.proj-dot.failed{background:var(--coral)}
+.proj-dot.pending{background:var(--border)}
+.proj-name{font-size:.78rem;color:var(--text2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proj-item.active .proj-name{color:var(--green);font-weight:600}
+.proj-status{font-size:.6rem;font-family:var(--mono);color:var(--text4);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.proj-empty{padding:12px 16px;font-size:.78rem;color:var(--text4);text-align:center}
+
+/* ══ MAIN ══ */
+.main{flex:1;overflow-y:auto;padding:36px 44px}
+
+.hero{max-width:660px;margin:0 auto 32px;text-align:center}
+.hero-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;background:var(--gold-subtle);border:1px solid var(--gold);color:var(--text3);font-size:.72rem;font-weight:600;border-radius:var(--pill);margin-bottom:18px}
+.hero h1{font-family:var(--serif);font-size:2.3rem;font-weight:700;line-height:1.15;letter-spacing:-.03em;margin-bottom:10px}
+.hero p{font-size:.95rem;color:var(--text3);max-width:460px;margin:0 auto;line-height:1.65}
+
+.input-card{background:var(--white);border-radius:var(--r-lg);box-shadow:var(--shadow-lg);padding:22px;max-width:660px;margin:0 auto 36px;border:1px solid var(--border-light)}
+.input-field{width:100%;border:1.5px solid var(--border);border-radius:var(--r);padding:13px 16px;font-family:var(--sans);font-size:.93rem;color:var(--text);background:var(--bg);outline:none;resize:vertical;min-height:54px;transition:border-color .2s,box-shadow .2s}
+.input-field:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(36,90,64,.1)}
+.input-field::placeholder{color:var(--text4)}
+.config-row{display:flex;align-items:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}
+.config-group{display:flex;flex-direction:column;gap:3px}
+.config-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);font-weight:600}
+.config-select{padding:10px 28px 10px 12px;min-height:44px;border:1.5px solid var(--border);border-radius:var(--pill);font-family:var(--sans);font-size:.8rem;color:var(--text2);background:var(--white) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 4l2.5 2.5 2.5-2.5' fill='none' stroke='%23746144' stroke-width='1.2'/%3E%3C/svg%3E") no-repeat right 10px center;appearance:none;outline:none;cursor:pointer}
+.btn-launch{margin-left:auto;padding:12px 24px;min-height:44px;background:var(--green);color:#fff;border:none;border-radius:var(--pill);font-family:var(--sans);font-size:.85rem;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-launch:hover{background:var(--green-light);box-shadow:0 4px 14px rgba(36,90,64,.25);transform:translateY(-1px)}
+.btn-launch:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* ══ STAGE STREAM ══ */
+.meetings{max-width:720px;margin:0 auto;overflow-y:auto;max-height:calc(100vh - 300px);padding:8px 0;scroll-behavior:smooth}
+
+/* Notice bar (system/director inline message) */
+.notice{display:flex;align-items:center;gap:8px;padding:6px 14px;margin:6px 0;font-size:.78rem;color:var(--text3);animation:fadeIn .3s ease}
+.notice .notice-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.notice .notice-dot.dot-info{background:var(--gold)}.notice .notice-dot.dot-error{background:var(--coral)}.notice .notice-dot.dot-ok{background:var(--green)}
+.notice .notice-text{flex:1;line-height:1.4}
+.notice .notice-time{font-family:var(--mono);font-size:.58rem;color:var(--text4);flex-shrink:0}
+.sc-body .notice{margin:0;padding:6px 16px;border-bottom:1px solid var(--border-light)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* Stage card wrapper — spine line on the left like a book binding */
+.stage-wrapper{display:flex;gap:0;position:relative;margin-bottom:0}
+.stage-wrapper .stage-line{width:20px;flex-shrink:0;position:relative}
+.stage-wrapper .stage-line::after{content:'';position:absolute;left:9px;top:0;bottom:0;width:2px;background:var(--border)}
+.stage-wrapper.sw-done .stage-line::after{background:var(--green)}
+.stage-wrapper.sw-active .stage-line::after{background:var(--green)}
+
+/* Stage card */
+.stage-card{flex:1;background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px;box-shadow:var(--shadow-sm);animation:fadeIn .4s ease}
+.stage-card.sc-active{border-color:var(--green);box-shadow:var(--shadow-md)}
+.stage-card.sc-error{border-color:var(--coral)}
+.stage-card.sc-done{border-color:var(--green-subtle)}
+
+.sc-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-light);background:var(--bg)}
+.sc-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;background:var(--green);flex-shrink:0}
+.sc-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
+.sc-title small{font-weight:400;color:var(--text3);margin-left:6px}
+.sc-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.sc-badge.badge-running{background:var(--gold-subtle);color:#8B7332}
+.sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
+.sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
+.sc-badge.badge-reviewing{background:var(--gold-subtle);color:#8B7332;animation:pulse-badge 1.5s ease-in-out infinite}
+@keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.6}}
+
+/* Content sections inside card */
+.sc-body{padding:0}
+.sc-section{padding:12px 16px;border-bottom:1px solid var(--border-light)}
+.sc-section:last-child{border-bottom:none}
+.sc-section-label{font-family:var(--mono);font-size:.58rem;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.sc-section-label.lbl-producer{color:var(--green)}
+.sc-section-label.lbl-critic{color:var(--coral)}
+.sc-section-label.lbl-system{color:var(--text4)}
+.sc-section-content{font-size:.82rem;line-height:1.7;color:var(--text2);word-break:break-word}
+.sc-section-content strong{color:var(--text);font-weight:600}
+.sc-section-content .error-text{color:var(--coral)}
+.sc-section-content h1{font-family:var(--serif);font-size:1.15rem;font-weight:700;margin:14px 0 6px;color:var(--text)}
+.sc-section-content h2{font-family:var(--serif);font-size:1rem;font-weight:600;margin:12px 0 5px;color:var(--text)}
+.sc-section-content h3{font-size:.9rem;font-weight:600;margin:10px 0 4px;color:var(--text)}
+.sc-section-content p{margin:0 0 8px}
+.sc-section-content ul,.sc-section-content ol{margin:0 0 8px;padding-left:18px}
+.sc-section-content li{margin-bottom:3px}
+.sc-section-content code{font-family:var(--mono);font-size:.78rem;background:var(--bg);padding:1px 4px;border-radius:3px;color:var(--green)}
+.sc-section-content pre{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:10px;margin:6px 0 10px;overflow-x:auto}
+.sc-section-content pre code{background:none;padding:0;font-size:.74rem;line-height:1.6}
+.sc-section-content blockquote{border-left:3px solid var(--gold);margin:6px 0;padding:3px 10px;color:var(--text3)}
+.sc-section-content table{width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:.78rem}
+.sc-section-content th,.sc-section-content td{border:1px solid var(--border-light);padding:5px 8px;text-align:left}
+.sc-section-content th{background:var(--bg);font-weight:600}
+.sc-section-content hr{border:none;border-top:1px solid var(--border-light);margin:12px 0}
+
+/* Confidence bar (inside card footer) */
+.sc-conf{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--bg)}
+.sc-conf-label{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
+.sc-conf-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
+.sc-conf-fill{height:100%;border-radius:2px;transition:width .6s}
+.sc-conf-fill.high{background:var(--green)}.sc-conf-fill.mid{background:var(--gold)}.sc-conf-fill.low{background:var(--coral)}
+.sc-conf-val{font-family:var(--mono);font-size:.72rem;font-weight:600;min-width:30px;text-align:right}
+.sc-conf-val.high{color:var(--green)}.sc-conf-val.mid{color:#8B7332}.sc-conf-val.low{color:var(--coral)}
+
+/* ══ ACTION PANEL (fixed at bottom) ══ */
+.action-panel{position:fixed;bottom:0;left:272px;right:320px;z-index:100;background:var(--white);border-top:2px solid var(--gold);box-shadow:0 -8px 32px rgba(0,0,0,.1);border-radius:var(--r-lg) var(--r-lg) 0 0;display:flex;flex-direction:column;max-height:50vh;overflow:hidden}
+@media(max-width:1100px){.action-panel{left:240px;right:280px}}
+@media(max-width:860px){.action-panel{left:0;right:0;border-radius:var(--r-lg) var(--r-lg) 0 0;max-height:60vh}.ap-tabs{overflow-x:auto;flex-wrap:nowrap}}
+
+.ap-header{display:flex;align-items:center;gap:8px;padding:12px 20px;background:var(--gold-subtle);border-bottom:1px solid var(--border-light)}
+.ap-title{font-family:var(--mono);font-size:.7rem;font-weight:600;color:#8B7332;text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:center;gap:6px;flex:1}
+.ap-title svg{width:14px;height:14px}
+.ap-approve{padding:8px 20px;border-radius:var(--pill);background:var(--green);color:#fff;border:none;font-family:var(--sans);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .12s;animation:btn-glow 2s ease-in-out infinite}
+.ap-approve:hover{background:var(--green-light);animation:none}
+.ap-approve:disabled{opacity:.5;cursor:not-allowed;animation:none}
+@keyframes btn-glow{0%,100%{box-shadow:0 0 0 0 rgba(36,90,64,.3)}50%{box-shadow:0 0 0 8px rgba(36,90,64,0)}}
+
+.ap-tabs{display:flex;border-bottom:1px solid var(--border-light);padding:0 16px;background:var(--bg)}
+.ap-tab{padding:10px 14px;font-family:var(--mono);font-size:.65rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text4);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .12s;white-space:nowrap}
+.ap-tab:hover{color:var(--text3)}
+.ap-tab.active{color:var(--text);border-bottom-color:var(--gold)}
+
+.ap-body{flex:1;overflow-y:auto;padding:16px 20px}
+
+/* Edit tab */
+.ap-editor{width:100%;min-height:120px;border:1.5px solid var(--border);border-radius:var(--r);padding:12px 14px;font-family:var(--sans);font-size:.85rem;line-height:1.7;color:var(--text);background:var(--white);outline:none;resize:vertical}
+.ap-editor:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(36,90,64,.1)}
+.ap-hint{font-family:var(--mono);font-size:.65rem;color:var(--text4);margin-top:6px}
+
+/* Instruct tab */
+.ap-instruct{width:100%;min-height:80px;border:1.5px solid var(--border);border-radius:var(--r);padding:12px 14px;font-family:var(--sans);font-size:.85rem;line-height:1.7;color:var(--text);background:var(--white);outline:none;resize:vertical}
+.ap-instruct:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(197,165,90,.15)}
+.ap-instruct-label{font-size:.82rem;color:var(--text2);margin-bottom:8px;line-height:1.5}
+.ap-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.ap-chip{padding:4px 12px;border-radius:var(--pill);border:1px solid var(--border);background:var(--white);font-size:.75rem;color:var(--text3);cursor:pointer;transition:all .12s}
+.ap-chip:hover{border-color:var(--gold);background:var(--gold-subtle);color:#8B7332}
+
+/* Override tab */
+.ap-override-card{display:flex;align-items:center;gap:12px;padding:12px;border:1.5px solid var(--border);border-radius:var(--r);margin-bottom:8px}
+.ap-override-info{flex:1}
+.ap-override-title{font-size:.85rem;font-weight:600;margin-bottom:2px}
+.ap-override-desc{font-size:.78rem;color:var(--text3)}
+.ap-override-btn{padding:6px 14px;border-radius:var(--pill);border:1.5px solid var(--coral);color:var(--coral);background:var(--white);font-size:.75rem;font-weight:600;cursor:pointer;transition:all .12s}
+.ap-override-btn:hover{background:var(--coral-subtle)}
+.ap-override-btn.active{background:var(--coral);color:#fff}
+
+/* Skip tab */
+.ap-skip-list{display:flex;flex-direction:column;gap:6px}
+.ap-skip-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r)}
+.ap-skip-name{flex:1;font-size:.85rem}
+.ap-skip-toggle{width:36px;height:20px;border-radius:10px;background:var(--border);border:none;cursor:pointer;position:relative;transition:background .2s}
+.ap-skip-toggle.on{background:var(--gold)}
+.ap-skip-toggle::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.ap-skip-toggle.on::after{left:18px}
+
+/* Artifacts tab */
+.ap-artifact{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px;cursor:pointer;transition:background .12s}
+.ap-artifact:hover{background:var(--bg)}
+.ap-artifact-icon{width:32px;height:32px;border-radius:8px;background:var(--green-subtle);display:flex;align-items:center;justify-content:center;color:var(--green);font-size:.75rem;font-weight:700}
+.ap-artifact-info{flex:1}
+.ap-artifact-name{font-size:.82rem;font-weight:550}
+.ap-artifact-meta{font-size:.7rem;color:var(--text4);font-family:var(--mono)}
+.ap-artifact-btn{padding:4px 10px;border-radius:var(--pill);border:1px solid var(--border);background:var(--white);font-size:.7rem;color:var(--text3);cursor:pointer}
+.ap-artifact-btn:hover{border-color:var(--green);color:var(--green)}
+
+/* Export tab */
+.ap-export-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ap-export-card{padding:14px;border:1.5px solid var(--border);border-radius:var(--r);cursor:pointer;transition:all .12s;text-align:center}
+.ap-export-card:hover{border-color:var(--green);background:var(--green-subtle)}
+.ap-export-icon{font-size:1.5rem;margin-bottom:6px}
+.ap-export-name{font-size:.82rem;font-weight:600;margin-bottom:2px}
+.ap-export-desc{font-size:.7rem;color:var(--text3)}
+
+/* Rejection trace */
+.minutes{margin:0 16px 12px;padding:10px 14px;border-radius:var(--r);border-left:3px solid var(--coral);background:var(--coral-subtle)}
+.minutes-head{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;color:var(--coral);margin-bottom:4px;font-weight:600}
+.minutes-body{font-size:.82rem;line-height:1.65;color:var(--text2)}
+
+.retry-banner{display:flex;align-items:center;gap:8px;margin:0 16px 12px;padding:8px 14px;border-radius:var(--r);background:var(--gold-subtle);border:1px solid var(--gold);font-size:.78rem;color:#8B7332}
+
+/* Typing cursor */
+.cursor{display:inline-block;width:5px;height:13px;background:var(--green);margin-left:2px;animation:blink .8s step-end infinite;vertical-align:text-bottom;border-radius:1px}
+.critic-col .cursor{background:var(--coral)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ══ RIGHT PANEL ══ */
+.right-panel{width:320px;min-width:320px;background:var(--white);border-left:1px solid var(--border);display:flex;flex-direction:column}
+.panel-tabs{display:flex;border-bottom:1px solid var(--border);padding:0 12px}
+.panel-tab{padding:14px 10px;min-height:44px;font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text4);cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;transition:all .12s}
+.panel-tab:hover{color:var(--text3)}
+.panel-tab.active{color:var(--text);border-bottom-color:var(--green)}
+.panel-body{flex:1;overflow-y:auto;padding:14px}
+.panel-section{display:none}.panel-section.active{display:block}
+
+/* Workspace file list */
+.ws-empty{padding:24px 16px;text-align:center;color:var(--text4);font-size:.82rem}
+.ws-file{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border-light);cursor:pointer;transition:background .12s;animation:fadeIn .3s ease}
+.ws-file:hover{background:var(--bg)}
+.ws-file:last-child{border-bottom:none}
+.ws-file-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;flex-shrink:0;font-family:var(--mono)}
+.ws-file-icon.ft-md{background:var(--green-subtle);color:var(--green)}
+.ws-file-icon.ft-py{background:#EDE8F5;color:#6B4FA0}
+.ws-file-icon.ft-json{background:var(--gold-subtle);color:#8B7332}
+.ws-file-icon.ft-txt{background:var(--bg);color:var(--text3)}
+.ws-file-icon.ft-other{background:var(--bg);color:var(--text4)}
+.ws-file-info{flex:1;min-width:0}
+.ws-file-name{font-size:.82rem;font-weight:550;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-file-meta{font-size:.68rem;color:var(--text4);font-family:var(--mono);display:flex;gap:8px}
+.ws-file-badge{padding:2px 6px;border-radius:var(--pill);font-family:var(--mono);font-size:.55rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.ws-file-badge.new{background:var(--green-subtle);color:var(--green)}
+.ws-file-badge.updated{background:var(--gold-subtle);color:#8B7332}
+
+/* File preview overlay */
+.ws-preview{position:fixed;top:0;right:0;width:480px;height:100vh;background:var(--white);border-left:1px solid var(--border);box-shadow:-4px 0 24px rgba(0,0,0,.08);z-index:200;display:flex;flex-direction:column;animation:slideIn .2s ease}
+@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+.ws-preview-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
+.ws-preview-title{flex:1;font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-preview-actions{display:flex;gap:4px}
+.ws-preview-btn{height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border);background:var(--white);cursor:pointer;font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);display:flex;align-items:center;gap:4px;transition:all .12s}
+.ws-preview-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+.ws-preview-btn.btn-close:hover{border-color:var(--coral);color:var(--coral);background:var(--coral-subtle)}
+.ws-preview-btn .btn-ok{color:var(--green);font-size:.7rem}
+.ws-preview-body{flex:1;overflow-y:auto;padding:16px}
+/* Raw code view */
+.ws-preview-body.view-raw{font-family:var(--mono);font-size:.78rem;line-height:1.7;color:var(--text2);white-space:pre-wrap;word-break:break-word}
+/* Rendered markdown view */
+.ws-preview-body.view-md{font-family:var(--sans);font-size:.85rem;line-height:1.8;color:var(--text)}
+.ws-preview-body.view-md h1{font-family:var(--serif);font-size:1.3rem;font-weight:700;margin:20px 0 8px;color:var(--text)}
+.ws-preview-body.view-md h2{font-family:var(--serif);font-size:1.1rem;font-weight:600;margin:16px 0 6px;color:var(--text)}
+.ws-preview-body.view-md h3{font-size:.95rem;font-weight:600;margin:12px 0 4px;color:var(--text)}
+.ws-preview-body.view-md p{margin:0 0 10px}
+.ws-preview-body.view-md ul,.ws-preview-body.view-md ol{margin:0 0 10px;padding-left:20px}
+.ws-preview-body.view-md li{margin-bottom:4px}
+.ws-preview-body.view-md code{font-family:var(--mono);font-size:.8rem;background:var(--bg);padding:1px 5px;border-radius:4px;color:var(--green)}
+.ws-preview-body.view-md pre{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:12px;margin:8px 0 12px;overflow-x:auto}
+.ws-preview-body.view-md pre code{background:none;padding:0;font-size:.76rem;line-height:1.6}
+.ws-preview-body.view-md blockquote{border-left:3px solid var(--gold);margin:8px 0;padding:4px 12px;color:var(--text3)}
+.ws-preview-body.view-md table{width:100%;border-collapse:collapse;margin:8px 0 12px;font-size:.8rem}
+.ws-preview-body.view-md th,.ws-preview-body.view-md td{border:1px solid var(--border-light);padding:6px 10px;text-align:left}
+.ws-preview-body.view-md th{background:var(--bg);font-weight:600}
+.ws-preview-body.view-md strong{color:var(--text);font-weight:600}
+.ws-preview-body.view-md hr{border:none;border-top:1px solid var(--border-light);margin:16px 0}
+
+/* ══ FLOATING CHAT DIALOG ══ */
+.chat-dialog{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);width:560px;max-width:calc(100vw - 600px);background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-lg),0 0 0 1px rgba(36,90,64,.05);z-index:300;display:flex;flex-direction:column;max-height:420px;animation:chatSlideUp .25s ease}
+@keyframes chatSlideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.chat-dialog-head{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border-light);border-radius:var(--r-lg) var(--r-lg) 0 0}
+.chat-dialog-avatar{width:26px;height:26px;border-radius:7px;background:var(--gold);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;flex-shrink:0}
+.chat-dialog-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
+.chat-dialog-title small{font-weight:400;color:var(--text3);margin-left:6px;font-size:.72rem}
+.chat-dialog-close{width:24px;height:24px;border-radius:6px;border:none;background:none;cursor:pointer;color:var(--text4);font-size:.9rem;display:flex;align-items:center;justify-content:center;transition:all .12s}
+.chat-dialog-close:hover{background:var(--coral-subtle);color:var(--coral)}
+.chat-dialog-messages{flex:1;overflow-y:auto;padding:12px 16px;min-height:80px;max-height:260px}
+.chat-msg{margin-bottom:10px;display:flex;gap:8px;animation:fadeIn .2s ease}
+.chat-msg.from-agent{justify-content:flex-start}
+.chat-msg.from-user{justify-content:flex-end}
+.chat-bubble{max-width:85%;padding:8px 12px;border-radius:10px;font-size:.82rem;line-height:1.6;color:var(--text)}
+.chat-msg.from-agent .chat-bubble{background:var(--bg);border:1px solid var(--border-light);border-bottom-left-radius:3px}
+.chat-msg.from-user .chat-bubble{background:var(--green-subtle);border:1px solid var(--green-subtle);border-bottom-right-radius:3px;color:var(--green)}
+.chat-bubble .chat-sender{font-family:var(--mono);font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text4);margin-bottom:2px}
+.chat-msg.from-user .chat-bubble .chat-sender{color:var(--green)}
+.chat-dialog-input{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--white);border-radius:0 0 var(--r-lg) var(--r-lg)}
+.chat-dialog-input input{flex:1;border:1.5px solid var(--border);border-radius:var(--pill);padding:8px 14px;font-family:var(--sans);font-size:.82rem;color:var(--text);background:var(--bg);outline:none;transition:border-color .15s}
+.chat-dialog-input input:focus{border-color:var(--green);box-shadow:0 0 0 2px rgba(36,90,64,.08)}
+.chat-dialog-input input::placeholder{color:var(--text4)}
+.chat-dialog-send{padding:8px 16px;border-radius:var(--pill);background:var(--green);color:#fff;border:none;font-family:var(--sans);font-size:.8rem;font-weight:600;cursor:pointer;transition:all .12s;white-space:nowrap}
+.chat-dialog-send:hover{background:var(--green-light)}
+.chat-dialog-send:disabled{opacity:.4;cursor:not-allowed}
+.chat-dialog-badge{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--coral);color:#fff;font-size:.6rem;font-weight:700;display:flex;align-items:center;justify-content:center;animation:pulse .8s ease-in-out 3}
+
+/* Responsive */
+@media(max-width:1100px){.right-panel{width:280px;min-width:280px}.sidebar{width:240px;min-width:240px}.chat-dialog{max-width:calc(100vw - 540px)}}
+@media(max-width:860px){
+  .app{flex-direction:column;height:auto;min-height:100vh}
+  .sidebar{width:100%;min-width:auto;border-right:none;border-bottom:1px solid var(--border);padding:16px;flex-direction:row;flex-wrap:wrap;gap:12px}
+  .sidebar-head{margin-bottom:0;padding:0;display:flex;align-items:center;gap:12px;width:100%}
+  .brand{margin-bottom:0}.director-card,.section-label{display:none}
+  .stage-list{display:flex;flex-wrap:wrap;gap:4px;padding:0;margin-bottom:0}
+  .stage-row{padding:6px 10px;border-radius:var(--pill);background:var(--bg);gap:4px}
+  .stage-connector,.bp-toggle,.stage-actions,.stage-meta{display:none}
+  .recent{display:none}
+  .main{padding:20px 16px}
+  .hero h1{font-size:1.8rem}
+  .right-panel{width:100%;min-width:auto;border-left:none;border-top:1px solid var(--border);max-height:300px}
+  .meeting-body{grid-template-columns:1fr}
+  .meeting-col+.meeting-col{border-left:none;border-top:1px solid var(--border-light)}
+  .chat-dialog{width:calc(100vw - 24px);max-width:calc(100vw - 24px);bottom:12px}
+}
+</style>
 </head>
 <body>
-  <div id="app" role="application" aria-label="One Man Company CEO Console">
-    <!-- Left top: Products & Projects -->
-    <aside id="left-top-panel" aria-label="Products">
-      <div class="collapsible-header" data-target="projects-panel-body">
-        <span class="collapse-arrow">&#9660;</span>
-        <h3 class="pixel-title">PRODUCTS</h3>
-        <button id="create-product-btn" class="panel-add-btn" title="New Product" aria-label="New Product">+</button>
-        <button id="import-product-btn" class="panel-add-btn" title="Import Product" aria-label="Import Product">&#8593;</button>
+<div class="app">
+  <!-- ══ SIDEBAR ══ -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="brand">
+        <div class="brand-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+        <span class="brand-name">AutoResearch</span>
       </div>
-      <div id="projects-panel-body" class="collapsible-body">
-        <div id="projects-panel-list"></div>
-      </div>
-    </aside>
+      <div class="lab-badge"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> OMC Research Lab</div>
+    </div>
 
-    <!-- Left bottom: Activity Log -->
-    <aside id="left-bottom-panel" aria-label="Activity Log">
-      <div class="collapsible-header" data-target="activity-body">
-        <span class="collapse-arrow">&#9660;</span>
-        <h3 class="pixel-title">ACTIVITY LOG</h3>
-      </div>
-      <div id="activity-body" class="collapsible-body collapsible-flex">
-        <div id="activity-log" style="background:#0a0a0a;flex:1"></div>
-      </div>
-    </aside>
+    <div class="director-card">
+      <div class="director-label">Research Director</div>
+      <div class="director-name">Dr. Pipeline</div>
+      <div class="director-status" id="dirStatus">Idle</div>
+      <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
+    </div>
 
-    <!-- Center top: Office Canvas -->
-    <main id="office-panel">
-      <div class="panel-header">
-        <h1 class="pixel-title">&#127970; ONE MAN COMPANY <span id="app-version" class="version-badge"></span></h1>
-        <div id="status-bar">
-          <span class="status-item" id="employee-count">&#128101; 2</span>
-          <span class="status-item status-clickable" id="tool-count" onclick="window.app.openToolList()">&#128295; 0</span>
-          <span class="status-item" id="room-count">&#127970; 0/0</span>
-          <!-- Meeting moved to /meeting slash command in CEO console -->
-          <button id="ex-employee-toolbar-btn" class="toolbar-icon-btn" title="Ex-Employee Wall" aria-label="Ex-Employee Wall">&#128220;</button>
-          <button id="company-culture-toolbar-btn" class="toolbar-icon-btn" title="Company Culture" aria-label="Company Culture">&#127988;</button>
-          <button id="company-direction-toolbar-btn" class="toolbar-icon-btn" title="Company Direction" aria-label="Company Direction">&#127919;</button>
-          <button id="dashboard-toolbar-btn" class="toolbar-icon-btn" title="Dashboard" aria-label="Dashboard">&#128202;</button>
-          <button id="announcements-toolbar-btn" class="toolbar-icon-btn" title="Announcements" aria-label="Announcements" style="position:relative;">&#128276;<span id="announcements-badge" class="announcement-badge hidden"></span></button>
-          <button id="settings-toolbar-btn" class="toolbar-icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
-          <span class="status-item" id="connection-status" role="status" aria-live="polite">&#9679; OFFLINE</span>
-          <span class="status-item" id="last-sync-time"></span>
+    <div class="section-label">Pipeline Stages</div>
+    <div class="stage-list" id="stageList"></div>
+
+    <div class="projects">
+      <div class="section-label">Projects</div>
+      <div id="projectList"><div class="proj-empty">No projects yet</div></div>
+    </div>
+  </aside>
+
+  <!-- ══ MAIN ══ -->
+  <main class="main">
+    <div id="heroSection">
+      <div class="hero">
+        <div class="hero-pill"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> Adversarial Research Pipeline</div>
+        <h1>What should we investigate?</h1>
+        <p>Describe a research direction. Set breakpoints on stages where you want to review and intervene before the pipeline continues.</p>
+      </div>
+      <div class="input-card">
+        <textarea class="input-field" id="topicInput" placeholder="e.g. Explore whether combining sparse attention with mixture-of-experts routing can achieve sub-quadratic scaling..." rows="2"></textarea>
+        <div class="config-row">
+          <div class="config-group"><label class="config-label">Model</label><select class="config-select"><option>Claude Opus 4.6</option><option>GPT-4o</option><option>DeepSeek R1</option></select></div>
+          <div class="config-group"><label class="config-label">Template</label><select class="config-select"><option>NeurIPS 2026</option><option>ICML 2026</option><option>arXiv</option></select></div>
+          <div class="config-group"><label class="config-label">Critic</label><select class="config-select"><option>Strict</option><option>Balanced</option><option>Gentle</option></select></div>
+          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}">Launch Pipeline</button>
         </div>
       </div>
-      <canvas id="office-canvas" width="640" height="480" aria-label="Office floor plan" role="img"></canvas>
-      <div id="tooltip" class="tooltip hidden"></div>
-    </main>
+    </div>
+    <div class="active-agent-bar" id="activeAgentBar" style="display:none">
+      <span class="agent-pulse"></span>
+      <span class="agent-bar-label" id="activeAgentLabel">Idle</span>
+    </div>
+    <div class="meetings" id="meetingsArea"></div>
+  </main>
 
-    <!-- Right top: Team Roster -->
-    <aside id="roster-panel" aria-label="Team Roster">
-      <div class="collapsible-header" data-target="roster-body">
-        <span class="collapse-arrow">&#9660;</span>
-        <h3 class="pixel-title">TEAM ROSTER</h3>
-      </div>
-      <div id="roster-body" class="collapsible-body">
-        <div id="roster-filters" class="roster-filters">
-          <select id="roster-filter-role" class="roster-filter-select"><option value="">All Roles</option></select>
-          <select id="roster-filter-dept" class="roster-filter-select"><option value="">All Departments</option></select>
-          <select id="roster-filter-level" class="roster-filter-select"><option value="">All Levels</option></select>
-        </div>
-        <div id="roster-list"></div>
-      </div>
-    </aside>
-
-    <!-- Bottom spanning center+right: CEO Console -->
-    <div id="console-panel">
-      <div class="collapsible-header" data-target="ceo-body">
-        <span class="collapse-arrow">&#9660;</span>
-        <h2 class="pixel-title">CEO CONSOLE</h2>
-      </div>
-      <div id="ceo-body" class="collapsible-body collapsible-flex">
-        <div id="ceo-avatar-area">
-          <img id="ceo-avatar" width="32" height="32" src="/api/employees/00001/avatar" onerror="this.style.display='none'" />
-          <span class="ceo-label">&#128081; YOU</span>
-          <button id="dnd-toggle-btn" class="toolbar-icon-btn" title="Do Not Disturb" aria-label="Do Not Disturb">&#127769;</button>
-          <button id="bg-tasks-toolbar-btn" class="toolbar-icon-btn" title="Background Tasks" aria-label="Background Tasks">&#9641;</button>
-          <button id="screenshot-toolbar-btn" class="toolbar-icon-btn" title="Export SVG Screenshot" aria-label="Export SVG Screenshot">&#128247;</button>
-          <button id="abort-all-toolbar-btn" class="toolbar-icon-btn" title="Stop All Tasks" aria-label="Stop All Tasks" style="color: #ff4444;">&#9888;</button>
-          <button id="reload-toolbar-btn" class="reload-btn" title="Force reload all data from disk" aria-label="Force reload all data from disk">&#128260;</button>
-        </div>
-        <div id="ceo-split">
-          <div id="ceo-project-list">
-            <div id="ceo-chat-btn" class="ceo-nav-btn active" title="Chat with EA">&#128172; Chat</div>
-            <div class="ceo-section-header">Projects</div>
-            <div id="ceo-projects-section"></div>
-            <div id="ceo-oneonone-section">
-              <div class="ceo-section-header" id="ceo-oneonone-toggle">
-                <span class="ceo-section-arrow">&#9660;</span> 1-on-1
-              </div>
-              <div id="ceo-oneonone-items"></div>
-            </div>
-          </div>
-          <div id="ceo-list-toggle" title="Toggle project list">&#9664;</div>
-          <div id="ceo-conv-panel">
-            <div id="ceo-conv-messages"></div>
-            <div id="ceo-typing-indicator" class="hidden">
-              <span class="ceo-typing-dot"></span>
-              <span class="ceo-typing-dot"></span>
-              <span class="ceo-typing-dot"></span>
-            </div>
-            <div id="ceo-conv-input-area">
-              <div id="ceo-product-row">
-                <select id="ceo-product-select" title="Link task to product">
-                  <option value="">No Product</option>
-                </select>
-              </div>
-              <div id="ceo-conv-input-row">
-                <textarea id="ceo-conv-input" placeholder="$ Type message, / for commands (Enter to send)" rows="1" aria-label="CEO message input"></textarea>
-                <input type="file" id="ceo-file-input" multiple hidden />
-              </div>
-              <div id="ceo-slash-menu" class="hidden"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Unified Conversation Chat (replaces CEO Console when active) -->
-      <div id="right-panel-chat" class="hidden"></div>
+  <!-- ══ RIGHT PANEL — WORKSPACE ══ -->
+  <div class="right-panel">
+    <div class="panel-tabs">
+      <button class="panel-tab active">Workspace</button>
+    </div>
+    <div class="panel-body" id="workspacePanel">
+      <div class="ws-empty" id="wsEmpty">No files yet. Agent outputs will appear here as they write deliverables.</div>
+      <div id="wsFileList"></div>
     </div>
   </div>
+</div>
 
-  <!-- Settings Floating Panel (positioned via JS) -->
-  <div id="settings-floating-panel" class="floating-panel hidden">
-    <div class="floating-panel-header">
-      <span>&#9881; SETTINGS</span>
-      <button class="floating-panel-close" onclick="document.getElementById('settings-floating-panel').classList.add('hidden')">&#10005;</button>
-    </div>
-    <div class="floating-panel-body">
-      <div class="settings-section-header" data-target="settings-api-body">
-        <span class="settings-collapse-arrow">&#9654;</span>
-        <span class="settings-section-title">&#128273; API Connections</span>
+<script>
+const STAGES = [
+  {id:1,name:'Topic Refinement',talent:'topic-refiner',skill:'topic-refinement',bp:false,assignee:null},
+  {id:2,name:'Literature Survey',talent:'lit-surveyor',skill:'literature-survey',bp:false,assignee:null},
+  {id:3,name:'Idea Generation',talent:'idea-gen',skill:'idea-generation',bp:true,assignee:null},
+  {id:4,name:'Methodology Design',talent:'method',skill:'methodology-design',bp:false,assignee:null},
+  {id:5,name:'Experiment Design',talent:'exp-design',skill:'experiment-design',bp:false,assignee:null},
+  {id:6,name:'Auto Experiment',talent:'experimentalist',skill:'auto-experiment',bp:false,assignee:null},
+  {id:7,name:'Result Analysis',talent:'analyst',skill:'result-analysis',bp:false,assignee:null},
+  {id:8,name:'Paper Generation',talent:'paper-writer',skill:'paper-generation',bp:false,assignee:null},
+  {id:9,name:'Self-Review',talent:'reviewer',skill:'self-review',bp:true,assignee:null},
+];
+
+let startTime=null, paused=false, pauseResolve=null;
+
+// ══ PROJECT MANAGEMENT ══
+// Each project stores its own stage cards HTML, workspace files, and pipeline state.
+const _projects = new Map(); // projectId → { sessionId, task, status, stagesHtml, wsFiles, stageStates, controllerState }
+let _activeProjectId = null;
+
+function _getProject(pid) {
+  if (!_projects.has(pid)) {
+    _projects.set(pid, {
+      sessionId: pid,
+      task: '',
+      status: 'pending',
+      stagesHtml: '',
+      wsFiles: new Map(),
+      stageStates: {}, // stageId → 'pending'|'running'|'done'|'paused'|'failed'
+      currentCard: null,
+      controllerState: null, // { currentStage, stageCardIds, pausedStageId }
+    });
+  }
+  return _projects.get(pid);
+}
+
+function switchProject(pid) {
+  if (_activeProjectId === pid) return;
+
+  const ctrl = window._controller;
+
+  // Save current state
+  if (_activeProjectId) {
+    const prev = _getProject(_activeProjectId);
+    const area = document.getElementById('meetingsArea');
+    prev.stagesHtml = area.innerHTML;
+    prev.wsFiles = new Map(_wsFiles);
+    prev.currentCard = _currentCard ? _currentCard.id : null;
+    // Save pipeline-controller state
+    if (ctrl) {
+      prev.controllerState = {
+        currentStage: ctrl.currentStage,
+        stageCardIds: { ...ctrl.stageCardIds },
+        pausedStageId: ctrl.pausedStageId || null,
+      };
+    }
+    // Save stage dot states
+    STAGES.forEach(s => {
+      const dot = document.getElementById('sd-' + s.id);
+      if (dot) prev.stageStates[s.id] = dot.className.replace('stage-dot ', '').trim() || 'pending';
+    });
+  }
+
+  _activeProjectId = pid;
+  window._currentProjectId = pid.split('/')[0];
+  window._currentSessionId = pid;
+
+  const proj = _getProject(pid);
+  const area = document.getElementById('meetingsArea');
+
+  // Restore stage cards
+  area.innerHTML = proj.stagesHtml || '';
+  // Re-query _currentCard from DOM — stored as ID string, DOM nodes are new after innerHTML
+  _currentCard = null;
+  if (proj.currentCard) _currentCard = document.getElementById(proj.currentCard);
+  if (!_currentCard) {
+    const actives = area.querySelectorAll('.stage-card.sc-active');
+    if (actives.length) _currentCard = actives[actives.length - 1];
+  }
+
+  // Restore pipeline-controller state
+  if (ctrl) {
+    if (proj.controllerState) {
+      ctrl.currentStage = proj.controllerState.currentStage;
+      ctrl.stageCardIds = { ...proj.controllerState.stageCardIds };
+      ctrl.pausedStageId = proj.controllerState.pausedStageId;
+    } else {
+      ctrl.currentStage = null;
+      ctrl.stageCardIds = {};
+      ctrl.pausedStageId = null;
+    }
+  }
+
+  // Restore workspace files
+  _wsFiles.clear();
+  for (const [k, v] of proj.wsFiles) _wsFiles.set(k, v);
+  _renderWorkspace();
+
+  // Restore sidebar stage dots
+  STAGES.forEach(s => {
+    const st = proj.stageStates[s.id] || '';
+    if (st) setStage(s.id, st);
+    else setStage(s.id, 'pending');
+  });
+
+  // Update active indicator in project list
+  document.querySelectorAll('.proj-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.pid === pid);
+  });
+
+  // Hide hero if project is active
+  const hero = document.getElementById('heroSection');
+  if (hero && proj.stagesHtml) hero.style.display = 'none';
+  else if (hero && !proj.stagesHtml) hero.style.display = '';
+
+  document.getElementById('dirStatus').textContent = proj.status === 'completed' ? 'Completed' : 'Pipeline running...';
+
+  // Replay any buffered events that arrived while this project was in the background
+  if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
+}
+
+function renderProjectList(projects) {
+  const el = document.getElementById('projectList');
+  if (!projects || projects.length === 0) {
+    // Fall back to locally tracked projects
+    _renderProjectSidebar();
+    return;
+  }
+  el.innerHTML = projects.map(p => {
+    const pid = p.project_id;
+    const name = (p.task || p.name || pid).slice(0, 60);
+    const st = p.latest_iter_status || p.status || 'pending';
+    const dotClass = st === 'processing' ? 'running' : st === 'completed' ? 'completed' : st === 'failed' ? 'failed' : st === 'archived' ? 'completed' : 'pending';
+    const isActive = pid === _activeProjectId || (_activeProjectId && _activeProjectId.startsWith(pid + '/'));
+    // Store project info — use the session ID if this project is already tracked with one
+    let trackPid = pid;
+    for (const [existingPid] of _projects) {
+      if (existingPid.startsWith(pid + '/')) { trackPid = existingPid; break; }
+    }
+    const proj = _getProject(trackPid);
+    proj.task = p.task || p.name || '';
+    proj.status = st;
+    const clickPid = trackPid.replace(/'/g, "\\'");
+    return `<div class="proj-item${isActive ? ' active' : ''}" data-pid="${trackPid}" onclick="switchProject('${clickPid}')">
+      <div class="proj-dot ${dotClass}"></div>
+      <div class="proj-name" title="${_escHtml(p.task || p.name || '')}">${_escHtml(name)}</div>
+    </div>`;
+  }).join('');
+}
+
+// Ensure events route to the correct project's view
+function _routeToProject(projectId) {
+  if (!projectId) return;
+  // Extract base project ID from context IDs like "abc123/iter_001"
+  const basePid = projectId.split('/')[0];
+  // Find matching project — if it exists, don't auto-switch (buffering handles it)
+  for (const [pid] of _projects) {
+    if (pid === projectId || pid.startsWith(basePid) || projectId.startsWith(pid.split('/')[0])) {
+      return; // Already tracked — main.js event handler decides whether to process or buffer
+    }
+  }
+  // No matching project found — auto-create and set as active only if no project is active
+  const proj = _getProject(projectId);
+  proj.status = 'processing';
+  if (!_activeProjectId) {
+    _activeProjectId = projectId;
+    window._currentProjectId = basePid;
+    window._currentSessionId = projectId;
+    document.getElementById('heroSection').style.display = 'none';
+  }
+  // Update sidebar project list
+  _renderProjectSidebar();
+}
+
+function _renderProjectSidebar() {
+  const el = document.getElementById('projectList');
+  if (_projects.size === 0) {
+    el.innerHTML = '<div class="proj-empty">No projects yet</div>';
+    return;
+  }
+  let html = '';
+  for (const [pid, proj] of _projects) {
+    const name = (proj.task || pid).slice(0, 60);
+    const isActive = pid === _activeProjectId;
+    const st = proj.status || 'pending';
+    const dotClass = st === 'processing' ? 'running' : st === 'completed' ? 'completed' : st === 'failed' ? 'failed' : 'pending';
+    const clickPid = pid.replace(/'/g, "\\'");
+    html += `<div class="proj-item${isActive ? ' active' : ''}" data-pid="${pid}" onclick="switchProject('${clickPid}')">
+      <div class="proj-dot ${dotClass}"></div>
+      <div class="proj-name" title="${_escHtml(proj.task || pid)}">${_escHtml(name)}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// Expose globally for ES module (main.js) access
+window.switchProject = switchProject;
+window.renderProjectList = renderProjectList;
+window._getProject = _getProject;
+window._routeToProject = _routeToProject;
+window._renderProjectSidebar = _renderProjectSidebar;
+window._projects = _projects;
+Object.defineProperty(window, '_activeProjectId', {
+  get() { return _activeProjectId; },
+  set(v) { _activeProjectId = v; },
+});
+
+function renderStages(){
+  const el=document.getElementById('stageList');
+  el.innerHTML=STAGES.map((s,i)=>`
+    <div class="stage-row" data-id="${s.id}" id="sr-${s.id}">
+      <div class="bp-toggle ${s.bp?'set':''}" title="Toggle breakpoint" onclick="event.stopPropagation();toggleBP(${s.id})"></div>
+      <div class="stage-dot" id="sd-${s.id}"></div>
+      <div class="stage-info">
+        <div class="stage-name">${s.name}</div>
+        <select class="stage-agent" id="sa-${s.id}" onchange="assignAgent(${s.id},this.value)" onclick="event.stopPropagation()">
+          <option value="">Auto</option>
+        </select>
+        <div class="stage-meta" id="sm-${s.id}" style="display:none">Pending</div>
       </div>
-      <div id="settings-api-body" class="settings-section-body">
-        <div id="api-settings-content"></div>
-      </div>
-      <div class="settings-section-header" data-target="settings-crons-body">
-        <span class="settings-collapse-arrow">&#9654;</span>
-        <span class="settings-section-title">&#9200; System Crons</span>
-      </div>
-      <div id="settings-crons-body" class="settings-section-body collapsed">
-        <div id="system-crons-content"></div>
-      </div>
-      <div class="settings-section-header" data-target="settings-display-body">
-        <span class="settings-collapse-arrow">&#9654;</span>
-        <span class="settings-section-title">&#128065; Display</span>
-      </div>
-      <div id="settings-display-body" class="settings-section-body collapsed">
-        <div style="padding: 8px;">
-          <label style="color: #aaa; font-size: 10px; display: block; margin-bottom: 6px;">Text Size</label>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="color: #888; font-size: 8px;">A</span>
-            <input type="range" id="font-boost-slider" min="0" max="9" value="2" step="1" style="flex: 1; accent-color: var(--pixel-cyan);" />
-            <span style="color: #888; font-size: 14px; font-weight: bold;">A</span>
-            <span id="font-boost-label" style="color: var(--pixel-cyan); font-size: 10px; min-width: 30px;">+2px</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Announcements Panel -->
-  <div id="announcements-panel" class="floating-panel hidden" style="right: 120px; top: 36px; left: auto; width: 380px; max-height: 480px;">
-    <div class="floating-panel-header">
-      <span>&#128276; Announcements</span>
-      <button class="floating-panel-close" onclick="document.getElementById('announcements-panel').classList.add('hidden')">&#10005;</button>
-    </div>
-    <div class="floating-panel-body" id="announcements-list" style="overflow-y: auto; max-height: 420px; padding: 8px;">
-      <div style="color: #666; font-size: 10px; text-align: center; padding: 20px 0;">Loading...</div>
-    </div>
-  </div>
-
-  <!-- 1-on-1 Meeting Modal (conversational chat) -->
-  <div id="oneonone-modal" class="modal-overlay hidden">
-    <div class="modal-content oneonone-modal-content">
-      <!-- Phase 1: Select meeting type + employee -->
-      <div id="oneonone-setup" class="oneonone-phase">
-        <div class="modal-header">
-          <h3 class="pixel-title">&#127891; Meeting</h3>
-          <button id="oneonone-close-btn" class="modal-close">&#10005;</button>
-        </div>
-        <div class="modal-body" style="flex-direction:column;padding:12px;">
-          <label class="guidance-label">Meeting Type:</label>
-          <select id="meeting-type-select">
-            <option value="oneonone">1-on-1 Meeting</option>
-            <option value="all_hands">All-Hands (CEO Address)</option>
-            <option value="discussion">Discussion (Open Floor)</option>
-          </select>
-          <div id="oneonone-employee-select-row">
-            <label class="guidance-label" style="margin-top:8px;">Select Employee:</label>
-            <select id="oneonone-target">
-              <option value="">-- Select Employee --</option>
-            </select>
-          </div>
-          <button id="oneonone-start-btn" class="pixel-btn guidance" disabled style="margin-top:10px;">&#127891; Start Meeting</button>
-        </div>
-      </div>
-      <!-- Phase 2: Chat -->
-      <div id="oneonone-chat-phase" class="oneonone-phase hidden">
-        <div class="modal-header">
-          <h3 class="pixel-title" id="oneonone-chat-title">&#127891; 1-on-1 Meeting</h3>
-          <button id="oneonone-close-btn2" class="modal-close">&#10005;</button>
-        </div>
-        <div class="chat-container">
-          <div id="oneonone-chat" class="chat-messages"></div>
-          <div id="oneonone-typing" class="chat-typing hidden">
-            <div class="typing-avatar">&#129302;</div>
-            <div class="typing-dots"><span></span><span></span><span></span></div>
-          </div>
-        </div>
-        <div id="oneonone-preview-bar" class="chat-preview-bar hidden"></div>
-        <div class="chat-input-area">
-          <label class="chat-attach-btn" title="Attach file or image">
-            <input type="file" id="oneonone-file-input" multiple hidden />
-            &#128206;
-          </label>
-          <textarea id="oneonone-input" class="chat-textarea" placeholder="Type a message..." rows="1"></textarea>
-          <button id="oneonone-send-btn" class="chat-send-btn" title="Send">&#9654;</button>
-        </div>
-        <div class="oneonone-actions">
-          <button id="oneonone-end-btn" class="pixel-btn secondary">&#128308; End Meeting</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Employee Detail Modal -->
-  <div id="employee-modal" class="modal-overlay hidden">
-    <div class="modal-content employee-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title" id="emp-modal-title">Employee Details</h3>
-        <button id="employee-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body employee-modal-body">
-        <div class="emp-detail-grid">
-          <!-- Left: Status (compact) + Work Principles + 1-on-1 Notes -->
-          <div class="emp-detail-col emp-detail-left">
-            <div class="employee-avatar-section" id="emp-detail-avatar-section">
-              <img id="emp-detail-avatar" class="employee-avatar" alt="AI employee avatar" />
-              <label class="avatar-upload-btn">
-                Upload Avatar
-                <input type="file" accept="image/png,image/jpeg" style="display:none" id="emp-avatar-upload-input" />
-              </label>
-            </div>
-            <div class="emp-detail-status-card">
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">#</span>
-                <span class="emp-detail-value" id="emp-detail-number"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Name</span>
-                <span class="emp-detail-value" id="emp-detail-name"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Nickname</span>
-                <span class="emp-detail-value" id="emp-detail-nickname"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Dept</span>
-                <span class="emp-detail-value" id="emp-detail-department"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Role</span>
-                <span class="emp-detail-value" id="emp-detail-role"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Level</span>
-                <span class="emp-detail-value" id="emp-detail-level"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Skills</span>
-                <span class="emp-detail-value" id="emp-detail-skills"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Perms</span>
-                <span class="emp-detail-value" id="emp-detail-permissions"></span>
-              </div>
-              <div class="emp-detail-row">
-                <span class="emp-detail-label">Salary</span>
-                <span class="emp-detail-value" id="emp-detail-salary"></span>
-              </div>
-              <div class="emp-detail-row perf-row">
-                <span class="emp-detail-label">Perf</span>
-                <div class="emp-detail-value" id="emp-detail-perf-wrapper"></div>
-              </div>
-              <div id="emp-detail-hr-badges" class="emp-detail-row"></div>
-              <div id="emp-detail-okr-section" class="emp-detail-section emp-okr-section hidden">
-                <div class="emp-detail-section-title">OKRs</div>
-                <div class="emp-detail-section-content" id="emp-detail-okrs"></div>
-              </div>
-              <div id="emp-settings-container" class="emp-detail-section emp-model-section-wrap">
-                <!-- Dynamically rendered from manifest.json settings -->
-              </div>
-              <button id="emp-oneonone-btn" class="pixel-btn emp-fire-btn">&#127891; Start 1-on-1</button>
-              <button id="emp-fire-btn" class="pixel-btn danger emp-fire-btn" style="display:none;">
-                &#128308; Dismiss Employee
-              </button>
-            </div>
-
-            <div class="emp-detail-section emp-detail-flex-section">
-              <div class="emp-detail-section-title">Work Principles</div>
-              <div class="emp-detail-section-content" id="emp-detail-principles"></div>
-            </div>
-
-            <div class="emp-detail-section emp-detail-flex-section">
-              <div class="emp-detail-section-title">1-on-1 Notes</div>
-              <div class="emp-detail-section-content" id="emp-detail-guidance"></div>
-            </div>
-
-            <div class="emp-detail-section emp-detail-flex-section" id="emp-detail-cron-section">
-              <div class="emp-detail-section-title" style="display:flex;align-items:center;justify-content:space-between;">
-                <span>Scheduled Jobs</span>
-                <button class="emp-cron-stop-all-btn" id="emp-cron-stop-all-btn" style="display:none;">Stop All</button>
-              </div>
-              <div class="emp-detail-section-content" id="emp-detail-crons">
-                <span class="empty-hint">No scheduled jobs</span>
-              </div>
-            </div>
-
-            <div class="emp-section" id="emp-detail-projects-section">
-              <div class="emp-section-title">Project History</div>
-              <div id="emp-detail-projects" class="emp-detail-projects">
-                <span class="empty-hint">Loading...</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Center: Task Board -->
-          <div class="emp-detail-col emp-detail-center">
-            <div class="emp-detail-section emp-detail-fill-section">
-              <div class="emp-detail-section-title">Task Board</div>
-              <div class="emp-detail-section-content" id="emp-detail-taskboard">
-                <span class="empty-hint">No tasks</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Right: Execution Log + Work History -->
-          <div class="emp-detail-col emp-detail-right">
-            <div class="emp-detail-section emp-detail-fill-section">
-              <div class="emp-detail-section-title">Execution Log</div>
-              <div class="emp-detail-section-content emp-log-viewer" id="emp-detail-logs">
-                <span class="empty-hint">No logs</span>
-              </div>
-            </div>
-            <div class="emp-detail-section" style="max-height:150px;overflow-y:auto;margin-top:4px">
-              <div class="emp-detail-section-title">Work History</div>
-              <div class="emp-detail-section-content" id="emp-detail-progress">
-                <span class="empty-hint">No work history</span>
-              </div>
-            </div>
-          </div>
-        </div>
+      <div class="stage-actions">
+        <button class="stage-act-btn rerun" title="Run from here" onclick="event.stopPropagation();runFrom(${s.id})">&#8635;</button>
       </div>
     </div>
-  </div>
+    ${i<STAGES.length-1?'<div class="stage-connector" id="sc-'+(i+1)+'"></div>':''}
+  `).join('');
+}
 
-  <!-- Workflow Viewer/Editor Modal -->
-  <div id="workflow-modal" class="modal-overlay hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128203; Company Rules — Workflows</h3>
-        <button id="workflow-close-btn" class="modal-close">&#10005;</button>
+function populateAgentSelectors(){
+  if(!window._employees)return;
+  STAGES.forEach(s=>{
+    const sel=document.getElementById('sa-'+s.id);
+    if(!sel)return;
+    const cur=sel.value;
+    sel.innerHTML='<option value="">Auto</option>';
+    window._employees.forEach(emp=>{
+      const opt=document.createElement('option');
+      opt.value=emp.employee_number;
+      opt.textContent=emp.name+(emp.role?' ('+emp.role+')':'');
+      sel.appendChild(opt);
+    });
+    if(cur)sel.value=cur;
+  });
+}
+
+function assignAgent(stageId,empNum){
+  STAGES[stageId-1].assignee=empNum||null;
+  if(empNum&&window._employees){
+    const emp=window._employees.find(e=>e.employee_number===empNum);
+    if(emp)addEvent('stag',`Stage ${stageId} assigned to ${emp.name}`);
+  }else{
+    addEvent('stag',`Stage ${stageId} set to Auto (Research Director assigns)`);
+  }
+}
+
+function getStageAssignments(){
+  const map={};
+  let hasAny=false;
+  STAGES.forEach(s=>{
+    if(s.assignee){map[s.id]=s.assignee;hasAny=true;}
+  });
+  return hasAny?map:null;
+}
+
+function toggleBP(id){
+  const s=STAGES[id-1];
+  s.bp=!s.bp;
+  document.querySelector(`#sr-${id} .bp-toggle`).classList.toggle('set',s.bp);
+  addEvent('stag',`Breakpoint ${s.bp?'set':'removed'} on Stage ${id}: ${s.name}`);
+}
+
+function setStage(id,status){
+  const dot=document.getElementById('sd-'+id);
+  const meta=document.getElementById('sm-'+id);
+  const agentSel=document.getElementById('sa-'+id);
+  dot.className='stage-dot '+(status==='done'?'done':status==='running'?'running':status==='reviewing'?'reviewing':status==='paused'?'paused':status==='failed'?'failed':'');
+  meta.textContent={done:'Complete',running:'Running...',reviewing:'Reviewing...',paused:'Paused',failed:'Rejected',pending:'Pending'}[status]||status;
+  if(status==='pending'){
+    if(agentSel)agentSel.style.display='';
+    meta.style.display='none';
+  }else{
+    if(agentSel)agentSel.style.display='none';
+    meta.style.display='';
+  }
+  // Update active agent bar
+  const bar = document.getElementById('activeAgentBar');
+  const label = document.getElementById('activeAgentLabel');
+  const stageName = STAGES[id-1] ? STAGES[id-1].name : `Stage ${id}`;
+  if (status === 'running') {
+    bar.style.display = 'flex'; bar.className = 'active-agent-bar';
+    label.textContent = `Stage ${id}: ${stageName} — Running`;
+  } else if (status === 'reviewing') {
+    bar.style.display = 'flex'; bar.className = 'active-agent-bar reviewing';
+    label.textContent = `Stage ${id}: ${stageName} — Awaiting Critic Review`;
+  } else if (status === 'done' || status === 'failed') {
+    bar.style.display = 'none';
+  }
+}
+
+function runFrom(id){
+  addEvent('dtag',`User requested: run from Stage ${id}`);
+  // In real app, reset stages id+ and re-run
+}
+
+// addEvent is now a no-op — events panel replaced by workspace
+function addEvent(){}
+
+// ── Workspace file panel ──
+const _wsFiles = new Map(); // fileName → {path, size, type, time, fullPath}
+
+function addWorkspaceFile(data) {
+  const name = data.file_name || data.fileName || 'unknown';
+  const fileInfo = {
+    path: data.file_path || '',
+    fullPath: data.full_path || '',
+    size: data.size || 0,
+    content: data.content || '',
+    type: data.type || 'create',
+    time: _time(),
+    employee: data.employee_id || '',
+  };
+  // Add to global (current view) and project-specific store
+  _wsFiles.set(name, fileInfo);
+  if (_activeProjectId) {
+    const proj = _getProject(_activeProjectId);
+    proj.wsFiles.set(name, fileInfo);
+  }
+  _renderWorkspace();
+  const el = document.getElementById('ws-' + _cssId(name));
+  if (el) { el.style.background = 'var(--gold-subtle)'; setTimeout(() => el.style.background = '', 1200); }
+}
+
+function _cssId(name) { return name.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function _fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  if (ext === 'md') return ['MD', 'ft-md'];
+  if (ext === 'py') return ['PY', 'ft-py'];
+  if (ext === 'json' || ext === 'yaml' || ext === 'yml') return ['{}', 'ft-json'];
+  if (ext === 'txt' || ext === 'csv') return ['TXT', 'ft-txt'];
+  return [ext.toUpperCase().slice(0, 3) || 'F', 'ft-other'];
+}
+
+function _fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+
+function _renderWorkspace() {
+  const list = document.getElementById('wsFileList');
+  const empty = document.getElementById('wsEmpty');
+  if (_wsFiles.size === 0) { empty.style.display = ''; list.innerHTML = ''; return; }
+  empty.style.display = 'none';
+  list.innerHTML = '';
+  for (const [name, info] of _wsFiles) {
+    const [iconText, iconClass] = _fileIcon(name);
+    const badge = info.type === 'create'
+      ? '<span class="ws-file-badge new">new</span>'
+      : '<span class="ws-file-badge updated">updated</span>';
+    const el = document.createElement('div');
+    el.className = 'ws-file';
+    el.id = 'ws-' + _cssId(name);
+    el.innerHTML = `
+      <div class="ws-file-icon ${iconClass}">${iconText}</div>
+      <div class="ws-file-info">
+        <div class="ws-file-name">${name}</div>
+        <div class="ws-file-meta"><span>${_fmtSize(info.size)}</span><span>${info.time}</span></div>
       </div>
-      <div class="modal-body">
-        <div id="workflow-list" class="workflow-sidebar"></div>
-        <div id="workflow-editor" class="workflow-main">
-          <div id="workflow-placeholder" class="workflow-placeholder">&#8592; Select a workflow to view</div>
-          <div id="workflow-rendered" class="workflow-rendered hidden"></div>
-          <textarea id="workflow-content" class="workflow-textarea hidden" rows="20"></textarea>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button id="workflow-edit-btn" class="pixel-btn" disabled>&#9998; Edit</button>
-        <button id="workflow-save-btn" class="pixel-btn hidden" disabled>&#128190; Save Changes</button>
-        <button id="workflow-cancel-btn" class="pixel-btn secondary">Cancel</button>
-      </div>
+      ${badge}`;
+    el.onclick = () => _previewFile(name, info);
+    list.appendChild(el);
+  }
+}
+
+function _escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Simple markdown → HTML renderer (no external deps)
+function _renderMd(src) {
+  let h = _escHtml(src);
+
+  // Code blocks (``` ... ```)
+  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code.trim()}</code></pre>`);
+
+  // Tables — must run before headings/lists since pipes interfere
+  // Match: header row | sep row | body rows (separator has at least --- per cell)
+  h = h.replace(/^(\|.+)\n(\|[\s:]*-{3,}[\s:]*(?:\|[\s:]*-{3,}[\s:]*)*\|?)[ \t]*\n((?:\|.+\n?)+)/gm, (_, header, sep, body) => {
+    const parseCells = row => row.split('|').slice(1, -1).length > 0
+      ? row.split('|').slice(1, -1)
+      : row.split('|').filter(c => c.trim());
+    const ths = parseCells(header).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const tds = parseCells(row).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>\n`;
+  });
+
+  // Headings
+  h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold / italic
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Inline code
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Blockquotes
+  h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Horizontal rules
+  h = h.replace(/^---$/gm, '<hr>');
+
+  // Unordered lists
+  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/((?:<li>.*<\/li>\n?)+)/g, m => `<ul>${m}</ul>`);
+
+  // Ordered lists
+  h = h.replace(/^\d+\. (.+)$/gm, '<oli>$1</oli>');
+  h = h.replace(/((?:<oli>.*<\/oli>\n?)+)/g, m => {
+    return '<ol>' + m.replace(/<\/?oli>/g, s => s.replace('oli','li')) + '</ol>';
+  });
+
+  // Paragraphs (double newline)
+  h = h.replace(/\n\n/g, '</p><p>');
+  h = '<p>' + h + '</p>';
+
+  // Clean up empty paragraphs around block elements
+  h = h.replace(/<p>\s*(<h[1234]|<pre|<ul|<ol|<table|<blockquote|<hr)/g, '$1');
+  h = h.replace(/(<\/h[1234]>|<\/pre>|<\/ul>|<\/ol>|<\/table>|<\/blockquote>|<hr>)\s*<\/p>/g, '$1');
+  h = h.replace(/<p>\s*<\/p>/g, '');
+
+  return h;
+}
+
+function _previewFile(name, info) {
+  document.getElementById('wsPreview')?.remove();
+  const content = info.content || '';
+  const ext = name.split('.').pop().toLowerCase();
+  const isMd = (ext === 'md');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'ws-preview';
+  overlay.id = 'wsPreview';
+
+  const head = document.createElement('div');
+  head.className = 'ws-preview-head';
+  head.innerHTML = `
+    <div class="ws-preview-title">${_escHtml(name)}</div>
+    <div class="ws-preview-actions">
+      <button class="ws-preview-btn" id="wsCopyBtn">Copy</button>
+      <button class="ws-preview-btn" id="wsDownloadBtn">Download</button>
+      <button class="ws-preview-btn btn-close" id="wsCloseBtn">✕</button>
+    </div>`;
+
+  const body = document.createElement('div');
+  body.className = isMd ? 'ws-preview-body view-md' : 'ws-preview-body view-raw';
+  body.innerHTML = isMd ? _renderMd(content) : _escHtml(content);
+
+  overlay.appendChild(head);
+  overlay.appendChild(body);
+  document.body.appendChild(overlay);
+
+  // Copy
+  head.querySelector('#wsCopyBtn').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      const btn = head.querySelector('#wsCopyBtn');
+      btn.innerHTML = '<span class="btn-ok">✓</span> Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    } catch(e) { /* fallback */ }
+  };
+
+  // Download
+  head.querySelector('#wsDownloadBtn').onclick = () => {
+    const blob = new Blob([content], {type: 'text/plain;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Close
+  head.querySelector('#wsCloseBtn').onclick = () => overlay.remove();
+}
+
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function waitForUser(){
+  return new Promise(resolve=>{pauseResolve=resolve});
+}
+
+function resumePipeline(){
+  if(pauseResolve){
+    // Visual feedback
+    const btn=document.querySelector('.action-btn.primary');
+    if(btn){btn.textContent='Continuing...';btn.disabled=true;btn.style.animation='none'}
+    addEvent('stag','User approved. Continuing pipeline...');
+    pauseResolve();
+    pauseResolve=null;
+    paused=false;
+  } else {
+    // Debug: pauseResolve was null
+    addEvent('stag','(Debug) resumePipeline called but no pause was active');
+  }
+}
+
+// ── Stage Stream API ──
+// Manages stage cards and inline notices in the center area.
+
+let _currentCard = null; // reference to the active stage-card DOM element
+
+function _time() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+}
+
+function _scroll() {
+  const area = document.getElementById('meetingsArea');
+  if (area) area.scrollTop = area.scrollHeight;
+}
+
+// Sanitize content: strip project IDs, file paths, raw JSON fragments
+function _clean(text) {
+  if (!text) return '';
+  let s = text;
+  // Strip [Project ID: ...] blocks
+  s = s.replace(/\[Project ID:\s*[^\]]*\]/g, '');
+  // Strip [Project workspace: ...] blocks
+  s = s.replace(/\[Project workspace:\s*[^\]]*\]/g, '');
+  // Strip absolute file paths (only /Users/... and /tmp/... — keep relative paths like company/...)
+  s = s.replace(/\/(?:Users|tmp|home)\/[^\s,)}\]]+/g, '<path>');
+  // Collapse multiple whitespace/newlines
+  s = s.replace(/\n{3,}/g, '\n\n').replace(/  +/g, ' ').trim();
+  return s;
+}
+
+// Post a compact inline notice — if a stage card is active, append inside it; otherwise top-level
+function postNotice(text, level='info') {
+  const el = document.createElement('div');
+  el.className = 'notice';
+  el.innerHTML = `<span class="notice-dot dot-${level}"></span><span class="notice-text">${_clean(text)}</span><span class="notice-time">${_time()}</span>`;
+
+  // Try to place inside the current active card's body
+  if (_currentCard) {
+    const body = _currentCard.querySelector('.sc-body');
+    if (body) { body.appendChild(el); _scroll(); return; }
+  }
+  document.getElementById('meetingsArea').appendChild(el);
+  _scroll();
+}
+
+// Create or get a stage card. Each stage has one card that updates in place.
+function getStageCard(id, title, agentName, agentInitials) {
+  let card = document.getElementById('sc-' + id);
+  if (card) return card;
+
+  const area = document.getElementById('meetingsArea');
+
+  // Create wrapper with timeline connector
+  const wrapper = document.createElement('div');
+  wrapper.className = 'stage-wrapper sw-active';
+  wrapper.id = 'sw-' + id;
+  wrapper.innerHTML = `<div class="stage-line"></div>`;
+
+  card = document.createElement('div');
+  card.className = 'stage-card sc-active';
+  card.id = 'sc-' + id;
+  card.innerHTML = `
+    <div class="sc-head">
+      <div class="sc-icon">${agentInitials}</div>
+      <div class="sc-title">${title}<small>${agentName}</small></div>
+      <span class="sc-badge badge-running">Running</span>
     </div>
-  </div>
+    <div class="sc-body">
+      <div class="sc-section" id="sc-prod-${id}">
+        <div class="sc-section-label lbl-producer"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${agentName}</div>
+        <div class="sc-section-content" id="sc-prod-text-${id}"><span style="color:var(--text4)">Working...</span></div>
+      </div>
+    </div>`;
+  wrapper.appendChild(card);
+  area.appendChild(wrapper);
+  _scroll();
 
-  <!-- Meeting Room Zoom Modal -->
-  <div id="meeting-modal" class="modal-overlay hidden">
-    <div class="modal-content meeting-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title" id="meeting-modal-title">&#127970; Meeting Room</h3>
-        <div class="meeting-modal-status">
-          <span id="meeting-modal-status-led" class="status-led free"></span>
-          <span id="meeting-modal-status-text" class="status-text">Available</span>
-        </div>
-        <button id="meeting-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body meeting-modal-body">
-        <!-- Left: Room info + participants -->
-        <div id="meeting-info-panel" class="meeting-info">
-          <div class="meeting-info-block">
-            <div class="meeting-info-label">Capacity</div>
-            <div id="meeting-capacity" class="meeting-info-value">6 people</div>
-          </div>
-          <div class="meeting-info-block">
-            <div class="meeting-info-label">Participants</div>
-            <div id="meeting-participants" class="meeting-participants-list">None</div>
-          </div>
-        </div>
-        <!-- Right: Chat panel -->
-        <div id="meeting-chat-panel" class="meeting-chat">
-          <div class="meeting-chat-header">Live Meeting Log</div>
-          <div id="meeting-chat-messages" class="meeting-chat-messages"></div>
-        </div>
-        <div id="meeting-ceo-input-area" class="chat-input-area hidden">
-          <textarea id="meeting-ceo-input" class="chat-textarea" placeholder="Send a message to this meeting..." rows="1"></textarea>
-          <button id="meeting-ceo-send-btn" class="chat-send-btn">&#9654;</button>
-        </div>
-      </div>
+  // Deactivate previous card
+  if (_currentCard && _currentCard !== card) {
+    _currentCard.classList.remove('sc-active');
+    // Also update previous wrapper
+    const prevWrapper = _currentCard.closest('.stage-wrapper');
+    if (prevWrapper) prevWrapper.classList.remove('sw-active');
+  }
+  _currentCard = card;
+  return card;
+}
+
+// Update the producer section of a stage card
+function updateProducer(cardId, content) {
+  const el = document.getElementById('sc-prod-text-' + cardId);
+  if (el) el.innerHTML = _renderMd(_clean(content));
+  _scroll();
+}
+
+// Add or update the critic section of a stage card
+function updateCritic(cardId, content) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  let sec = document.getElementById('sc-crit-' + cardId);
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.className = 'sc-section';
+    sec.id = 'sc-crit-' + cardId;
+    sec.style.background = 'var(--coral-subtle)';
+    sec.innerHTML = `<div class="sc-section-label lbl-critic"><span style="width:4px;height:4px;border-radius:50%;background:var(--coral)"></span> Adversarial Critic</div><div class="sc-section-content" id="sc-crit-text-${cardId}"></div>`;
+    card.querySelector('.sc-body').appendChild(sec);
+  }
+  const el = document.getElementById('sc-crit-text-' + cardId);
+  if (el) el.innerHTML = _renderMd(_clean(content));
+  _scroll();
+}
+
+// Set card status badge
+function setCardStatus(cardId, status) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  const badge = card.querySelector('.sc-badge');
+  if (!badge) return;
+  const wrapper = document.getElementById('sw-' + cardId);
+  card.classList.remove('sc-active', 'sc-error', 'sc-done');
+  if (wrapper) wrapper.classList.remove('sw-active', 'sw-done', 'sw-error');
+  if (status === 'done') {
+    badge.className = 'sc-badge badge-done'; badge.textContent = 'Passed';
+    card.classList.add('sc-done');
+    if (wrapper) wrapper.classList.add('sw-done');
+  } else if (status === 'error' || status === 'rejected') {
+    badge.className = 'sc-badge badge-error'; badge.textContent = 'Rejected';
+    card.classList.add('sc-error');
+    if (wrapper) wrapper.classList.add('sw-error');
+  } else if (status === 'reviewing') {
+    badge.className = 'sc-badge badge-reviewing'; badge.textContent = 'Reviewing';
+    card.classList.add('sc-active');
+    if (wrapper) wrapper.classList.add('sw-active');
+  } else {
+    badge.className = 'sc-badge badge-running'; badge.textContent = 'Running';
+    card.classList.add('sc-active');
+    if (wrapper) wrapper.classList.add('sw-active');
+  }
+}
+
+// Add confidence bar to a stage card
+function addCardConf(cardId, pct) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  if (card.querySelector('.sc-conf')) return; // already has one
+  const cls = pct >= 65 ? 'high' : pct >= 50 ? 'mid' : 'low';
+  const el = document.createElement('div');
+  el.className = 'sc-conf';
+  el.innerHTML = `<span class="sc-conf-label">Confidence</span><div class="sc-conf-bar"><div class="sc-conf-fill ${cls}" style="width:${pct}%"></div></div><span class="sc-conf-val ${cls}">${pct}%</span>`;
+  card.appendChild(el);
+  _scroll();
+}
+
+// Legacy wrappers used by pipeline-controller
+function postActivity(name, initials, role, content, tag) {
+  if (role === 'director' || role === 'system') {
+    const level = tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info';
+    postNotice(`<strong>${name}</strong>: ${content}`, level);
+    return;
+  }
+  // Producer/critic content goes into the active card
+  postNotice(`<strong>${name}</strong>: ${_clean(content)}`, tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info');
+}
+
+function postDivider(text) {
+  // No-op — stage cards replace dividers
+}
+
+function postConfidence(pct) {
+  // Fallback: attach to current card if possible
+  if (_currentCard) {
+    const id = _currentCard.id.replace('sc-', '');
+    addCardConf(id, pct);
+  }
+}
+
+function createMeeting(id, prodName, prodInit, title, opts={}) {
+  return getStageCard(id, title, prodName, prodInit);
+}
+
+function addConf(card, pct) {
+  postConfidence(pct);
+}
+
+let _apObserver = null; // ResizeObserver for action panel
+
+function _syncMeetingsPadding() {
+  const panel = document.getElementById('action-panel-global');
+  const meetings = document.getElementById('meetingsArea');
+  if (!meetings) return;
+  if (panel) {
+    meetings.style.paddingBottom = panel.offsetHeight + 16 + 'px';
+    _scroll();
+  } else {
+    meetings.style.paddingBottom = '';
+  }
+}
+
+function removeActionBar() {
+  if (_apObserver) { _apObserver.disconnect(); _apObserver = null; }
+  document.getElementById('action-panel-global')?.remove();
+  _syncMeetingsPadding();
+}
+
+function addActionBar(card,stageId){
+  removeActionBar();
+
+  const stageName=STAGES[stageId-1]?.name||'Stage '+stageId;
+  const producerText='';
+
+  const panel=document.createElement('div');
+  panel.className='action-panel';
+  panel.id='action-panel-global';
+  panel.innerHTML=`
+    <div class="ap-header">
+      <div class="ap-title"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/></svg> Stage ${stageId}: ${stageName}</div>
+      <button class="ap-approve" id="ap-approve-btn">Approve &amp; Continue &rarr;</button>
     </div>
-  </div>
-
-  <!-- Hiring Request Modal (COO → CEO) -->
-  <div id="hiring-request-modal" class="modal-overlay hidden">
-    <div class="modal-content" style="max-width:320px;">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128188; COO Hiring Request</h3>
-        <button id="hiring-request-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body" id="hiring-request-body"></div>
-      <div style="display:flex;gap:6px;justify-content:flex-end;padding:6px 8px;">
-        <button id="hiring-request-reject" class="pixel-btn" style="background:var(--pixel-red);font-size:7px;padding:3px 8px;">Reject</button>
-        <button id="hiring-request-approve" class="pixel-btn" style="background:var(--pixel-green);font-size:7px;padding:3px 8px;">Approve</button>
-      </div>
+    <div class="ap-tabs">
+      <button class="ap-tab active" data-tab="edit">Edit Output</button>
+      <button class="ap-tab" data-tab="instruct">Add Instructions</button>
+      <button class="ap-tab" data-tab="override">Override Critic</button>
+      <button class="ap-tab" data-tab="skip">Skip Stages</button>
+      <button class="ap-tab" data-tab="artifacts">Artifacts</button>
+      <button class="ap-tab" data-tab="export">Export</button>
     </div>
-  </div>
+    <div class="ap-body" id="ap-body">
+      <textarea class="ap-editor" id="ap-editor">${producerText}</textarea>
+      <div class="ap-hint">Edit the producer output directly. Changes will be passed to the next stage.</div>
+    </div>
+  `;
+  document.body.appendChild(panel);
 
-  <!-- Candidate Selection Modal (Boss Online) -->
-  <div id="candidate-modal" class="modal-overlay hidden">
-    <div class="modal-content candidate-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128100; Boss Online — Candidate Selection</h3>
-        <button id="candidate-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body candidate-modal-body">
-        <div id="candidate-jd" class="candidate-jd"></div>
-        <div id="candidate-roles" class="candidate-roles"></div>
-        <div id="candidate-detail-panel" class="candidate-detail-panel hidden">
-          <div class="detail-panel-header">
-            <button id="detail-panel-close" class="detail-panel-close">&times;</button>
-          </div>
-          <div id="detail-panel-content" class="detail-panel-content"></div>
-          <div class="detail-panel-actions">
-            <button id="detail-interview-btn" class="pixel-btn">&#128172; Interview</button>
-            <button id="detail-select-btn" class="pixel-btn secondary">&#10004; Select</button>
-          </div>
+  // Track panel height changes (tab switch resizes it) and keep meetings padding in sync
+  _apObserver = new ResizeObserver(() => _syncMeetingsPadding());
+  _apObserver.observe(panel);
+  _syncMeetingsPadding();
+
+  // Tab switching
+  panel.querySelectorAll('.ap-tab').forEach(tab=>{
+    tab.addEventListener('click',function(){
+      panel.querySelectorAll('.ap-tab').forEach(t=>t.classList.remove('active'));
+      this.classList.add('active');
+      renderApTab(this.dataset.tab,stageId,producerText);
+    });
+  });
+
+  // Approve button
+  document.getElementById('ap-approve-btn').addEventListener('click',function(){
+    this.textContent='Continuing...';
+    this.disabled=true;
+    // Get optional feedback from instruct tab
+    const instructEl = document.querySelector('.ap-instruct');
+    const feedback = instructEl ? instructEl.value.trim() : '';
+    // Signal backend via controller
+    if (window._controller && window._controller.resumeBreakpoint) {
+      window._controller.resumeBreakpoint(feedback);
+    }
+    resumePipeline();
+  });
+}
+
+function renderApTab(tab,stageId,producerText){
+  const body=document.getElementById('ap-body');
+  if(tab==='edit'){
+    body.innerHTML=`
+      <textarea class="ap-editor">${producerText}</textarea>
+      <div class="ap-hint">Edit the producer output directly. Changes will be passed to the next stage.</div>`;
+  } else if(tab==='instruct'){
+    body.innerHTML=`
+      <div class="ap-instruct-label">Give the next stage specific instructions. These will be injected into the producer talent's prompt.</div>
+      <textarea class="ap-instruct" placeholder="e.g. Focus on Transformer efficiency papers from 2025-2026. Ignore pre-2023 work. Emphasize theoretical novelty over empirical gains."></textarea>
+      <div class="ap-chips">
+        <span class="ap-chip" onclick="this.parentElement.previousElementSibling.value+=' Focus on recent papers (2025-2026).'">Recent papers only</span>
+        <span class="ap-chip" onclick="this.parentElement.previousElementSibling.value+=' Prioritize theoretical contribution.'">Theory focus</span>
+        <span class="ap-chip" onclick="this.parentElement.previousElementSibling.value+=' Skip experimental validation.'">Skip experiments</span>
+        <span class="ap-chip" onclick="this.parentElement.previousElementSibling.value+=' Be more aggressive in novelty claims.'">Bolder claims</span>
+      </div>`;
+  } else if(tab==='override'){
+    body.innerHTML=`
+      <div class="ap-override-card">
+        <div class="ap-override-info">
+          <div class="ap-override-title">Force Pass</div>
+          <div class="ap-override-desc">Override the critic's REJECT decision. The current output will be accepted as-is and passed to the next stage.</div>
         </div>
+        <button class="ap-override-btn" onclick="this.classList.toggle('active');this.textContent=this.classList.contains('active')?'Forced':'Force Pass';addEvent('stag','User overrode critic: forced PASS on Stage ${stageId}')">Force Pass</button>
       </div>
-      <div id="candidate-batch-bar" class="candidate-batch-bar hidden">
-        <span id="candidate-batch-count" class="batch-count">0 selected</span>
-        <button id="candidate-batch-hire-btn" class="pixel-btn batch-hire-btn" disabled>RECRUIT PARTY (0)</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Talent Pool Modal -->
-  <div id="talent-pool-modal" class="modal-overlay hidden">
-    <div class="modal-content talent-pool-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128188; Talent Pool</h3>
-        <span id="talent-pool-source-badge" class="talent-pool-badge"></span>
-        <button id="talent-pool-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body talent-pool-modal-body">
-        <div id="talent-pool-list" class="talent-pool-list"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Interview Chatbot Modal -->
-  <div id="interview-modal" class="modal-overlay hidden">
-    <div class="modal-content interview-modal-content">
-      <div class="modal-header interview-header">
-        <div class="interview-header-info">
-          <h3 class="pixel-title" id="interview-modal-title">&#128172; Interview</h3>
-          <span class="interview-model-badge" id="interview-model-badge"></span>
+      <div class="ap-override-card">
+        <div class="ap-override-info">
+          <div class="ap-override-title">Force Reject</div>
+          <div class="ap-override-desc">Override a PASS decision. Send the output back for another round of revision even if the critic approved it.</div>
         </div>
-        <button id="interview-close-btn" class="modal-close">&#10005;</button>
+        <button class="ap-override-btn" onclick="this.classList.toggle('active');addEvent('stag','User overrode critic: forced REJECT on Stage ${stageId}')">Force Reject</button>
       </div>
-      <div class="chat-container">
-        <div id="interview-chat" class="chat-messages"></div>
-        <div id="interview-typing" class="chat-typing hidden">
-          <div class="typing-avatar">&#129302;</div>
-          <div class="typing-dots"><span></span><span></span><span></span></div>
+      <div class="ap-override-card">
+        <div class="ap-override-info">
+          <div class="ap-override-title">Adjust Confidence Threshold</div>
+          <div class="ap-override-desc">Current gate threshold: 60%. Lower it to let more outputs pass, raise it for stricter review.</div>
         </div>
+        <input type="range" min="30" max="90" value="60" style="flex-shrink:0;width:100px;accent-color:var(--green)">
+      </div>`;
+  } else if(tab==='skip'){
+    const remaining=STAGES.filter(s=>s.id>stageId);
+    body.innerHTML=`
+      <div class="ap-instruct-label">Toggle stages to skip. Skipped stages won't run, and the pipeline will jump to the next enabled stage.</div>
+      <div class="ap-skip-list">
+        ${remaining.map(s=>`
+          <div class="ap-skip-item">
+            <span class="ap-skip-name">${s.id}. ${s.name}</span>
+            <button class="ap-skip-toggle" onclick="this.classList.toggle('on');addEvent('stag','Stage ${s.id} ${s.name}: '+(this.classList.contains('on')?'SKIPPED':'enabled'))"></button>
+          </div>`).join('')}
+      </div>`;
+  } else if(tab==='artifacts'){
+    body.innerHTML=`
+      <div class="ap-artifact">
+        <div class="ap-artifact-icon">H</div>
+        <div class="ap-artifact-info"><div class="ap-artifact-name">Hypothesis v2 (revised)</div><div class="ap-artifact-meta">Stage 3 output &middot; 245 words</div></div>
+        <button class="ap-artifact-btn">View</button>
       </div>
-      <div id="interview-preview-bar" class="chat-preview-bar hidden"></div>
-      <div class="chat-input-area">
-        <label class="chat-attach-btn" title="Attach file or image">
-          <input type="file" id="interview-file-input" multiple hidden />
-          &#128206;
-        </label>
-        <textarea id="interview-question" class="chat-textarea" placeholder="Type a message..." rows="1"></textarea>
-        <button id="interview-ask-btn" class="chat-send-btn" title="Send">&#9654;</button>
+      <div class="ap-artifact">
+        <div class="ap-artifact-icon">L</div>
+        <div class="ap-artifact-info"><div class="ap-artifact-name">Literature Survey</div><div class="ap-artifact-meta">Stage 2 &middot; 47 papers &middot; 3 clusters</div></div>
+        <button class="ap-artifact-btn">View</button>
       </div>
-      <div class="interview-actions">
-        <button id="interview-hire-btn" class="pixel-btn">&#9989; Hire</button>
-        <button id="interview-back-btn" class="pixel-btn secondary">&#8592; Back to Candidates</button>
+      <div class="ap-artifact">
+        <div class="ap-artifact-icon">T</div>
+        <div class="ap-artifact-info"><div class="ap-artifact-name">Refined Topic</div><div class="ap-artifact-meta">Stage 1 &middot; 32 words</div></div>
+        <button class="ap-artifact-btn">View</button>
       </div>
-    </div>
-  </div>
-
-  <!-- Onboarding Progress Toast (non-blocking, bottom-right corner) -->
-  <div id="onboarding-progress-modal" class="onboarding-toast hidden">
-    <div class="onboarding-toast-header">
-      <span class="onboarding-toast-title">&#128640; Onboarding</span>
-      <button id="onboarding-toggle-btn" class="onboarding-toast-toggle">&#9660;</button>
-      <button id="onboarding-done-btn" class="onboarding-toast-close hidden">&#10005;</button>
-    </div>
-    <div id="onboarding-toast-body" class="onboarding-toast-body">
-      <div id="onboarding-progress-list" class="onboarding-list"></div>
-    </div>
-  </div>
-
-  <!-- Ex-Employee Wall Modal -->
-  <div id="ex-employee-modal" class="modal-overlay hidden">
-    <div class="modal-content ex-employee-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128220; Ex-Employee Wall</h3>
-        <button id="ex-employee-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body">
-        <div id="ex-employee-list" class="ex-employee-list"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Operations Dashboard Modal -->
-  <div id="dashboard-modal" class="modal-overlay hidden">
-    <div class="modal-content dashboard-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128202; Dashboard</h3>
-        <button id="dashboard-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body">
-        <div id="dashboard-content" class="dashboard-grid"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Company Culture Modal -->
-  <div id="company-culture-modal" class="modal-overlay hidden">
-    <div class="modal-content company-culture-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#127988; Company Culture</h3>
-        <button id="company-culture-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body company-culture-body">
-        <div class="company-culture-input-area">
-          <textarea id="company-culture-input" placeholder="Add a new culture entry..." rows="2"></textarea>
-          <button id="company-culture-add-btn" class="pixel-btn">&#10010; Add</button>
+      <div class="ap-artifact">
+        <div class="ap-artifact-icon">R</div>
+        <div class="ap-artifact-info"><div class="ap-artifact-name">Rejection Trace</div><div class="ap-artifact-meta">Stage 3 attempt 1 &middot; meeting minutes</div></div>
+        <button class="ap-artifact-btn">View</button>
+      </div>`;
+  } else if(tab==='export'){
+    body.innerHTML=`
+      <div class="ap-export-grid">
+        <div class="ap-export-card" onclick="addEvent('stag','Exported: JSON checkpoint')">
+          <div class="ap-export-icon">{ }</div>
+          <div class="ap-export-name">JSON Checkpoint</div>
+          <div class="ap-export-desc">Full pipeline state. Resume later.</div>
         </div>
-        <div id="company-culture-list" class="company-culture-list"></div>
-      </div>
+        <div class="ap-export-card" onclick="addEvent('stag','Exported: Markdown summary')">
+          <div class="ap-export-icon">MD</div>
+          <div class="ap-export-name">Markdown Summary</div>
+          <div class="ap-export-desc">Human-readable progress report.</div>
+        </div>
+        <div class="ap-export-card" onclick="addEvent('stag','Exported: LaTeX draft')">
+          <div class="ap-export-icon">TeX</div>
+          <div class="ap-export-name">LaTeX Draft</div>
+          <div class="ap-export-desc">Current paper state (partial).</div>
+        </div>
+        <div class="ap-export-card" onclick="addEvent('stag','Exported: BibTeX citations')">
+          <div class="ap-export-icon">Bib</div>
+          <div class="ap-export-name">BibTeX Citations</div>
+          <div class="ap-export-desc">All verified references so far.</div>
+        </div>
+      </div>`;
+  }
+}
+
+async function startDemo(){
+  const btn=document.getElementById('launchBtn');
+  if(btn.disabled)return;
+  btn.disabled=true;btn.textContent='Running...';
+  startTime=Date.now();
+  document.getElementById('heroSection').style.display='none';
+  const es=document.getElementById('eventStream'); if(es) es.innerHTML='';
+  document.getElementById('meetingsArea').innerHTML='';
+
+  const topic=document.getElementById('topicInput').value||'Sparse attention with mixture-of-experts routing';
+  if(!document.getElementById('topicInput').value)document.getElementById('topicInput').value=topic;
+
+  document.getElementById('dirStatus').textContent='Running pipeline...';
+
+  // ── Stage 1: Topic Refinement ──
+  postNotice('Research Director received topic. Delegating Stage 1.','info');
+  setStage(1,'running');
+  await sleep(600);
+
+  const c1=getStageCard('s1','Stage 1 — Topic Refinement','Topic Refiner','TR');
+  await sleep(800);
+
+  updateProducer('s1','Refined: "Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning, evaluated on RULER, LongBench, SCROLLS."');
+  addEvent('ttag','Topic Refiner produced output.');
+  await sleep(1000);
+
+  updateCritic('s1','Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>');
+  addCardConf('s1',78);
+  setCardStatus('s1','done');
+  setStage(1,'done');
+  document.getElementById('sc-1')?.classList.add('done');
+  addEvent('gtag','PASS (78%)');
+  document.getElementById('c1').textContent='78%';
+
+  if(STAGES[0].bp){setStage(1,'paused');addActionBar(null,1);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(1,'done')}
+
+  await sleep(500);
+
+  // ── Stage 2: Literature Survey ──
+  postNotice('Delegating Stage 2: Literature Survey','info');
+  setStage(2,'running');
+  await sleep(600);
+
+  getStageCard('s2','Stage 2 — Literature Survey','Lit. Surveyor','LS');
+  await sleep(800);
+
+  updateProducer('s2','Found <strong>47 papers</strong> in 3 clusters. Gap: no work combines <strong>learned routing</strong> with sparse attention for long-context.');
+  await sleep(1000);
+
+  updateCritic('s2','47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <strong>static</strong> routing. Gap is real. <strong>PASS.</strong>');
+  addCardConf('s2',72);
+  setCardStatus('s2','done');
+  setStage(2,'done');
+  document.getElementById('sc-2')?.classList.add('done');
+  addEvent('gtag','PASS (72%)');
+  document.getElementById('c2').textContent='72%';
+
+  if(STAGES[1].bp){setStage(2,'paused');addActionBar(null,2);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(2,'done')}
+
+  await sleep(500);
+
+  // ── Stage 3: Idea Generation (default breakpoint) ──
+  postNotice('Delegating Stage 3: Idea Generation','info');
+  setStage(3,'running');
+  await sleep(600);
+
+  getStageCard('s3','Stage 3 — Idea Generation','Idea Generator','IG');
+  await sleep(800);
+
+  updateProducer('s3','Hypothesis: A <strong>learned routing mechanism</strong> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n√n).');
+  addEvent('ttag','Idea Generator proposed hypothesis.');
+  await sleep(1200);
+
+  updateCritic('s3','<span class="error-text">HIGH:</span> 3 papers with similarity >0.7. Chen et al. at 0.74.\n<span class="error-text">HIGH:</span> "Static vs learned" is incremental without evidence of qualitative difference.\n<span class="error-text">MED:</span> 3-5% claim unjustified.');
+  addCardConf('s3',45);
+  setCardStatus('s3','rejected');
+  setStage(3,'failed');
+  addEvent('gtag','REJECTED (45%)');
+  document.getElementById('c3').textContent='45%';
+
+  await sleep(800);
+
+  // Retry
+  postNotice('Research Director: Retry 1/3 — incorporating critic feedback.','info');
+  setCardStatus('s3','running');
+  setStage(3,'running');
+  await sleep(1200);
+
+  updateProducer('s3','Revised: Input-dependent sparsity via per-layer routing gates. Key differentiator: routing is conditioned on input statistics (not fixed patterns). Evaluation includes ablation against Chen et al. baseline.');
+  await sleep(1000);
+
+  updateCritic('s3','Differentiation from Chen et al. is now clear. Ablation design addresses prior concern. <strong>PASS.</strong>');
+  // Remove old conf and add new
+  const oldConf=document.querySelector('#sc-s3 .sc-conf');
+  if(oldConf)oldConf.remove();
+  addCardConf('s3',71);
+  setCardStatus('s3','done');
+  document.getElementById('c3').textContent='71%';
+  addEvent('gtag','PASS on retry (71%)');
+
+  // Breakpoint
+  if(STAGES[2].bp){
+    setStage(3,'paused');
+    postNotice('Breakpoint at Stage 3. Review the hypothesis before continuing.','info');
+    addActionBar(null,3);
+    document.getElementById('dirStatus').textContent='Paused at Stage 3 — waiting for user';
+    await waitForUser();
+    removeActionBar();
+    postNotice('User approved. Continuing pipeline.','ok');
+    await sleep(500);
+  }
+
+  setStage(3,'done');
+  document.getElementById('sc-3')?.classList.add('done');
+
+  document.getElementById('calM').textContent='4';
+  document.getElementById('calP').textContent='75%';
+  document.getElementById('calR').textContent='1';
+
+  await sleep(300);
+  document.getElementById('dirStatus').textContent='Demo complete. 3/9 stages shown.';
+  postNotice('Remaining: 6 stages queued. Next: Methodology Designer.','info');
+  postNotice('Demo complete. Connect OMC backend for full 9-stage pipeline.','info');
+  btn.disabled=false;btn.textContent='Launch Pipeline';
+}
+
+// ── Floating Chat Dialog ──
+let _chatDialog = null;
+let _chatMessages = []; // {from:'agent'|'user', sender:string, text:string}
+let _chatAgentName = '';
+let _chatEmployeeId = '';
+
+function openChatDialog(agentName, employeeId, message) {
+  _chatAgentName = agentName || 'Agent';
+  _chatEmployeeId = employeeId || '';
+
+  // Add the agent's message to history
+  _chatMessages.push({ from: 'agent', sender: _chatAgentName, text: message });
+
+  if (_chatDialog) {
+    // Already open — just append the new message
+    _renderChatMessages();
+    return;
+  }
+
+  _chatDialog = document.createElement('div');
+  _chatDialog.className = 'chat-dialog';
+  _chatDialog.id = 'chatDialog';
+  _chatDialog.innerHTML = `
+    <div class="chat-dialog-head">
+      <div class="chat-dialog-avatar">?</div>
+      <div class="chat-dialog-title">${_escHtml(_chatAgentName)}<small>needs your input</small></div>
+      <button class="chat-dialog-close" id="chatClose">✕</button>
     </div>
-  </div>
+    <div class="chat-dialog-messages" id="chatMessages"></div>
+    <div class="chat-dialog-input">
+      <input type="text" id="chatInput" placeholder="Type your reply..." autocomplete="off">
+      <button class="chat-dialog-send" id="chatSend">Send</button>
+    </div>`;
 
-  <!-- Tool List Modal -->
-  <div id="tool-list-modal" class="modal-overlay hidden">
-    <div class="modal-content tool-list-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128295; TOOL LIST</h3>
-        <button class="modal-close" onclick="document.getElementById('tool-list-modal').classList.add('hidden')">&times;</button>
-      </div>
-      <div class="modal-body" style="flex-direction:column;padding:8px;overflow-y:auto;">
-        <div id="tool-list-body"></div>
-      </div>
-    </div>
-  </div>
+  document.body.appendChild(_chatDialog);
+  _renderChatMessages();
 
-  <!-- Project Wall Modal -->
-  <div id="project-modal" class="modal-overlay hidden">
-    <div class="modal-content project-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#128203; Project Wall — All Tasks</h3>
-        <button id="project-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body">
-        <div id="project-list" class="project-list"></div>
-        <div id="project-detail" class="project-detail hidden">
-          <div id="project-detail-content"></div>
-        </div>
-      </div>
-    </div>
-  </div>
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSend');
 
-  <!-- Product Detail Modal -->
-  <div id="product-modal" class="modal-overlay hidden">
-    <div class="modal-content product-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title" id="product-modal-title">Product Detail</h3>
-        <button id="product-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body">
-        <div id="product-detail-content"></div>
-      </div>
-    </div>
-  </div>
+  input.focus();
 
-  <!-- Company Direction Modal -->
-  <div id="company-direction-modal" class="modal-overlay hidden">
-    <div class="modal-content company-direction-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#127919; Company Direction</h3>
-        <button id="company-direction-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body company-direction-body">
-        <p style="font-size:7px;color:var(--text-dim);margin:0 0 8px;">Set the company strategy / direction. This is injected into every employee's prompt.</p>
-        <textarea id="company-direction-input" placeholder="e.g. We focus on AI-driven creative tools for indie creators..." rows="5" style="width:100%;background:var(--bg-dark);color:var(--pixel-white);border:2px solid var(--border);font-family:'Press Start 2P',monospace;font-size:7px;padding:6px;resize:vertical;"></textarea>
-        <div style="margin-top:8px;display:flex;gap:6px;">
-          <button id="company-direction-enrich-btn" class="pixel-btn secondary" onclick="app.enrichCompanyDirection()">&#10024; Polish / Enrich</button>
-          <button id="company-direction-save-btn" class="pixel-btn">&#128190; Save</button>
-        </div>
-        <div id="company-direction-current" style="margin-top:12px;padding:8px;background:var(--bg-dark);border:2px solid var(--border);border-radius:4px;font-size:7px;color:var(--text-dim);white-space:pre-wrap;max-height:120px;overflow-y:auto;display:none;">
-        </div>
-      </div>
-    </div>
-  </div>
+  const doSend = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending...';
 
-  <!-- Generic popup modal (dynamically filled by open_popup events) -->
-  <div id="generic-popup-modal" class="modal-overlay hidden">
-    <div class="modal-content generic-popup-content">
-      <div class="modal-header">
-        <h3 class="pixel-title" id="generic-popup-title">Notification</h3>
-        <button id="generic-popup-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body" id="generic-popup-body" style="flex-direction:column;padding:12px;">
-      </div>
-      <div class="modal-footer" id="generic-popup-footer" style="display:none;">
-      </div>
-    </div>
-  </div>
+    _chatMessages.push({ from: 'user', sender: 'You', text });
+    _renderChatMessages();
 
-  <!-- Code update banner -->
-  <div id="code-update-banner" class="code-update-banner hidden">
-    <span id="code-update-text">&#128260; Code updated</span>
-    <button id="code-update-apply-btn" class="pixel-btn small">Apply</button>
-    <button id="code-update-dismiss-btn" class="dismiss-btn">&times;</button>
-  </div>
+    // Send to backend
+    const sessionId = window._currentSessionId || window._currentProjectId;
+    if (!sessionId || !window._omcClient) {
+      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Not connected to backend or no active project.' });
+      _renderChatMessages();
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+      return;
+    }
 
-  <!-- Reconnecting overlay -->
-  <div id="reconnecting-overlay" class="reconnecting-overlay hidden">
-    <span class="reconnecting-text">&#128260; Reconnecting...</span>
-  </div>
+    try {
+      const res = await window._omcClient.sendSessionMessage(sessionId, text);
+      sendBtn.textContent = 'Sent ✓';
+      sendBtn.disabled = false;
+      setTimeout(() => { sendBtn.textContent = 'Send'; }, 2000);
+      // Also post to active stage card so user sees it in pipeline
+      postNotice(`You replied: "${text}"`, 'ok');
+    } catch (e) {
+      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Failed to send: ' + (e.message || 'unknown error') });
+      _renderChatMessages();
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+    }
+  };
 
-  <!-- Background Tasks Modal -->
-  <div id="bg-tasks-modal" class="modal-overlay hidden">
-    <div class="modal-content bg-tasks-modal-content">
-      <div class="modal-header">
-        <h3 class="pixel-title">&#9608; BACKGROUND TASKS</h3>
-        <span id="bg-tasks-slots" class="bg-tasks-slots"></span>
-        <button id="bg-tasks-close-btn" class="modal-close">&#10005;</button>
-      </div>
-      <div class="modal-body bg-tasks-body">
-        <div id="bg-tasks-list" class="bg-tasks-list"></div>
-        <div id="bg-tasks-detail" class="bg-tasks-detail">
-          <div class="bg-tasks-detail-empty">Select a task</div>
-        </div>
-      </div>
-    </div>
-  </div>
+  sendBtn.onclick = doSend;
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSend(); } };
 
-  <!-- Create Product Modal -->
-  <div id="create-product-modal" class="modal-overlay hidden">
-    <div class="modal-content" style="max-width: 420px;">
-      <div class="modal-header">
-        <h3 class="pixel-title">NEW PRODUCT</h3>
-        <button class="modal-close" data-modal="create-product-modal">&times;</button>
-      </div>
-      <div class="modal-body" style="flex-direction:column;padding:12px;">
-        <div class="form-group">
-          <label class="form-label">Name</label>
-          <input type="text" id="create-product-name" class="form-input" placeholder="e.g. OneManCompany官网" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Objective</label>
-          <textarea id="create-product-desc" class="form-input" rows="2" placeholder="Product goal / objective"></textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Owner</label>
-          <select id="create-product-owner" class="form-input">
-            <option value="">Select owner...</option>
-          </select>
-        </div>
-        <div id="create-product-krs">
-          <label class="form-label">Key Results</label>
-          <div id="kr-list"></div>
-          <button id="add-kr-btn" class="btn-small">+ Add KR</button>
-        </div>
-        <div class="form-actions">
-          <button id="submit-create-product" class="btn-primary">Create</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  document.getElementById('chatClose').onclick = closeChatDialog;
+}
 
-  <!-- Trace Viewer Modal -->
-  <div id="trace-modal" class="modal-overlay hidden">
-    <div class="modal-content" style="width:90vw;max-width:1200px;height:80vh;padding:0;background:#0a0a0a;border:1px solid #333">
-      <button class="modal-close" onclick="document.getElementById('trace-modal').classList.add('hidden')">&times;</button>
-      <div class="trace-container" style="height:100%">
-        <div class="trace-header">
-          <span class="trace-header-title" id="trace-modal-title">TRACE VIEWER</span>
-          <span class="trace-header-meta" id="trace-modal-meta"></span>
-        </div>
-        <div id="trace-feed-panel" style="flex:1;overflow:hidden"></div>
-      </div>
-    </div>
-  </div>
+function closeChatDialog() {
+  if (_chatDialog) {
+    _chatDialog.remove();
+    _chatDialog = null;
+  }
+}
 
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<script src="https://unpkg.com/@antv/g6@4.8.24/dist/g6.min.js"></script>
-  <script src="conversation.js"></script>
-  <script src="office-tileatlas.js?v=17"></script>
-  <script src="office-camera.js?v=4"></script>
-  <script src="office-map.js?v=3"></script>
-  <script src="office-minimap.js?v=2"></script>
-  <script src="vendor/canvas2svg.js?v=1"></script>
-  <script src="office.js?v=29"></script>
-  <script src="screenshot.js?v=1"></script>
-  <script src="task-tree-g6.js?v=1"></script>
-  <link rel="stylesheet" href="trace-viewer.css">
-  <script src="trace-viewer.js"></script>
-  <script src="xterm-log.js"></script>
-  <script src="ceo-terminal.js"></script>
-  <script src="resize-handler.js"></script>
-  <script src="plugin-loader.js"></script>
-  <script src="app.js"></script>
+function _renderChatMessages() {
+  const container = document.getElementById('chatMessages');
+  if (!container) return;
+  container.innerHTML = _chatMessages.map(m => `
+    <div class="chat-msg from-${m.from}">
+      <div class="chat-bubble">
+        <div class="chat-sender">${_escHtml(m.sender)}</div>
+        ${m.from === 'agent' ? _renderMd(_clean(m.text)) : _escHtml(m.text)}
+      </div>
+    </div>`).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+// Also post the clarification to the active stage card as a notice
+window.openChatDialog = openChatDialog;
+window.closeChatDialog = closeChatDialog;
+window.isChatDialogOpen = () => !!_chatDialog;
+
+// Enter only inserts newline; submission via button only
+
+renderStages();
+</script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>
