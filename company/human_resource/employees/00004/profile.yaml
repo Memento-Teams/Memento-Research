@@ -1,0 +1,27 @@
+api_provider: custom
+current_quarter_tasks: 0
+department: CEO Office
+desk_position:
+- 7
+- 0
+employee_number: '00004'
+hosting: company
+level: 4
+llm_model: MiniMax-M2.7
+name: Research Director
+nickname: 研究总监
+performance_history: []
+permissions:
+- company_file_access
+- web_search
+role: EA
+salary_per_1m_tokens: 7.0
+skills:
+- task_analysis
+- task_routing
+- project_management
+- operations
+- research_orchestration
+sprite: ea
+temperature: 0.3
+title: Founding

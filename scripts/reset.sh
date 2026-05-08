@@ -8,7 +8,7 @@ set -euo pipefail
 OMC_DIR="/Users/yuzhengxu/projects/OneManCompany"
 AR_DIR="/Users/yuzhengxu/projects/autoresearch"
 DATA_DIR="$OMC_DIR/.onemancompany"
-ENV_FILE="$AR_DIR/.onemancompany/.env"
+ENV_FILE="$AR_DIR/.env"
 PYTHON="$OMC_DIR/.venv/bin/python"
 LOG="/tmp/omc-backend.log"
 PORT=8000
@@ -45,8 +45,9 @@ init_data() {
   mkdir -p "$DATA_DIR/company/business/projects"
   mkdir -p "$DATA_DIR/company/business/products"
 
-  # Copy .env (API keys, server config)
+  # Copy .env and config.yaml (API keys, server config, talent market)
   cp "$ENV_FILE" "$DATA_DIR/.env"
+  cp "$AR_DIR/.onemancompany/config.yaml" "$DATA_DIR/config.yaml" 2>/dev/null || true
 
   echo "Data initialized."
 }
@@ -78,6 +79,43 @@ start_backend() {
   exit 1
 }
 
+hire_from_list() {
+  local hire_file="$AR_DIR/company/hire_list.json"
+  if [ ! -f "$hire_file" ]; then
+    echo "No hire_list.json found, skipping auto-hire."
+    return
+  fi
+
+  local count
+  count=$(python3 -c "import json; print(len(json.load(open('$hire_file'))))")
+  if [ "$count" -eq 0 ]; then
+    echo "hire_list.json is empty, skipping."
+    return
+  fi
+
+  echo "Auto-hiring $count employee(s) from hire_list.json ..."
+  python3 -c "
+import json, urllib.request
+
+with open('$hire_file') as f:
+    hires = json.load(f)
+
+for cv in hires:
+    body = json.dumps({'cv': cv}).encode()
+    req = urllib.request.Request(
+        'http://localhost:$PORT/api/candidates/hire-from-cv',
+        data=body,
+        headers={'Content-Type': 'application/json'},
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        result = json.loads(resp.read())
+        print(f'  ✓ {cv[\"name\"]}: {result.get(\"message\", result)}')
+    except Exception as e:
+        print(f'  ✗ {cv[\"name\"]}: {e}')
+"
+}
+
 # ── Main ──
 
 case "${1:-}" in
@@ -91,5 +129,6 @@ case "${1:-}" in
     stop_backend
     init_data
     start_backend
+    hire_from_list
     ;;
 esac
