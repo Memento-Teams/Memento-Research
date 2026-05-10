@@ -170,6 +170,20 @@ print(f"[lcg] filtered hypothesis dump: {len(md)} → {len(filtered_md)} bytes",
 combined = "## Advisor Answer\n\n" + (answer or "(empty)")
 if filtered_md:
     combined += "\n\n---\n\n" + filtered_md
+
+# Also drop the deliverable into the project workspace so the OMC UI's
+# "files" panel shows it like other producers (00008 etc. do this via
+# their LangChain `write` tool; we have no such tool, so we write directly).
+project_dir = os.environ.get("OMC_PROJECT_DIR", "")
+if project_dir:
+    out_path = os.path.join(project_dir, "stage3_idea_generator.md")
+    try:
+        with open(out_path, "w", encoding="utf-8") as _f:
+            _f.write(combined)
+        print(f"[lcg] wrote deliverable: {out_path} ({len(combined)} bytes)", file=sys.stderr)
+    except OSError as _e:
+        print(f"[lcg] WARN: could not write deliverable: {_e}", file=sys.stderr)
+
 print(json.dumps({
     "output": combined,
     "model": f"literature-conflict-graph/chat-{model}",
