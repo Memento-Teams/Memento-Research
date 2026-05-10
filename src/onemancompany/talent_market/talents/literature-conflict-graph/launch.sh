@@ -108,15 +108,29 @@ system = (
 )
 
 print(f"[lcg] calling {model} (system={len(system)} chars, user={len(task)} chars)", file=sys.stderr)
-resp = client.chat.completions.create(
+_kwargs = dict(
     model=model,
     messages=[
         {"role": "system", "content": system},
         {"role": "user", "content": task},
     ],
     temperature=float(os.environ.get("LCG_TEMPERATURE", "0.3")),
-    max_tokens=int(os.environ.get("LCG_MAX_TOKENS", "16000")),
+    max_tokens=int(os.environ.get("LCG_MAX_TOKENS", "32000")),
 )
+# Kimi-K2.6 (and other reasoning models) burn most of max_tokens on
+# hidden reasoning; nudge to lowest setting so the visible answer
+# doesn't get starved when the user prompt is long (Stage 3 boilerplate
+# + Stage 1+2 context can hit ~100K chars). LiteLLM proxy here accepts
+# only 'none' | 'low' | 'medium' | 'high'.
+_effort = os.environ.get("LCG_REASONING_EFFORT", "low")
+if _effort:
+    _kwargs["extra_body"] = {"reasoning_effort": _effort}
+try:
+    resp = client.chat.completions.create(**_kwargs)
+except TypeError:
+    # Fallback for openai SDK versions that reject extra_body
+    _kwargs.pop("extra_body", None)
+    resp = client.chat.completions.create(**_kwargs)
 answer = resp.choices[0].message.content or ""
 u = resp.usage
 reasoning = getattr(u.completion_tokens_details, "reasoning_tokens", "n/a") if u.completion_tokens_details else "n/a"
