@@ -699,19 +699,29 @@ _app_config = _read_app_config_from_disk()
 
 
 def load_employee_configs() -> dict[str, EmployeeConfig]:
-    """Scan employees/ directory. Each subfolder with a profile.yaml is an employee."""
+    """Scan employees/ directory. Each subfolder with a profile.yaml is an employee.
+
+    The CEO (CEO_ID) is the human user, not an LLM-driven employee. Their
+    profile.yaml only carries a `runtime` stub — none of the EmployeeConfig
+    required fields (name/role/skills) — and the CEO is registered separately
+    via CeoExecutor at startup (main.py). Skip them here to avoid spamming
+    "Skipping corrupt profile 00001" warnings on every dict access (this
+    function is hot — called from _LazyEmployeeConfigs on every lookup).
+    """
     if not EMPLOYEES_DIR.exists():
         return {}
     result: dict[str, EmployeeConfig] = {}
     for emp_dir in sorted(EMPLOYEES_DIR.iterdir()):
         if not emp_dir.is_dir():
             continue
+        emp_id = emp_dir.name
+        if emp_id == CEO_ID:
+            continue
         profile_path = emp_dir / PROFILE_FILENAME
         if not profile_path.exists():
             continue
         with open_utf(profile_path) as f:
             raw = yaml.safe_load(f) or {}
-        emp_id = emp_dir.name
         try:
             result[emp_id] = EmployeeConfig(**raw)
         except Exception as e:
