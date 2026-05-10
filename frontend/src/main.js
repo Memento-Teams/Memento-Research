@@ -5,7 +5,7 @@ import { OmcClient } from './omc-client.js';
 import { EventAdapter } from './event-adapter.js';
 import { PipelineController } from './pipeline-controller.js';
 
-const OMC_URL = 'http://localhost:8000';
+const OMC_URL = window.location.origin;
 
 let client;
 let adapter;
