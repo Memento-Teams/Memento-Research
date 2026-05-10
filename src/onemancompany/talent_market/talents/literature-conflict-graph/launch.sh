@@ -136,7 +136,40 @@ u = resp.usage
 reasoning = getattr(u.completion_tokens_details, "reasoning_tokens", "n/a") if u.completion_tokens_details else "n/a"
 print(f"[lcg] tokens: prompt={u.prompt_tokens} completion={u.completion_tokens} reasoning={reasoning}", file=sys.stderr)
 
-combined = "## Advisor Answer\n\n" + (answer or "(empty)") + "\n\n---\n\n" + md
+# Filter the attached hypothesis dump to only sections the advisor actually
+# cited (keeps the deliverable focused — the full pool can include 7+
+# off-topic cards that derail downstream gate review).
+import re as _re
+cited = set(_re.findall(r"\b[ha]\d{3,4}\b", answer or ""))
+print(f"[lcg] advisor cites {len(cited)} ID(s): {sorted(cited)}", file=sys.stderr)
+
+def _filter_md(_md, _ids):
+    if not _ids:
+        return ""
+    sections = _re.split(r"(?m)^(?=### )", _md)
+    keep = []
+    head = sections[0] if sections and not sections[0].startswith("### ") else ""
+    if head:
+        # Drop the "Selected 10 hypotheses" preamble — it advertises 10
+        # which won't match the filtered count.
+        head = _re.sub(r"\nSelected\s+\*\*\d+\*\*\s+hypotheses[^\n]*\n", "\n", head)
+    for sec in sections:
+        if not sec.startswith("### "):
+            continue
+        first = sec.split("\n", 1)[0]
+        m = _re.search(r"\b([ha]\d{3,4})\b", first)
+        if m and m.group(1) in _ids:
+            keep.append(sec)
+    if not keep:
+        return ""
+    return (head.rstrip() + "\n\n" if head.strip() else "") + "\n".join(keep).rstrip()
+
+filtered_md = _filter_md(md, cited) if cited else ""
+print(f"[lcg] filtered hypothesis dump: {len(md)} → {len(filtered_md)} bytes", file=sys.stderr)
+
+combined = "## Advisor Answer\n\n" + (answer or "(empty)")
+if filtered_md:
+    combined += "\n\n---\n\n" + filtered_md
 print(json.dumps({
     "output": combined,
     "model": f"literature-conflict-graph/chat-{model}",
