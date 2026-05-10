@@ -6420,6 +6420,131 @@ class TestHireFromCV:
                 })
                 assert resp.json()["status"] == "onboarding"
 
+    @pytest.mark.asyncio
+    async def test_local_mode_skips_remote_onboard(self):
+        """When talent_market.mode=local, _do_cv_hire must not call talent_market.onboard."""
+        app = _make_test_app()
+        transport = ASGITransport(app=app)
+        mock_emp = MagicMock(id="00010")
+
+        spawned: list = []
+
+        def fake_spawn(coro):
+            task = asyncio.get_event_loop().create_task(coro)
+            spawned.append(task)
+            return task
+
+        async def fake_hire(**kw):
+            return mock_emp
+
+        async def fake_nickname(*a, **kw):
+            return ""
+
+        mock_onboard = AsyncMock()  # tracked, must not be called
+
+        with patch("onemancompany.api.routes.event_bus", MagicMock(publish=AsyncMock())), \
+             patch("onemancompany.api.routes.spawn_background", fake_spawn), \
+             patch("onemancompany.agents.onboarding.execute_hire", fake_hire), \
+             patch("onemancompany.agents.onboarding.generate_nickname", fake_nickname), \
+             patch("onemancompany.agents.onboarding.clone_talent_repo", AsyncMock()), \
+             patch("onemancompany.agents.onboarding.resolve_talent_dir", return_value="/fake/path"), \
+             patch("onemancompany.agents.recruitment.talent_market", MagicMock(onboard=mock_onboard)), \
+             patch("onemancompany.core.config.load_app_config",
+                   return_value={"talent_market": {"mode": "local"}}):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/candidates/hire-from-cv", json={
+                    "cv": {"name": "LocalTalent", "role": "Researcher", "talent_id": "fake-talent"}
+                })
+                assert resp.json()["status"] == "onboarding"
+                if spawned:
+                    await asyncio.gather(*spawned, return_exceptions=True)
+        mock_onboard.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remote_unreachable_falls_back_to_builtin_talent(self):
+        """If talent_market.onboard raises but a built-in talent dir exists, hire proceeds without error."""
+        app = _make_test_app()
+        transport = ASGITransport(app=app)
+        mock_emp = MagicMock(id="00010")
+        publish_mock = AsyncMock()
+        spawned: list = []
+
+        def fake_spawn(coro):
+            task = asyncio.get_event_loop().create_task(coro)
+            spawned.append(task)
+            return task
+
+        async def fake_hire(**kw):
+            return mock_emp
+
+        async def fake_nickname(*a, **kw):
+            return ""
+
+        async def failing_onboard(_tid):
+            raise RuntimeError("Not connected to Talent Market")
+
+        with patch("onemancompany.api.routes.event_bus", MagicMock(publish=publish_mock)), \
+             patch("onemancompany.api.routes.spawn_background", fake_spawn), \
+             patch("onemancompany.agents.onboarding.execute_hire", fake_hire), \
+             patch("onemancompany.agents.onboarding.generate_nickname", fake_nickname), \
+             patch("onemancompany.agents.onboarding.clone_talent_repo", AsyncMock()), \
+             patch("onemancompany.agents.onboarding.resolve_talent_dir", return_value="/fake/builtin"), \
+             patch("onemancompany.agents.recruitment.talent_market",
+                   MagicMock(onboard=AsyncMock(side_effect=failing_onboard))), \
+             patch("onemancompany.core.config.load_app_config",
+                   return_value={"talent_market": {"mode": "remote"}}):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/candidates/hire-from-cv", json={
+                    "cv": {"name": "BuiltinTalent", "role": "Researcher", "talent_id": "fake-talent"}
+                })
+                assert resp.json()["status"] == "onboarding"
+                if spawned:
+                    await asyncio.gather(*spawned, return_exceptions=True)
+        from onemancompany.core.models import EventType
+        for c in publish_mock.call_args_list:
+            evt = c.args[0] if c.args else None
+            if evt is not None and hasattr(evt, "type"):
+                assert evt.type != EventType.TALENT_PROFILE_ERROR, (
+                    "TALENT_PROFILE_ERROR should not fire when a built-in talent dir is found"
+                )
+
+    @pytest.mark.asyncio
+    async def test_remote_unreachable_no_builtin_publishes_error(self):
+        """If onboard fails AND no built-in talent dir, the error path is preserved (regression)."""
+        app = _make_test_app()
+        transport = ASGITransport(app=app)
+        publish_mock = AsyncMock()
+        spawned: list = []
+
+        def fake_spawn(coro):
+            task = asyncio.get_event_loop().create_task(coro)
+            spawned.append(task)
+            return task
+
+        async def failing_onboard(_tid):
+            raise RuntimeError("Not connected to Talent Market")
+
+        with patch("onemancompany.api.routes.event_bus", MagicMock(publish=publish_mock)), \
+             patch("onemancompany.api.routes.spawn_background", fake_spawn), \
+             patch("onemancompany.agents.onboarding.resolve_talent_dir", return_value=None), \
+             patch("onemancompany.agents.recruitment.talent_market",
+                   MagicMock(onboard=AsyncMock(side_effect=failing_onboard))), \
+             patch("onemancompany.core.config.load_app_config",
+                   return_value={"talent_market": {"mode": "remote"}}):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/candidates/hire-from-cv", json={
+                    "cv": {"name": "MissingTalent", "role": "Researcher", "talent_id": "no-such-talent"}
+                })
+                assert resp.json()["status"] == "onboarding"
+                if spawned:
+                    await asyncio.gather(*spawned, return_exceptions=True)
+        from onemancompany.core.models import EventType
+        error_events = [
+            c.args[0] for c in publish_mock.call_args_list
+            if c.args and hasattr(c.args[0], "type") and c.args[0].type == EventType.TALENT_PROFILE_ERROR
+        ]
+        assert len(error_events) >= 1, "expected TALENT_PROFILE_ERROR when no builtin talent and remote unreachable"
+
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------

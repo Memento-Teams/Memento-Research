@@ -4632,16 +4632,21 @@ async def hire_from_cv(body: dict) -> dict:
                 source_repo = cv.get("source_repo", "")
                 repo_url = source_repo
                 if not repo_url:
-                    try:
-                        from onemancompany.core.config import load_app_config
-                        tm_url = load_app_config().get("talent_market", {}).get("url", "https://api.one-man-company.com/mcp/sse")
-                        onboard_result = await talent_market.onboard(talent_id)
-                        repo_url = onboard_result.get("repo_url", "")
-                    except Exception as e:
-                        await _publish_cv_error(
-                            f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
-                        )
-                        return
+                    from onemancompany.core.config import load_app_config
+                    tm_cfg = load_app_config().get("talent_market", {})
+                    tm_url = tm_cfg.get("url", "https://api.one-man-company.com/mcp/sse")
+                    if tm_cfg.get("mode", "remote") == "remote":
+                        try:
+                            onboard_result = await talent_market.onboard(talent_id)
+                            repo_url = onboard_result.get("repo_url", "")
+                        except Exception as e:
+                            if resolve_talent_dir(talent_id):
+                                logger.info("[cv_hire] Talent Market unreachable; using built-in talent '{}'", talent_id)
+                            else:
+                                await _publish_cv_error(
+                                    f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
+                                )
+                                return
                 if not repo_url:
                     # AI-generated / repo-less talents: skip clone, proceed with hire using CV data
                     logger.info("[cv_hire] Talent '{}' has no repo URL — skipping clone, hiring with CV data only", talent_id)
