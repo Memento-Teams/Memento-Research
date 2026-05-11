@@ -2,7 +2,7 @@ api_provider: custom
 current_quarter_tasks: 0
 department: HR
 desk_position:
-- 3
+- 1
 - 0
 employee_number: '00002'
 hosting: company
