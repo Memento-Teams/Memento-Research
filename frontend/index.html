@@ -705,9 +705,9 @@ function renderPipelineBar(){
     const line=i<STAGES.length-1?`<div class="ps-line${!inRange && s.id >= _pipelineEnd ? ' skipped' : ''}" id="pl-${s.id}"></div>`:'';
     return `<div class="ps-stage">${dot}${line}</div>`;
   }).join('');
-  // Show range info
+  // Show range info — only if no active stage is running (don't overwrite animated status)
   const statusEl=document.getElementById('pipelineStatus');
-  if(statusEl){
+  if(statusEl && !statusEl.classList.contains('st-running') && !statusEl.classList.contains('st-reviewing')){
     const startName=STAGES[_pipelineStart-1]?.name||'';
     const endName=STAGES[_pipelineEnd-1]?.name||'';
     if(_pipelineStart===1 && _pipelineEnd===9){
