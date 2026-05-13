@@ -271,3 +271,112 @@ class TestAssembleSpecialistBranches:
         # Hire + install still succeeded despite work_principles failure
         assert out["status"] == "ok"
         assert out["employee_id"] == "00099"
+
+
+# ---------------------------------------------------------------------------
+# search_skillsmp — @tool exposing SkillsMP search to LangChain agents
+# (fastskills MCP isn't available to company-hosted employees, so we wrap it
+#  as a short-lived stdio subprocess — same pattern as install)
+# ---------------------------------------------------------------------------
+
+class TestSearchSkillsmpTool:
+    def test_missing_key_returns_error(self, monkeypatch):
+        from onemancompany.core import config as cfg
+        from onemancompany.agents import common_tools
+
+        monkeypatch.setattr(cfg.settings, "skillsmp_api_key", "", raising=False)
+
+        out = asyncio.run(common_tools.search_skillsmp.ainvoke({"query": "anything"}))
+        assert out.get("is_error") is True
+        assert "SKILLSMP_API_KEY" in out["message"]
+
+    def test_happy_path_returns_raw_results(self, monkeypatch):
+        from onemancompany.core import config as cfg
+        from onemancompany.agents import common_tools, onboarding
+
+        monkeypatch.setattr(cfg.settings, "skillsmp_api_key", "sk_live_test", raising=False)
+
+        canned = "Found 2 cloud skill(s) for 'foo':\n\n1. foo-skill — ...\n   github: https://github.com/x/y/tree/main/foo\n2. bar-skill — ...\n   github: https://github.com/x/y/tree/main/bar"
+
+        async def fake_search(query, api_key=""):
+            assert query == "causal inference"
+            return canned
+
+        monkeypatch.setattr(onboarding, "_search_cloud_skills_via_fastskills", fake_search)
+
+        out = asyncio.run(common_tools.search_skillsmp.ainvoke({"query": "causal inference"}))
+        assert out["status"] == "ok"
+        assert out["query"] == "causal inference"
+        assert "foo-skill" in out["raw_results"]
+        assert "github.com/x/y/tree/main/foo" in out["raw_results"]
+
+    def test_subprocess_failure_returns_error(self, monkeypatch):
+        from onemancompany.core import config as cfg
+        from onemancompany.agents import common_tools, onboarding
+
+        monkeypatch.setattr(cfg.settings, "skillsmp_api_key", "sk_live_test", raising=False)
+
+        async def fake_search(query, api_key=""):
+            raise RuntimeError("fastskills crashed")
+
+        monkeypatch.setattr(onboarding, "_search_cloud_skills_via_fastskills", fake_search)
+
+        out = asyncio.run(common_tools.search_skillsmp.ainvoke({"query": "x"}))
+        assert out.get("is_error") is True
+        assert "search failed" in out["message"]
+        assert "fastskills crashed" in out["message"]
+
+
+class TestSearchCloudSkillsViaFastskills:
+    def test_missing_api_key_raises(self, monkeypatch):
+        from onemancompany.agents import onboarding
+        from onemancompany.core import config as cfg
+
+        monkeypatch.setattr(cfg.settings, "skillsmp_api_key", "", raising=False)
+
+        with pytest.raises(RuntimeError, match="SKILLSMP_API_KEY"):
+            asyncio.run(onboarding._search_cloud_skills_via_fastskills("anything"))
+
+    def test_invokes_search_cloud_skills_via_mcp(self, monkeypatch):
+        from onemancompany.agents import onboarding
+        from onemancompany.core import config as cfg
+
+        monkeypatch.setattr(cfg.settings, "skillsmp_api_key", "sk_live_test", raising=False)
+
+        captured = {}
+
+        class FakeSession:
+            async def initialize(self):
+                pass
+            async def call_tool(self, name, args):
+                captured["tool"] = name
+                captured["args"] = args
+                return SimpleNamespace(content=[SimpleNamespace(text="Found 3 cloud skill(s) for ...")])
+
+        class FakeStdio:
+            def __init__(self, params):
+                captured["params_args"] = params.args
+            async def __aenter__(self):
+                return ("r", "w")
+            async def __aexit__(self, *args):
+                pass
+
+        def fake_stdio_client(params):
+            return FakeStdio(params)
+
+        class FakeClientSession:
+            def __init__(self, read, write):
+                self._s = FakeSession()
+            async def __aenter__(self):
+                return self._s
+            async def __aexit__(self, *args):
+                pass
+
+        monkeypatch.setattr(onboarding, "_FastskillsStdioClient", fake_stdio_client, raising=False)
+        monkeypatch.setattr(onboarding, "_FastskillsClientSession", FakeClientSession, raising=False)
+
+        result = asyncio.run(onboarding._search_cloud_skills_via_fastskills("causal RCT"))
+
+        assert "Found 3 cloud skill" in result
+        assert captured["tool"] == "search_cloud_skills"
+        assert captured["args"] == {"query": "causal RCT"}

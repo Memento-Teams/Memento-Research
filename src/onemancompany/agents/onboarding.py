@@ -732,6 +732,53 @@ def _fastskills_mcp_clients():
     return _FastskillsStdioClient, _FastskillsClientSession, _Params
 
 
+async def _search_cloud_skills_via_fastskills(
+    query: str,
+    api_key: str = "",
+) -> str:
+    """Query the SkillsMP cloud catalog via a short-lived ``fastskills`` MCP subprocess.
+
+    company-hosted and omctalent-hosted agents do not have direct MCP access
+    (only ``hosting: self`` does, via ClaudeSessionExecutor), so this helper
+    bridges the gap: spin up fastskills as a stdio subprocess scoped to a tmp
+    skills_dir + workdir, call ``search_cloud_skills``, return the raw output.
+
+    Args:
+        query: Search keywords passed straight through to SkillsMP.
+        api_key: SkillsMP API key. Defaults to ``settings.skillsmp_api_key``.
+
+    Returns:
+        The raw textual output from the fastskills ``search_cloud_skills`` tool.
+
+    Raises:
+        RuntimeError: when ``SKILLSMP_API_KEY`` is not configured.
+    """
+    import os
+    import tempfile
+
+    effective_key = api_key or settings.skillsmp_api_key
+    if not effective_key:
+        raise RuntimeError(
+            "SKILLSMP_API_KEY is not configured; cannot search cloud skills."
+        )
+
+    stdio_client, ClientSession, StdioServerParameters = _fastskills_mcp_clients()
+
+    with tempfile.TemporaryDirectory(prefix="fastskills-search-") as tmpdir:
+        params = StdioServerParameters(
+            command="uvx",
+            args=["fastskills", "--skills-dir", tmpdir, "--workdir", tmpdir],
+            env={**os.environ, "SKILLSMP_API_KEY": effective_key},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "search_cloud_skills", {"query": query}
+                )
+                return "".join(getattr(c, "text", "") for c in result.content)
+
+
 async def _install_cloud_skill_for_employee(
     employee_id: str,
     skill_github_url: str,

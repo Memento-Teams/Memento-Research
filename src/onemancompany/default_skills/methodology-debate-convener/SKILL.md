@@ -95,16 +95,23 @@ For a quantitative study you want:
 
 If `list_colleagues()` shows fewer than 3 colleagues with methodological
 expertise (e.g. mostly HR / operations / executives), build new specialists
-on the fly using the **SkillsMP cloud catalog** via the `fastskills` MCP
-that is already wired into your tool set.
+on the fly using the **SkillsMP cloud catalog**. You have two tools wired
+into your base tool set:
+
+- `search_skillsmp(query)` — search the cloud catalog. Returns formatted
+  text with 5-9 candidate skills per query, each with both a `skillsmp.com`
+  URL and a `github.com` tree URL.
+- `assemble_specialist_from_skill(...)` — hire an AI-generated specialist
+  whose skill set is the chosen cloud skill.
 
 ```python
 # 1. Search the cloud catalog for skills relevant to the debate.
-hits_1 = search_cloud_skills(query="causal inference RCT methodology")
-hits_2 = search_cloud_skills(query="experiment design A/B testing")
-hits_3 = search_cloud_skills(query="threats validity observational")
+hits_1 = search_skillsmp(query="causal inference RCT methodology")
+hits_2 = search_skillsmp(query="experiment design A/B testing")
+hits_3 = search_skillsmp(query="threats validity observational")
 
-# 2. From each result, pick the "github:" tree URL (NOT the skillsmp.com URL).
+# 2. Read hits_X["raw_results"] and pick the "github:" tree URL
+#    (NOT the skillsmp.com URL — the installer rejects skillsmp URLs).
 #    Example github URL format:
 #      https://github.com/owner/repo/tree/main/skills/<skill-name>
 

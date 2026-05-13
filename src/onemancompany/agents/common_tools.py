@@ -2043,6 +2043,55 @@ async def select_debate_participants_tool(
 
 
 @tool
+async def search_skillsmp(query: str) -> dict:
+    """Search the SkillsMP cloud catalog for skills matching a free-text query.
+
+    Use this BEFORE calling ``assemble_specialist_from_skill``. The search
+    returns a formatted list of candidate skills, each with both a
+    ``skillsmp.com`` URL and a ``github.com`` tree URL. You will pass the
+    **github URL** to ``assemble_specialist_from_skill``; the skillsmp URL is
+    not accepted by the installer.
+
+    This wraps the same SkillsMP search the ``fastskills`` MCP exposes, but
+    available natively to LangChain-hosted agents (company / omctalent) that
+    do not get direct MCP access.
+
+    Args:
+        query: Free-text keywords describing the methodology, domain, or
+            expertise you need (e.g. "causal inference RCT methodology",
+            "experiment design A/B testing", "ai ethics", "code review").
+
+    Returns:
+        On success: ``status="ok"``, ``query``, ``raw_results`` (the formatted
+            text block from SkillsMP — usually 5-9 hits with github URLs).
+        On failure: ``_tool_error`` with the reason.
+    """
+    from onemancompany.agents.onboarding import _search_cloud_skills_via_fastskills
+    from onemancompany.core.config import settings
+
+    if not settings.skillsmp_api_key:
+        return _tool_error(
+            "SKILLSMP_API_KEY is not configured. Cannot search the cloud catalog.",
+            hint="Ask the CEO to set SKILLSMP_API_KEY in .env, or pick participants "
+                 "from the existing roster instead.",
+        )
+
+    try:
+        raw = await _search_cloud_skills_via_fastskills(query)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[search_skillsmp] failed")
+        return _tool_error(f"search failed: {e}")
+
+    return {
+        "status": "ok",
+        "query": query,
+        "raw_results": raw,
+    }
+
+
+@tool
 async def assemble_specialist_from_skill(
     name: str,
     role: str,
@@ -2193,7 +2242,7 @@ def _register_all_internal_tools() -> None:
     _base = [
         list_colleagues, read, ls, write, edit, pull_meeting,
         run_debate, select_debate_participants_tool,
-        assemble_specialist_from_skill,
+        search_skillsmp, assemble_specialist_from_skill,
         glob_files, grep_search,
         load_skill,
         resume_held_task, update_project_team,
