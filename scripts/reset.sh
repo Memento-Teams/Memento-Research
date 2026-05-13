@@ -5,18 +5,50 @@
 #        ./scripts/reset.sh --start  — just start backend (no reset)
 set -euo pipefail
 
-AR_DIR="/Users/yuzhengxu/projects/autoresearch"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AR_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="$AR_DIR/.onemancompany"
 ENV_FILE="$AR_DIR/.env"
-PYTHON="$AR_DIR/.venv/bin/python"
-LOG="/tmp/omc-backend.log"
-PORT=8000
+PYTHON="${PYTHON:-$AR_DIR/.venv/bin/python}"
+LOG="${LOG:-/tmp/omc-backend.log}"
+PORT="${PORT:-8000}"
 
 # ── Helpers ──
 
+port_pids() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti :"$PORT" 2>/dev/null || true
+  fi
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$PORT"/tcp 2>/dev/null | tr ' ' '\n' || true
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' || true
+  fi
+}
+
+port_in_use() {
+  [ -n "$(port_pids | sort -u)" ]
+}
+
+backend_ready() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1
+    return $?
+  fi
+
+  "$PYTHON" - "$PORT" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+port = sys.argv[1]
+urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2).read(1)
+PY
+}
+
 stop_backend() {
   local pids
-  pids=$(lsof -ti :$PORT 2>/dev/null || true)
+  pids=$(port_pids | sort -u)
   if [ -n "$pids" ]; then
     echo "Stopping backend (PIDs: $pids)..."
     echo "$pids" | xargs kill -9 2>/dev/null || true
@@ -54,9 +86,18 @@ init_data() {
 }
 
 start_backend() {
+  if [ ! -x "$PYTHON" ]; then
+    echo "ERROR: Python interpreter not found or not executable: $PYTHON"
+    exit 1
+  fi
+
   # Verify port is free
-  if lsof -ti :$PORT >/dev/null 2>&1; then
-    echo "ERROR: Port $PORT already in use"
+  if port_in_use; then
+    if backend_ready; then
+      echo "Backend already running at http://localhost:$PORT"
+      return 0
+    fi
+    echo "ERROR: Port $PORT already in use by a non-responsive process"
     exit 1
   fi
 
@@ -68,7 +109,7 @@ start_backend() {
 
   # Wait for startup
   for i in $(seq 1 10); do
-    if lsof -ti :$PORT >/dev/null 2>&1; then
+    if backend_ready; then
       echo "Backend ready at http://localhost:$PORT"
       return 0
     fi
@@ -88,14 +129,14 @@ hire_from_list() {
   fi
 
   local count
-  count=$(python3 -c "import json; print(len(json.load(open('$hire_file'))))")
+  count=$("$PYTHON" -c "import json; print(len(json.load(open('$hire_file'))))")
   if [ "$count" -eq 0 ]; then
     echo "hire_list.json is empty, skipping."
     return
   fi
 
   echo "Auto-hiring $count employee(s) from hire_list.json ..."
-  python3 -c "
+  "$PYTHON" -c "
 import json, urllib.request
 
 with open('$hire_file') as f:
