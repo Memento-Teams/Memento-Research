@@ -1914,12 +1914,12 @@ async def run_debate(
     topic: str,
     participant_ids: list[str],
     max_rounds: int = 5,
+    mode: str = "parallel",
     initiator_id: str = "",
 ) -> dict:
-    """Run a multi-agent debate (MAD) — structured parallel discussion among multiple agents.
+    """Run a multi-agent debate (MAD) — structured discussion among multiple agents.
 
-    Unlike pull_meeting (token-grab, one speaker per turn), MAD runs in synchronized rounds:
-    every participant responds simultaneously each round, reading ALL previous responses.
+    Unlike pull_meeting (token-grab, one speaker per turn), MAD runs in synchronized rounds.
     Ends when consensus is reached or max_rounds is exhausted. A judge delivers the final verdict.
 
     Use this for decisions that need structured argumentation — architecture choices, strategic
@@ -1929,6 +1929,10 @@ async def run_debate(
         topic: The debate question or proposition (e.g. "Should we migrate to microservices?")
         participant_ids: List of colleague IDs who will debate (must be 2+ people).
         max_rounds: Maximum number of rounds before forcing the judge conclusion (default 5).
+        mode: "parallel" (default) — every participant responds simultaneously each round,
+            reading only previous rounds. "sequential" — participants respond one by one each
+            round; each agent also sees the responses of earlier speakers in the current round
+            before composing their own reply.
         initiator_id: Your employee ID (auto-filled, can be left empty).
 
     Returns:
@@ -1969,6 +1973,7 @@ async def run_debate(
             participant_ids=valid_ids,
             agents_data=agents_data,
             max_rounds=max_rounds,
+            mode=mode,
             on_message=_on_message,
         )
     except asyncio.CancelledError:
