@@ -264,6 +264,15 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .lcg-anom-type{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
 .lcg-ref{display:inline-block;background:var(--green-subtle);color:var(--green);padding:0 4px;border-radius:3px;font-family:var(--mono);font-size:.95em;cursor:help}
 .lcg-ref:hover{background:var(--green);color:var(--white)}
+.lcg-graph-container{margin:0 0 14px;border:1px solid var(--border-light);border-radius:var(--r);background:linear-gradient(180deg,var(--white) 0%,#fafbff 100%)}
+.lcg-graph-summary{cursor:pointer;padding:8px 12px;font-family:var(--mono);font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;list-style:none;user-select:none;display:flex;align-items:center;gap:6px}
+.lcg-graph-summary::-webkit-details-marker{display:none}
+.lcg-graph-summary::before{content:"▸";color:var(--text3);transition:transform .15s;display:inline-block}
+.lcg-graph-container[open]>.lcg-graph-summary::before{transform:rotate(90deg)}
+.lcg-graph-container[open]>.lcg-graph-summary{border-bottom:1px dashed var(--border-light)}
+.lcg-graph-body{padding:8px 12px}
+.lcg-graph-svg{width:100%;height:auto;display:block;max-height:380px}
+.lcg-graph-planet:hover circle{stroke-width:3;filter:brightness(1.1)}
 .lcg-popup{position:absolute;display:none;z-index:9999;max-width:380px;background:var(--white);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:.74rem;line-height:1.5;color:var(--text2);pointer-events:none}
 .lcg-pop-title{font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:baseline;gap:6px}
 .lcg-pop-row{margin:4px 0}
@@ -1192,7 +1201,19 @@ function updateProducer(cardId, content) {
   const lcgHtml = (typeof window._tryRenderLcg === 'function')
     ? window._tryRenderLcg(cleaned)
     : null;
-  el.innerHTML = lcgHtml || _renderMd(cleaned);
+  // Companion orbit graph — only when lcg cards rendered AND ≥2 hypotheses
+  // exist (the graph module returns null otherwise).
+  const graphSvg = lcgHtml && typeof window._tryRenderLcgGraph === 'function'
+    ? window._tryRenderLcgGraph(cleaned)
+    : null;
+  let finalHtml = lcgHtml || _renderMd(cleaned);
+  if (graphSvg) {
+    finalHtml = `<details class="lcg-graph-container" open><summary class="lcg-graph-summary">Hypothesis orbit graph · click planets to jump</summary><div class="lcg-graph-body">${graphSvg}</div></details>` + finalHtml;
+  }
+  el.innerHTML = finalHtml;
+  if (graphSvg && typeof window._setupLcgGraphClicks === 'function') {
+    window._setupLcgGraphClicks(el);
+  }
   _scroll();
 }
 
