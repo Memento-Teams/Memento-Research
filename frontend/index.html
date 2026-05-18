@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="/vendor/d3.v7.min.js" defer></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -1266,18 +1267,18 @@ function updateProducer(cardId, content) {
   const lcgHtml = (typeof window._tryRenderLcg === 'function')
     ? window._tryRenderLcg(cleaned)
     : null;
-  // Companion orbit graph — only when lcg cards rendered AND ≥2 hypotheses
-  // exist (the graph module returns null otherwise).
-  const graphSvg = lcgHtml && typeof window._tryRenderLcgGraph === 'function'
-    ? window._tryRenderLcgGraph(cleaned)
-    : null;
+  // Companion conflict graph — only when lcg cards rendered. Fetches a
+  // topic-filtered subgraph from the aigraph backend and renders it as
+  // a D3 force layout above the cards. Async; the slot is mounted now
+  // and filled in once the API responds.
   let finalHtml = lcgHtml || _renderMd(cleaned);
-  if (graphSvg) {
-    finalHtml = `<details class="lcg-graph-container" open><summary class="lcg-graph-summary">Hypothesis orbit graph · click planets to jump</summary><div class="lcg-graph-body">${graphSvg}</div></details>` + finalHtml;
+  if (lcgHtml) {
+    finalHtml = `<details class="lcg-graph-container" open><summary class="lcg-graph-summary">Topic-filtered conflict graph · drag nodes, click hypothesis to jump</summary><div class="lcg-graph-body" id="sc-prod-graph-${cardId}"></div></details>` + finalHtml;
   }
   el.innerHTML = finalHtml;
-  if (graphSvg && typeof window._setupLcgGraphClicks === 'function') {
-    window._setupLcgGraphClicks(el);
+  if (lcgHtml && typeof window._renderLcgGraph === 'function') {
+    const graphSlot = document.getElementById('sc-prod-graph-' + cardId);
+    if (graphSlot) window._renderLcgGraph(graphSlot, cleaned);
   }
   _scroll();
 }
