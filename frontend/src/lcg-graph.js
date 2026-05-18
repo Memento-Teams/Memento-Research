@@ -1,210 +1,244 @@
-// Renders the lcg producer output as a planet/orbit graph:
-//   centre  = topic (extracted from the advisor H1)
-//   planets = cited hypotheses, sized by novelty, distance ∝ inverse utility
-//   colour  = scope tag (method=X, task=Y), one hue per unique scope
-//   dashed  = graph bridges out to satellite labels
+// Renders the topic-filtered conflict graph as a D3 force-directed SVG
+// above the existing hypothesis cards.
 //
-// Designed as a glance-able overview that sits above the existing
-// hypothesis cards. Returns null if the input doesn't parse as lcg.
+// Data source: aigraph's :8765/query/graph endpoint, which takes
+// (topic, run, k) and returns {nodes, edges, stats}. The advisor's H1
+// supplies the topic; run + k are config (defaults below). The advisor
+// already filters to topic-relevant hypotheses, so the resulting graph
+// is small (typically 15-40 nodes) and renders well as a force layout.
+//
+// Falls through (renders nothing) when:
+//   - producer output isn't lcg-shaped (no advisor H1)
+//   - the aigraph server isn't reachable
+//   - the API returns no matching hypotheses
+//
+// D3 is loaded via <script src="d3.min.js" defer> in index.html.
 
+const LCG_GRAPH_BASE = window.LCG_GRAPH_BASE || 'http://127.0.0.1:8765';
+const LCG_GRAPH_RUN = window.LCG_GRAPH_RUN || 'arxiv-reasoning-v0.7-540p-thaw1';
+const LCG_GRAPH_K = 8;
 const SVG_W = 720;
-const SVG_H = 360;
-const CX = SVG_W / 2;
-const CY = SVG_H / 2;
+const SVG_H = 380;
 
-function _parseHypotheses(content) {
-  const sep = content.indexOf('\n---\n');
-  const dump = sep >= 0 ? content.slice(sep + 5) : content;
-  // Split into hypothesis sections by ### h{digits}
-  const sections = dump.split(/(?=^###\s+h\d{2,4}\s+—\s+)/m);
-  const hyps = [];
-  for (const sec of sections) {
-    const head = sec.match(/^###\s+(h\d{2,4})\s+—\s+(.+?)$/m);
-    if (!head) continue;
-    const id = head[1];
-    const title = head[2].trim();
+const KIND_STYLE = {
+  topic:      { fill: '#245A40', stroke: '#245A40', r: 26, textColor: '#fff', font: 12 },
+  hypothesis: { fill: '#C5A55A', stroke: '#8B7332', r: 18, textColor: '#3D3B36', font: 11 },
+  anomaly:    { fill: '#B85C4A', stroke: '#8B3A2A', r: 14, textColor: '#fff', font: 10 },
+  entity:     { fill: '#E4EDE8', stroke: '#367A56', r: 9,  textColor: '#245A40', font: 9 },
+  bridge:     { fill: '#FAF5E8', stroke: '#C5A55A', r: 9,  textColor: '#8B7332', font: 9 },
+};
 
-    const scope = (sec.match(/\*\*Scope\.\*\*\s+([^\n]+)/) || [null, ''])[1].trim();
-    const bridges = [];
-    const brMatch = sec.match(/\*\*Graph bridge\.\*\*\s+([^\n]+)/);
-    if (brMatch) {
-      for (const part of brMatch[1].split(/[;,]\s*|\sand\s/)) {
-        const m = part.match(/(.+?)\s*(?:→|->)\s*(.+)/);
-        if (m) bridges.push({ from: m[1].trim(), to: m[2].trim() });
-      }
-    }
-
-    // Utility table row — last cell is the rolled-up utility, col 3 is novelty.
-    let utility = 0.5;
-    let novelty = 0.5;
-    const tableM = sec.match(/\|\s*[\d.]+\s*\|\s*[\d.]+\s*\|\s*[\d.]+\s*\|\s*([\d.]+)\s*\|[\s\S]*?\|\s*([\d.]+)\s*\|\s*$/m);
-    if (tableM) {
-      novelty = parseFloat(tableM[1]);
-      utility = parseFloat(tableM[2]);
-    }
-
-    hyps.push({ id, title, scope, bridges, utility, novelty });
-  }
-  return hyps;
-}
+const EDGE_STYLE = {
+  selected: { stroke: '#245A40', width: 1.6, opacity: 0.85, dash: null },
+  explains: { stroke: '#8B3A2A', width: 1.4, opacity: 0.75, dash: null },
+  shared:   { stroke: '#367A56', width: 1.0, opacity: 0.45, dash: '4 3' },
+  bridges:  { stroke: '#C5A55A', width: 1.2, opacity: 0.65, dash: '3 2' },
+};
 
 function _parseTopic(content) {
   const m = content.match(/##\s+Advisor Answer[\s\S]*?#\s+Stage \d+:[^—\n]*—\s+([^\n]+)/);
   if (m) return m[1].trim();
-  // Fallback: first H1 anywhere
   const h1 = content.match(/^#\s+([^\n]+)/m);
-  return h1 ? h1[1].trim() : 'Topic';
+  return h1 ? h1[1].trim() : null;
 }
 
 function _escape(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Stable colour palette for scope tags (HSL hue rotation).
-function _scopeColor(scope, scopeIndex) {
-  // 9 distinct hues, rotated.
-  const hue = (scopeIndex * 137) % 360;
-  return `hsl(${hue}, 55%, 60%)`;
+function _shorten(s, max = 32) {
+  if (!s) return '';
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
-function _renderSvg(topic, hyps) {
-  if (hyps.length === 0) return null;
-
-  // Bucket by scope so similar hypotheses cluster nearby.
-  const scopeOrder = [];
-  const scopeIndex = new Map();
-  for (const h of hyps) {
-    if (!scopeIndex.has(h.scope)) {
-      scopeIndex.set(h.scope, scopeOrder.length);
-      scopeOrder.push(h.scope);
-    }
+// Pull hypothesis IDs the advisor used as `### h202 — title` section headings.
+// Falls back to looser inline citations when no h3 ID headings are present.
+function _parseCitedIds(content) {
+  const heads = [...content.matchAll(/^###\s+(h\d{2,4})\b/gm)].map(m => m[1]);
+  if (heads.length) return [...new Set(heads)];
+  const seen = new Set();
+  const ids = [];
+  for (const m of content.matchAll(/\b(h\d{2,4})\b/g)) {
+    if (!seen.has(m[1])) { seen.add(m[1]); ids.push(m[1]); }
   }
-  // Sort hypotheses: first by scope bucket, then by descending utility (high utility first → closer to centre).
-  hyps.sort((a, b) => {
-    const sa = scopeIndex.get(a.scope);
-    const sb = scopeIndex.get(b.scope);
-    if (sa !== sb) return sa - sb;
-    return b.utility - a.utility;
-  });
+  return ids.slice(0, 12);
+}
 
-  const N = hyps.length;
-  const RING = Math.min(CX, CY) - 70;
-  // Place each hypothesis on a near-circle, with radial offset proportional to (1 - utility):
-  // higher utility ⇒ closer to centre.
-  const positions = hyps.map((h, i) => {
-    const angle = (i / N) * Math.PI * 2 - Math.PI / 2; // start at top
-    const r = RING * (0.65 + 0.35 * (1 - h.utility));
-    return {
-      h,
-      angle,
-      r,
-      x: CX + Math.cos(angle) * r,
-      y: CY + Math.sin(angle) * r,
-      radius: 12 + 14 * h.novelty,
-      color: _scopeColor(h.scope, scopeIndex.get(h.scope)),
-    };
-  });
+async function _fetchGraph(topic, ids) {
+  const url = new URL(`${LCG_GRAPH_BASE}/query/graph`);
+  url.searchParams.set('topic', topic);
+  url.searchParams.set('run', LCG_GRAPH_RUN);
+  url.searchParams.set('k', String(LCG_GRAPH_K));
+  if (ids && ids.length) url.searchParams.set('ids', ids.join(','));
+  const resp = await fetch(url, { mode: 'cors' });
+  if (!resp.ok) throw new Error(`status ${resp.status}`);
+  return await resp.json();
+}
 
-  // Compute bridge satellite positions.
-  const bridgeNodes = [];
-  positions.forEach(p => {
-    p.h.bridges.forEach((br, j) => {
-      const bridgeAngle = p.angle + 0.18 * (j + 1);
-      const bridgeR = p.r + 50;
-      bridgeNodes.push({
-        x: CX + Math.cos(bridgeAngle) * bridgeR,
-        y: CY + Math.sin(bridgeAngle) * bridgeR,
-        label: br.to,
-        fromX: p.x,
-        fromY: p.y,
-      });
-    });
-  });
-
-  // Build SVG content.
-  let svg = `<svg viewBox="0 0 ${SVG_W} ${SVG_H}" xmlns="http://www.w3.org/2000/svg" class="lcg-graph-svg" aria-label="hypothesis orbit graph">`;
-  svg += `<defs><radialGradient id="lcgg-core" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#1a1a1a" stop-opacity="1"/><stop offset="100%" stop-color="#1a1a1a" stop-opacity="0.6"/></radialGradient></defs>`;
-
-  // Concentric guide rings (very faint).
-  for (const rr of [RING * 0.65, RING]) {
-    svg += `<circle cx="${CX}" cy="${CY}" r="${rr}" fill="none" stroke="var(--text4, #888)" stroke-opacity="0.15" stroke-dasharray="2 4"/>`;
+function _renderGraph(container, data) {
+  if (typeof d3 === 'undefined') {
+    container.innerHTML = '<div style="padding:12px;color:#746144;font-size:.82rem">D3 not loaded — refresh and retry.</div>';
+    return;
   }
+  if (!data || !data.nodes || data.nodes.length <= 1) {
+    container.innerHTML = '<div style="padding:12px;color:#746144;font-size:.82rem">No on-topic conflict structure matched.</div>';
+    return;
+  }
+  container.innerHTML = '';
 
-  // Bridge dashed lines (drawn behind planets).
-  bridgeNodes.forEach(b => {
-    svg += `<line x1="${b.fromX}" y1="${b.fromY}" x2="${b.x}" y2="${b.y}" stroke="var(--text4, #888)" stroke-opacity="0.4" stroke-dasharray="3 3"/>`;
+  const nodes = data.nodes.map(n => ({ ...n }));
+  const links = data.edges.map(e => ({ ...e }));
+
+  const svg = d3.select(container)
+    .append('svg')
+    .attr('viewBox', `0 0 ${SVG_W} ${SVG_H}`)
+    .attr('class', 'lcg-graph-svg')
+    .attr('aria-label', 'topic-filtered conflict graph');
+
+  const defs = svg.append('defs');
+  ['selected', 'explains', 'bridges'].forEach(kind => {
+    const s = EDGE_STYLE[kind];
+    defs.append('marker')
+      .attr('id', `lcggArrow-${kind}`)
+      .attr('viewBox', '0 -4 8 8')
+      .attr('refX', 8).attr('refY', 0)
+      .attr('markerWidth', 6).attr('markerHeight', 6)
+      .attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', s.stroke).attr('opacity', s.opacity);
   });
 
-  // Bridge labels.
-  bridgeNodes.forEach(b => {
-    const t = _escape(b.label.length > 22 ? b.label.slice(0, 22) + '…' : b.label);
-    svg += `<text x="${b.x}" y="${b.y}" fill="var(--text3, #aaa)" font-size="10" text-anchor="middle" dominant-baseline="middle">${t}</text>`;
-  });
+  const linkSel = svg.append('g')
+    .selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('stroke', d => (EDGE_STYLE[d.kind] || EDGE_STYLE.shared).stroke)
+    .attr('stroke-width', d => (EDGE_STYLE[d.kind] || EDGE_STYLE.shared).width)
+    .attr('stroke-opacity', d => (EDGE_STYLE[d.kind] || EDGE_STYLE.shared).opacity)
+    .attr('stroke-dasharray', d => (EDGE_STYLE[d.kind] || EDGE_STYLE.shared).dash || null)
+    .attr('marker-end', d => EDGE_STYLE[d.kind] ? `url(#lcggArrow-${d.kind})` : null);
 
-  // Centre: topic.
-  const topicShort = _escape(topic.length > 28 ? topic.slice(0, 28) + '…' : topic);
-  svg += `<circle cx="${CX}" cy="${CY}" r="42" fill="url(#lcgg-core)" stroke="var(--accent, #69f)" stroke-width="1.5"/>`;
-  svg += `<text x="${CX}" y="${CY - 4}" fill="var(--text1, #fff)" font-size="11" font-weight="600" text-anchor="middle">TOPIC</text>`;
-  svg += `<text x="${CX}" y="${CY + 12}" fill="var(--text2, #ddd)" font-size="10" text-anchor="middle">${topicShort}</text>`;
+  const nodeG = svg.append('g')
+    .selectAll('g.lcg-graph-node')
+    .data(nodes)
+    .join('g')
+    .attr('class', 'lcg-graph-node')
+    .style('cursor', d => d.kind === 'hypothesis' ? 'pointer' : 'default')
+    .call(d3.drag()
+      .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+      .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
-  // Planets.
-  positions.forEach(p => {
-    svg += `<g class="lcg-graph-planet" data-lcg-graph-id="${p.h.id}" style="cursor:pointer">`;
-    svg += `<circle cx="${p.x}" cy="${p.y}" r="${p.radius}" fill="${p.color}" fill-opacity="0.85" stroke="${p.color}" stroke-width="1.5"/>`;
-    svg += `<text x="${p.x}" y="${p.y + 3}" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">${_escape(p.h.id)}</text>`;
-    svg += `</g>`;
-  });
+  nodeG.append('circle')
+    .attr('r', d => KIND_STYLE[d.kind]?.r || 10)
+    .attr('fill', d => KIND_STYLE[d.kind]?.fill || '#aaa')
+    .attr('fill-opacity', 0.92)
+    .attr('stroke', d => KIND_STYLE[d.kind]?.stroke || '#666')
+    .attr('stroke-width', 1.5);
 
-  // Legend: list each unique scope with its colour, bottom-left.
-  let lx = 12;
-  const ly = SVG_H - 12;
-  scopeOrder.forEach((sc, i) => {
-    if (!sc) return;
-    const color = _scopeColor(sc, i);
-    const short = sc.length > 28 ? sc.slice(0, 28) + '…' : sc;
-    svg += `<circle cx="${lx + 5}" cy="${ly - 4}" r="4" fill="${color}"/>`;
-    svg += `<text x="${lx + 14}" y="${ly}" fill="var(--text3, #aaa)" font-size="10">${_escape(short)}</text>`;
-    lx += 14 + short.length * 6;
-  });
+  nodeG.append('title').text(d => d.title || d.label);
 
-  svg += `</svg>`;
-  return svg;
-}
+  nodeG.append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'middle')
+    .attr('font-family', 'var(--mono, JetBrains Mono, monospace)')
+    .attr('font-size', d => KIND_STYLE[d.kind]?.font || 10)
+    .attr('font-weight', d => d.kind === 'topic' || d.kind === 'hypothesis' ? 600 : 400)
+    .attr('fill', d => KIND_STYLE[d.kind]?.textColor || '#000')
+    .attr('pointer-events', 'none')
+    .text(d => d.kind === 'topic' ? _shorten(d.label, 22)
+              : d.kind === 'entity' || d.kind === 'bridge' ? _shorten(d.label, 16)
+              : d.label);
 
-export function tryRenderLcgGraph(content) {
-  if (!content || typeof content !== 'string') return null;
-  // Only render when we can extract ≥ 2 hypotheses — anything less is not worth a graph.
-  const hyps = _parseHypotheses(content);
-  if (hyps.length < 2) return null;
-  const topic = _parseTopic(content);
-  return _renderSvg(topic, hyps);
-}
-
-// Click handler — wired by index.html. Scrolls to the corresponding hypothesis
-// card and highlights it briefly.
-export function setupLcgGraphClicks(rootEl) {
-  if (!rootEl) return;
-  rootEl.querySelectorAll('.lcg-graph-planet').forEach(g => {
-    g.addEventListener('click', () => {
-      const id = g.getAttribute('data-lcg-graph-id');
-      if (!id) return;
-      // The lcg-renderer namespaces card IDs with `lcg{n}__h202` — look for any
-      // `<details>` whose summary contains the bare ID.
+  // Click hypothesis → open and scroll its card
+  nodeG.filter(d => d.kind === 'hypothesis')
+    .on('click', (ev, d) => {
       const cards = document.querySelectorAll('details.lcg-card');
       for (const card of cards) {
         const sum = card.querySelector('summary');
-        if (sum && sum.textContent && sum.textContent.indexOf(id) === 0) {
+        if (sum && sum.textContent && sum.textContent.indexOf(d.id) === 0) {
           card.open = true;
           card.scrollIntoView({ behavior: 'smooth', block: 'center' });
           card.style.transition = 'box-shadow 0.4s';
-          card.style.boxShadow = '0 0 0 3px var(--accent, #69f)';
+          card.style.boxShadow = '0 0 0 3px var(--gold, #C5A55A)';
           setTimeout(() => { card.style.boxShadow = ''; }, 1200);
           break;
         }
       }
     });
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(d =>
+      d.kind === 'selected' ? 95 :
+      d.kind === 'explains' ? 70 :
+      d.kind === 'shared' ? 55 :
+      d.kind === 'bridges' ? 80 : 60
+    ).strength(0.6))
+    .force('charge', d3.forceManyBody().strength(-220))
+    .force('center', d3.forceCenter(SVG_W / 2, SVG_H / 2))
+    .force('collide', d3.forceCollide().radius(d => (KIND_STYLE[d.kind]?.r || 10) + 8))
+    .alphaDecay(0.04)
+    .on('tick', () => {
+      // Keep nodes inside the viewBox
+      nodes.forEach(n => {
+        const r = (KIND_STYLE[n.kind]?.r || 10) + 4;
+        n.x = Math.max(r, Math.min(SVG_W - r, n.x));
+        n.y = Math.max(r, Math.min(SVG_H - r, n.y));
+      });
+      linkSel
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+  // Legend in bottom-left
+  const legend = svg.append('g').attr('transform', `translate(12, ${SVG_H - 50})`);
+  const items = [
+    { kind: 'topic', label: 'topic' },
+    { kind: 'hypothesis', label: 'hypothesis (click to jump)' },
+    { kind: 'anomaly', label: 'anomaly' },
+    { kind: 'entity', label: 'shared entity' },
+    { kind: 'bridge', label: 'graph bridge' },
+  ];
+  items.forEach((it, i) => {
+    const row = legend.append('g').attr('transform', `translate(0, ${i * 11})`);
+    row.append('circle').attr('cx', 5).attr('cy', 0).attr('r', 4)
+      .attr('fill', KIND_STYLE[it.kind].fill)
+      .attr('stroke', KIND_STYLE[it.kind].stroke).attr('stroke-width', 1);
+    row.append('text').attr('x', 14).attr('y', 3.5)
+      .attr('font-family', 'var(--mono, JetBrains Mono, monospace)')
+      .attr('font-size', 9).attr('fill', 'var(--text3, #746144)')
+      .text(it.label);
   });
+
+  // Stats in bottom-right
+  if (data.stats) {
+    const stats = svg.append('text')
+      .attr('x', SVG_W - 12).attr('y', SVG_H - 12)
+      .attr('text-anchor', 'end')
+      .attr('font-family', 'var(--mono, JetBrains Mono, monospace)')
+      .attr('font-size', 9).attr('fill', 'var(--text3, #746144)')
+      .text(`${data.stats.n_selected}/${data.stats.n_hypotheses_total} hyps · ${data.stats.wall_seconds}s`);
+  }
 }
 
-window._tryRenderLcgGraph = tryRenderLcgGraph;
-window._setupLcgGraphClicks = setupLcgGraphClicks;
+// Async render: fetch + draw. Returns immediately; the container will
+// fill in once the API responds (usually <500ms).
+export async function renderLcgGraph(container, content) {
+  if (!container || !content) return;
+  const topic = _parseTopic(content);
+  if (!topic) return;
+  const citedIds = _parseCitedIds(content);
+  container.innerHTML = '<div style="padding:14px;color:#746144;font-size:.78rem;font-family:var(--mono, JetBrains Mono, monospace)">Building conflict graph for ' + _escape(_shorten(topic, 50)) + '…</div>';
+  try {
+    const data = await _fetchGraph(topic, citedIds);
+    if (data.error) {
+      container.innerHTML = '<div style="padding:14px;color:#B85C4A;font-size:.78rem">Conflict graph fetch failed: ' + _escape(data.error) + '</div>';
+      return;
+    }
+    _renderGraph(container, data);
+  } catch (err) {
+    container.innerHTML = '<div style="padding:14px;color:#746144;font-size:.78rem">Conflict graph unavailable (aigraph server not reachable: ' + _escape(String(err)) + ').</div>';
+  }
+}
+
+window._renderLcgGraph = renderLcgGraph;
