@@ -790,6 +790,7 @@ function showPipelineBar(start, end){
 // ── Range Selector — click dot for range, dropdown button for agent ──
 let _rangeStart = 1, _rangeEnd = 9, _rangeClickState = 0;
 const _stageAssignments = {};
+window._stageAssignments = _stageAssignments;
 
 function _renderRangeSelector() {
   const el = document.getElementById('rangeSelector');
@@ -875,6 +876,7 @@ function _assignStageAgent(stageId, empNum) {
 window._getRangeStart = () => _rangeStart;
 window._getRangeEnd = () => _rangeEnd;
 window._getStageAssignments = () => Object.keys(_stageAssignments).length > 0 ? {..._stageAssignments} : null;
+window._renderRangeSelector = _renderRangeSelector;
 
 _renderRangeSelector();
 

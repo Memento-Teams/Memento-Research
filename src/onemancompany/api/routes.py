@@ -2197,17 +2197,15 @@ async def get_api_settings() -> dict:
             entry["auth_method"] = settings.anthropic_auth_method
         result[name] = entry
 
-    # Talent market (stored in config.yaml, not .env)
-    from onemancompany.core.config import load_app_config
-    tm = load_app_config().get("talent_market", {})
-    tm_key = tm.get("api_key", "")
+    # Talent Market settings are .env-backed like other provider settings.
+    tm_key = settings.talent_market_api_key
     result["talent_market"] = {
         "api_key_set": bool(tm_key),
         "api_key_preview": ("..." + tm_key[-4:]) if len(tm_key) >= 4 else "",
-        "mode": tm.get("mode", "local"),
+        "mode": settings.talent_market_mode,
         "connected": _get_talent_market_connected(),
         "local_talent_count": _get_local_talent_count(),
-        "use_ai_search": tm.get("use_ai_search", False),
+        "use_ai_search": settings.talent_market_use_ai_search,
     }
 
     return result
@@ -2221,23 +2219,20 @@ async def update_api_settings(body: dict) -> dict:
     provider = body.get("provider", "")
 
     if provider == "talent_market":
-        # Save talent market API key to config.yaml
-        import yaml
-        from onemancompany.core.config import APP_CONFIG_PATH, load_app_config, reload_app_config
         api_key = body.get("api_key", "")
         has_toggle = "use_ai_search" in body or "mode" in body
         if not api_key and not has_toggle:
             return {"error": "API key, use_ai_search, or mode is required"}
-        config = load_app_config()
-        tm = config.setdefault("talent_market", {})
+
         if api_key:
-            tm["api_key"] = api_key
+            update_env_var("TALENT_MARKET_API_KEY", api_key)
         if "use_ai_search" in body:
-            tm["use_ai_search"] = bool(body["use_ai_search"])
+            update_env_var("TALENT_MARKET_USE_AI_SEARCH", "true" if body["use_ai_search"] else "false")
         if "mode" in body and body["mode"] in ("local", "remote"):
-            tm["mode"] = body["mode"]
-        write_text_utf(APP_CONFIG_PATH, yaml.dump(config, default_flow_style=False, allow_unicode=True))
-        reload_app_config()
+            update_env_var("TALENT_MARKET_MODE", body["mode"])
+
+        from onemancompany.core import config as _config
+        tm_settings = _config.settings
 
         # Reconnect Talent Market only if API key was actually changed
         if api_key:
@@ -2251,10 +2246,10 @@ async def update_api_settings(body: dict) -> dict:
         return {
             "status": "updated",
             "talent_market": {
-                "api_key_set": bool(tm.get("api_key", "")),
-                "api_key_preview": ("..." + api_key[-4:]) if api_key and len(api_key) >= 4 else "",
-                "use_ai_search": tm.get("use_ai_search", False),
-                "mode": tm.get("mode", "local"),
+                "api_key_set": bool(tm_settings.talent_market_api_key),
+                "api_key_preview": ("..." + tm_settings.talent_market_api_key[-4:]) if len(tm_settings.talent_market_api_key) >= 4 else "",
+                "use_ai_search": tm_settings.talent_market_use_ai_search,
+                "mode": tm_settings.talent_market_mode,
             },
         }
 
@@ -4633,9 +4628,8 @@ async def hire_from_cv(body: dict) -> dict:
                 source_repo = cv.get("source_repo", "")
                 repo_url = source_repo
                 if not repo_url:
+                    tm_url = settings.talent_market_url
                     try:
-                        from onemancompany.core.config import load_app_config
-                        tm_url = load_app_config().get("talent_market", {}).get("url", "https://api.one-man-company.com/mcp/sse")
                         onboard_result = await talent_market.onboard(talent_id)
                         repo_url = onboard_result.get("repo_url", "")
                     except Exception as e:
