@@ -608,12 +608,21 @@ async function hydrateProjectFromBackend(pid) {
   const currentStage = status.current_stage || completedIds[completedIds.length - 1];
   const phase = status.phase;
 
+  const topic = status.topic || '';
   completedIds.forEach(sid => {
     const meta = STAGES.find(s => s.id === sid);
     if (!meta) return;
     const cardId = `s${sid}`;
     getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
-    updateProducer(cardId, stageResults[String(sid)]);
+    // The new idea-construction prompt no longer prefixes Stage 3 markdown
+    // with a `# Stage 3: — {topic}` heading, so the lcg renderer's topic
+    // parser can't see the project topic. Inject it ourselves when missing
+    // so both the advisor block and the conflict graph render correctly.
+    let content = stageResults[String(sid)] || '';
+    if (topic && !/^#\s+Stage \d+:/m.test(content)) {
+      content = `# Stage ${sid}: ${meta.name} — ${topic}\n\n${content}`;
+    }
+    updateProducer(cardId, content);
     const isCurrent = sid === currentStage;
     if (isCurrent && phase && phase !== 'done') {
       setCardStatus(cardId, phase === 'reviewing' ? 'reviewing' : 'running');
