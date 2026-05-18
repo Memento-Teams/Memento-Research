@@ -39,12 +39,52 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .brand-name{font-family:var(--serif);font-size:1.15rem;font-weight:600;letter-spacing:-.02em}
 .lab-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:var(--pill);background:var(--gold-subtle);border:1px solid var(--gold);font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);letter-spacing:.05em;text-transform:uppercase}
 
-/* Director */
-.director-card{margin:0 16px 16px;padding:14px;background:var(--green-subtle);border:1px solid var(--border);border-radius:var(--r);position:relative}
-.director-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--green);border-radius:3px 0 0 3px}
-.director-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.1em;color:var(--green);margin-bottom:4px;font-weight:600}
-.director-name{font-family:var(--serif);font-size:1rem;font-weight:600;margin-bottom:2px}
-.director-status{font-size:.75rem;color:var(--text3)}
+/* New project button */
+.btn-new-project{width:calc(100% - 24px);margin:0 12px 12px;padding:10px;border:1.5px dashed var(--border);border-radius:var(--r);background:none;color:var(--text3);font-family:var(--sans);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-new-project:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+
+/* Range selector — click dot to toggle range, dropdown below for agent */
+.range-selector{display:flex;align-items:center;gap:0;max-width:660px;margin:0 auto 16px;padding:8px 12px;user-select:none}
+.rs-node{display:flex;flex-direction:column;align-items:center;gap:2px;position:relative;z-index:1}
+.rs-dot{width:28px;height:28px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:.6rem;font-weight:700;color:var(--text4);transition:all .2s;cursor:pointer}
+.rs-dot:hover{border-color:var(--green);color:var(--green);transform:scale(1.1)}
+.rs-dot.selected{background:var(--green);border-color:var(--green);color:#fff}
+.rs-dot.in-range{background:var(--green-subtle);border-color:var(--green);color:var(--green)}
+.rs-dot.out-range{opacity:.3}
+.rs-label{font-family:var(--mono);font-size:.5rem;color:var(--text4);white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.rs-label.in-range{color:var(--green);font-weight:600}
+.rs-agent-btn{font-family:var(--mono);font-size:.45rem;color:var(--text3);background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:60px;overflow:hidden;text-overflow:ellipsis;text-align:center;margin-top:1px;transition:all .12s}
+.rs-agent-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+.rs-agent-btn.assigned{color:var(--green);border-color:var(--green);background:var(--green-subtle);font-weight:600}
+.rs-line{flex:1;height:2px;background:var(--border);min-width:4px;transition:background .2s}
+.rs-line.in-range{background:var(--green)}
+
+/* Pipeline progress bar (horizontal, in main area) */
+.pipeline-bar{max-width:720px;margin:0 auto 16px;padding:12px 16px;background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-sm)}
+.pipeline-stages{display:flex;align-items:center;gap:0;margin-bottom:8px}
+.ps-stage{display:flex;align-items:center;flex:1;min-width:0}
+.ps-dot{width:20px;height:20px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:.55rem;font-weight:700;color:var(--text4);flex-shrink:0;transition:all .3s;cursor:default}
+.ps-dot.done{background:var(--green);border-color:var(--green);color:#fff}
+.ps-dot.running{background:var(--white);border-color:var(--green);color:var(--green);box-shadow:0 0 0 3px rgba(36,90,64,.15);animation:pulse-dot 1.5s ease-in-out infinite}
+.ps-dot.gate{background:var(--gold);border-color:var(--gold);color:#fff}
+.ps-dot.failed{background:var(--coral);border-color:var(--coral);color:#fff}
+.ps-line{flex:1;height:2px;background:var(--border);margin:0 2px;transition:background .3s}
+.ps-line.done{background:var(--green)}
+.ps-dot.skipped{opacity:.3;border-style:dashed}
+.ps-line.skipped{opacity:.3;border-style:dashed}
+.pipeline-status{display:flex;align-items:center;justify-content:center;gap:8px;font-family:var(--mono);font-size:.75rem;color:var(--text3);padding:6px 12px;border-radius:var(--pill);transition:all .3s}
+.pipeline-status.st-running{color:var(--green);border:1px solid var(--green);position:relative;overflow:hidden}
+.pipeline-status.st-running::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0;position:relative;z-index:1}
+.pipeline-status.st-running::after{content:'';position:absolute;bottom:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--green),transparent);animation:progress-sweep 1.5s ease-in-out infinite;z-index:0}
+.pipeline-status.st-gate{background:var(--gold-subtle);color:#8B7332;border:1px solid var(--gold)}
+.pipeline-status.st-gate::before{content:'⏸';font-size:.7rem;flex-shrink:0}
+.pipeline-status.st-reviewing{color:#8B7332;border:1px solid var(--gold);position:relative;overflow:hidden}
+.pipeline-status.st-reviewing::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--gold);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0;position:relative;z-index:1}
+.pipeline-status.st-reviewing::after{content:'';position:absolute;bottom:0;left:0;height:2px;width:30%;background:linear-gradient(90deg,transparent,var(--gold),transparent);animation:progress-sweep 1.5s ease-in-out infinite;z-index:0}
+.pipeline-status.st-done{background:var(--green-subtle);color:var(--green);border:1px solid var(--green)}
+.pipeline-status.st-done::before{content:'✓';font-size:.7rem;flex-shrink:0}
+.pipeline-status.st-failed{background:var(--coral-subtle);color:var(--coral);border:1px solid var(--coral)}
+.pipeline-status.st-failed::before{content:'✕';font-size:.7rem;flex-shrink:0}
 .conn-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:.7rem;color:var(--text4)}
 .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--coral)}
 .conn-status.connected .conn-dot{background:var(--green)}
@@ -69,11 +109,21 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .stage-dot.running{background:var(--green);box-shadow:0 0 0 1.5px var(--green),0 0 6px rgba(36,90,64,.3)}
 .stage-dot.done{background:var(--green);box-shadow:0 0 0 1.5px var(--green)}
 .stage-dot.paused{background:var(--gold);box-shadow:0 0 0 1.5px var(--gold)}
+.stage-dot.reviewing{background:var(--gold);box-shadow:0 0 0 1.5px var(--gold);animation:pulse-dot 1.5s ease-in-out infinite}
 .stage-dot.failed{background:var(--coral);box-shadow:0 0 0 1.5px var(--coral)}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes progress-sweep{0%{left:-30%}100%{left:100%}}
+.dot-anim span{animation:dot-blink 1.4s infinite;opacity:0}
+.dot-anim span:nth-child(1){animation-delay:0s}
+.dot-anim span:nth-child(2){animation-delay:.2s}
+.dot-anim span:nth-child(3){animation-delay:.4s}
+@keyframes dot-blink{0%,80%,100%{opacity:0}40%{opacity:1}}
 
 .stage-info{flex:1;min-width:0}
 .stage-name{font-size:.8rem;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stage-meta{font-size:.68rem;color:var(--text4);font-family:var(--mono)}
+.stage-agent{width:100%;margin-top:2px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;font-family:var(--mono);font-size:.62rem;color:var(--text3);background:var(--white);cursor:pointer;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath d='M2 3l2 2 2-2' fill='none' stroke='%23746144' stroke-width='1'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 3px center;padding-right:14px}
+.stage-agent:focus{border-color:var(--green);outline:none}
 
 .stage-connector{width:1.5px;height:8px;background:var(--border);margin-left:27px}
 .stage-connector.done{background:var(--green)}
@@ -85,14 +135,21 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .stage-act-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
 .stage-act-btn.rerun:hover{border-color:var(--gold);color:var(--gold);background:var(--gold-subtle)}
 
-/* Recent */
-.recent{margin-top:auto;padding:0 12px 16px}
-.run-item{display:flex;align-items:center;gap:8px;padding:8px;border-radius:var(--r);cursor:pointer;transition:background .12s;margin-bottom:2px}
-.run-item:hover{background:var(--bg)}
-.run-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.run-dot.ok{background:var(--green)}.run-dot.fail{background:var(--coral)}
-.run-name{font-size:.78rem;color:var(--text2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.run-time{font-size:.68rem;font-family:var(--mono);color:var(--text4)}
+/* Projects list */
+.projects{margin-top:auto;padding:0 12px 16px;overflow-y:auto;max-height:40vh}
+.proj-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--r);cursor:pointer;transition:background .12s;margin-bottom:2px;border:1.5px solid transparent}
+.proj-item:hover{background:var(--bg)}
+.proj-item.active{background:var(--green-subtle);border-color:var(--green)}
+.proj-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.proj-dot.running{background:var(--green);box-shadow:0 0 4px rgba(36,90,64,.3)}
+.proj-dot.paused{background:var(--gold)}
+.proj-dot.completed{background:var(--green)}
+.proj-dot.failed{background:var(--coral)}
+.proj-dot.pending{background:var(--border)}
+.proj-name{font-size:.78rem;color:var(--text2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proj-item.active .proj-name{color:var(--green);font-weight:600}
+.proj-status{font-size:.6rem;font-family:var(--mono);color:var(--text4);text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.proj-empty{padding:12px 16px;font-size:.78rem;color:var(--text4);text-align:center}
 
 /* ══ MAIN ══ */
 .main{flex:1;overflow-y:auto;padding:36px 44px}
@@ -114,68 +171,112 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .btn-launch:hover{background:var(--green-light);box-shadow:0 4px 14px rgba(36,90,64,.25);transform:translateY(-1px)}
 .btn-launch:disabled{opacity:.5;cursor:not-allowed;transform:none}
 
-/* ══ MEETING CARDS (collapsible) ══ */
-.meetings{max-width:720px;margin:0 auto}
+/* ══ STAGE STREAM ══ */
+.meetings{max-width:720px;margin:0 auto;overflow-y:auto;max-height:calc(100vh - 120px);padding:8px 0;scroll-behavior:smooth;transition:max-height .2s ease,padding-bottom .2s ease}
 
-.meeting-card{background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px;box-shadow:var(--shadow-sm);opacity:0;transform:translateY(12px);transition:opacity .4s,transform .4s,border-color .3s,box-shadow .3s}
-.meeting-card.visible{opacity:1;transform:translateY(0)}
-.meeting-card.active{border-color:var(--green);box-shadow:var(--shadow-md)}
-.meeting-card.rejected{border-color:var(--coral)}
-.meeting-card.paused{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold-subtle),var(--shadow-md)}
+/* Notice bar (system/director inline message) */
+.notice{display:flex;align-items:center;gap:8px;padding:6px 14px;margin:6px 0;font-size:.78rem;color:var(--text3);animation:fadeIn .3s ease}
+.notice .notice-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.notice .notice-dot.dot-info{background:var(--gold)}.notice .notice-dot.dot-error{background:var(--coral)}.notice .notice-dot.dot-ok{background:var(--green)}
+.notice .notice-text{flex:1;line-height:1.4}
+.notice .notice-time{font-family:var(--mono);font-size:.58rem;color:var(--text4);flex-shrink:0}
+.sc-body .notice{margin:0;padding:6px 16px;border-bottom:1px solid var(--border-light)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-/* Collapsed state */
-.meeting-card.collapsed .meeting-body,
-.meeting-card.collapsed .conf-row,
-.meeting-card.collapsed .minutes,
-.meeting-card.collapsed .retry-banner{display:none}
+/* Stage card wrapper — spine line on the left like a book binding */
+.stage-wrapper{display:flex;gap:0;position:relative;margin-bottom:0}
+.stage-wrapper .stage-line{width:20px;flex-shrink:0;position:relative}
+.stage-wrapper .stage-line::after{content:'';position:absolute;left:9px;top:0;bottom:0;width:2px;background:var(--border)}
+.stage-wrapper.sw-done .stage-line::after{background:var(--green)}
+.stage-wrapper.sw-active .stage-line::after{background:var(--green)}
 
-.meeting-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-light);background:var(--bg);cursor:pointer;user-select:none}
-.meeting-card.collapsed .meeting-head{border-bottom:none}
-.collapse-chevron{width:16px;height:16px;color:var(--text4);transition:transform .2s;flex-shrink:0}
-.meeting-card.collapsed .collapse-chevron{transform:rotate(-90deg)}
-.meeting-label{font-family:var(--mono);font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text4);flex:1;margin:0}
-.meeting-label strong{color:var(--text2);font-weight:600}
-.meeting-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.62rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.meeting-badge.in-progress{background:var(--gold-subtle);color:#8B7332}
-.meeting-badge.concluded{background:var(--green-subtle);color:var(--green)}
-.meeting-badge.rejected{background:var(--coral-subtle);color:var(--coral)}
-.meeting-badge.paused{background:var(--gold-subtle);color:#8B7332;border:1px solid var(--gold)}
-/* Collapsed confidence mini */
-.conf-mini{font-family:var(--mono);font-size:.7rem;font-weight:600;margin-left:6px}
-.conf-mini.high{color:var(--green)}.conf-mini.mid{color:#8B7332}.conf-mini.low{color:var(--coral)}
+/* Stage card */
+.stage-card{flex:1;background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);margin-bottom:12px;box-shadow:var(--shadow-sm);animation:fadeIn .4s ease}
+.stage-card.sc-active{border-color:var(--green);box-shadow:var(--shadow-md)}
+.stage-card.sc-error{border-color:var(--coral)}
+.stage-card.sc-done{border-color:var(--green-subtle)}
 
-/* Participants */
-.participants{display:flex;align-items:center;justify-content:center;gap:16px;padding:12px 16px;border-bottom:1px solid var(--border-light)}
-.participant{display:flex;align-items:center;gap:8px}
-.participant-avatar{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff}
-.participant-avatar.p{background:var(--green)}.participant-avatar.c{background:var(--coral)}
-.participant-name{font-size:.78rem;font-weight:550}
-.participant-role{font-size:.66rem;color:var(--text3)}
-.vs-divider{font-family:var(--mono);font-size:.68rem;color:var(--text4);font-weight:600;width:26px;height:26px;border-radius:50%;border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center}
+.sc-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border-light);background:var(--bg)}
+.sc-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;background:var(--green);flex-shrink:0}
+.sc-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
+.sc-title small{font-weight:400;color:var(--text3);margin-left:6px}
+.sc-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.sc-badge.badge-running{background:var(--gold-subtle);color:#8B7332}
+.sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
+.sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
+.sc-badge.badge-reviewing{background:var(--gold-subtle);color:#8B7332;animation:pulse-badge 1.5s ease-in-out infinite}
+@keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.6}}
 
-/* Producer / Critic columns */
-.meeting-body{display:grid;grid-template-columns:1fr 1fr}
-.meeting-col{padding:14px 16px}
-.meeting-col+.meeting-col{border-left:1px solid var(--border-light)}
-.meeting-col.critic-col{background:var(--coral-subtle)}
-.col-label{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;display:flex;align-items:center;gap:5px;font-weight:600}
-.col-label.producer-label{color:var(--green)}.col-label.critic-label{color:var(--coral)}
-.col-text{font-size:.85rem;line-height:1.7;color:var(--text2)}
-.col-text .hl{font-weight:600;color:var(--text)}
-.col-text .issue{display:block;padding:5px 0;border-bottom:1px solid var(--border-light)}
-.col-text .issue:last-child{border-bottom:none}
-.col-text .sev{font-family:var(--mono);font-size:.6rem;padding:1px 5px;border-radius:var(--pill);font-weight:600;margin-right:3px;text-transform:uppercase}
-.col-text .sev.high{background:var(--coral-subtle);color:var(--coral)}
-.col-text .sev.med{background:var(--gold-subtle);color:#8B7332}
+/* Content sections inside card */
+.sc-body{padding:0}
+.sc-section{padding:12px 16px;border-bottom:1px solid var(--border-light)}
+.sc-section:last-child{border-bottom:none}
+.sc-section-label{font-family:var(--mono);font-size:.58rem;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.sc-section-label.lbl-producer{color:var(--green)}
+.sc-section-label.lbl-critic{color:var(--coral)}
+.sc-section-label.lbl-system{color:var(--text4)}
+.sc-section-content{font-size:.82rem;line-height:1.7;color:var(--text2);word-break:break-word}
+.sc-section-content strong{color:var(--text);font-weight:600}
+.sc-section-content .error-text{color:var(--coral)}
+.sc-section-content h1{font-family:var(--serif);font-size:1.15rem;font-weight:700;margin:14px 0 6px;color:var(--text)}
+.sc-section-content h2{font-family:var(--serif);font-size:1rem;font-weight:600;margin:12px 0 5px;color:var(--text)}
+.sc-section-content h3{font-size:.9rem;font-weight:600;margin:10px 0 4px;color:var(--text)}
+.sc-section-content p{margin:0 0 8px}
+.sc-section-content ul,.sc-section-content ol{margin:0 0 8px;padding-left:18px}
+.sc-section-content li{margin-bottom:3px}
+.sc-section-content code{font-family:var(--mono);font-size:.78rem;background:var(--bg);padding:1px 4px;border-radius:3px;color:var(--green)}
+.sc-section-content pre{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:10px;margin:6px 0 10px;overflow-x:auto}
+.sc-section-content pre code{background:none;padding:0;font-size:.74rem;line-height:1.6}
+.sc-section-content blockquote{border-left:3px solid var(--gold);margin:6px 0;padding:3px 10px;color:var(--text3)}
+.sc-section-content table{width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:.78rem}
+.sc-section-content th,.sc-section-content td{border:1px solid var(--border-light);padding:5px 8px;text-align:left}
+.sc-section-content th{background:var(--bg);font-weight:600}
+.sc-section-content hr{border:none;border-top:1px solid var(--border-light);margin:12px 0}
 
-/* Confidence bar */
-.conf-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--bg)}
-.conf-label{font-family:var(--mono);font-size:.68rem;color:var(--text3)}
-.conf-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
-.conf-fill{height:100%;border-radius:2px;transition:width .6s}
-.conf-fill.high{background:var(--green)}.conf-fill.mid{background:var(--gold)}.conf-fill.low{background:var(--coral)}
-.conf-val{font-family:var(--mono);font-size:.78rem;font-weight:600;min-width:30px;text-align:right}
-.conf-val.high{color:var(--green)}.conf-val.mid{color:#8B7332}.conf-val.low{color:var(--coral)}
+/* ── Literature-conflict-graph (Stage 3 talent) — hypothesis cards + ID hover ── */
+.lcg-advisor{padding:10px 12px;background:var(--green-subtle);border-left:3px solid var(--green);border-radius:var(--r);margin:0 0 12px}
+.lcg-advisor-label{font-family:var(--mono);font-size:.66rem;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.lcg-advisor>p,.lcg-advisor>ul,.lcg-advisor>ol{margin:0 0 6px}
+.lcg-advisor>p:last-child,.lcg-advisor>ul:last-child,.lcg-advisor>ol:last-child{margin-bottom:0}
+.lcg-hyp-grid{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.lcg-card{border:1px solid var(--border-light);border-radius:var(--r);background:var(--white);overflow:hidden}
+.lcg-card>summary{cursor:pointer;padding:7px 10px;font-size:.82rem;list-style:none;user-select:none;display:flex;align-items:baseline;gap:6px}
+.lcg-card>summary::-webkit-details-marker{display:none}
+.lcg-card>summary::before{content:"▸";color:var(--text3);font-size:.7rem;transition:transform .15s}
+.lcg-card[open]>summary::before{transform:rotate(90deg);display:inline-block}
+.lcg-card[open]>summary{border-bottom:1px solid var(--border-light)}
+.lcg-card-body{padding:8px 10px;font-size:.78rem}
+.lcg-row{display:grid;grid-template-columns:96px 1fr;gap:10px;padding:4px 0;border-bottom:1px dashed var(--border-light)}
+.lcg-row:last-child{border-bottom:none}
+.lcg-row-label{font-family:var(--mono);font-size:.66rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding-top:3px}
+.lcg-row-content{color:var(--text2);line-height:1.55;word-break:break-word}
+.lcg-row-content ul{margin:2px 0 2px 16px;padding:0}
+.lcg-row-content li{margin:2px 0}
+.lcg-row-content a{color:var(--green);text-decoration:none;font-family:var(--mono);font-size:.74rem;border-bottom:1px dotted var(--green)}
+.lcg-row-content a:hover{color:var(--green-light)}
+.lcg-id{display:inline-block;background:var(--green-subtle);color:var(--green);padding:1px 6px;border-radius:3px;font-family:var(--mono);font-size:.74rem;font-weight:600}
+.lcg-id-anom{background:var(--coral-subtle);color:var(--coral)}
+.lcg-anomalies{margin-top:10px}
+.lcg-anomalies>summary{cursor:pointer;font-family:var(--mono);font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding:4px 0;list-style:none}
+.lcg-anomalies>summary::-webkit-details-marker{display:none}
+.lcg-anom{display:flex;align-items:baseline;gap:8px;padding:4px 0;font-size:.74rem;color:var(--text2);border-bottom:1px dashed var(--border-light)}
+.lcg-anom:last-child{border-bottom:none}
+.lcg-anom-type{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
+.lcg-ref{display:inline-block;background:var(--green-subtle);color:var(--green);padding:0 4px;border-radius:3px;font-family:var(--mono);font-size:.95em;cursor:help}
+.lcg-ref:hover{background:var(--green);color:var(--white)}
+.lcg-popup{position:absolute;display:none;z-index:9999;max-width:380px;background:var(--white);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:.74rem;line-height:1.5;color:var(--text2);pointer-events:none}
+.lcg-pop-title{font-weight:600;color:var(--text);margin-bottom:6px;display:flex;align-items:baseline;gap:6px}
+.lcg-pop-row{margin:4px 0}
+.lcg-pop-row strong{color:var(--text);font-weight:600}
+
+/* Confidence bar (inside card footer) */
+.sc-conf{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--bg)}
+.sc-conf-label{font-family:var(--mono);font-size:.66rem;color:var(--text3)}
+.sc-conf-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
+.sc-conf-fill{height:100%;border-radius:2px;transition:width .6s}
+.sc-conf-fill.high{background:var(--green)}.sc-conf-fill.mid{background:var(--gold)}.sc-conf-fill.low{background:var(--coral)}
+.sc-conf-val{font-family:var(--mono);font-size:.72rem;font-weight:600;min-width:30px;text-align:right}
+.sc-conf-val.high{color:var(--green)}.sc-conf-val.mid{color:#8B7332}.sc-conf-val.low{color:var(--coral)}
 
 /* ══ ACTION PANEL (fixed at bottom) ══ */
 .action-panel{position:fixed;bottom:0;left:272px;right:320px;z-index:100;background:var(--white);border-top:2px solid var(--gold);box-shadow:0 -8px 32px rgba(0,0,0,.1);border-radius:var(--r-lg) var(--r-lg) 0 0;display:flex;flex-direction:column;max-height:50vh;overflow:hidden}
@@ -268,33 +369,84 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .panel-body{flex:1;overflow-y:auto;padding:14px}
 .panel-section{display:none}.panel-section.active{display:block}
 
-/* Events */
-.event-stream{display:flex;flex-direction:column;gap:1px}
-.event{display:flex;gap:4px;padding:4px 0;font-size:.78rem;line-height:1.5;animation:fadeIn .2s ease;align-items:baseline}
-@keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
-.event-time{font-family:var(--mono);font-size:.65rem;color:var(--text4);flex-shrink:0;width:32px}
-.event-tag{flex-shrink:0;font-family:var(--mono);font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.02em;min-width:54px;background:none!important;border:none!important;border-radius:0!important;padding:0!important;box-shadow:none!important;outline:none!important;overflow:visible}
-.event-tag.dtag{color:var(--gold)}.event-tag.mtag{color:var(--green)}.event-tag.ttag{color:var(--text2)}.event-tag.gtag{color:var(--coral)}.event-tag.stag{color:var(--text3)}
-.event-msg{color:var(--text2);word-break:break-word}
+/* Workspace file list */
+.ws-empty{padding:24px 16px;text-align:center;color:var(--text4);font-size:.82rem}
+.ws-file{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border-light);cursor:pointer;transition:background .12s;animation:fadeIn .3s ease}
+.ws-file:hover{background:var(--bg)}
+.ws-file:last-child{border-bottom:none}
+.ws-file-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;flex-shrink:0;font-family:var(--mono)}
+.ws-file-icon.ft-md{background:var(--green-subtle);color:var(--green)}
+.ws-file-icon.ft-py{background:#EDE8F5;color:#6B4FA0}
+.ws-file-icon.ft-json{background:var(--gold-subtle);color:#8B7332}
+.ws-file-icon.ft-txt{background:var(--bg);color:var(--text3)}
+.ws-file-icon.ft-other{background:var(--bg);color:var(--text4)}
+.ws-file-info{flex:1;min-width:0}
+.ws-file-name{font-size:.82rem;font-weight:550;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-file-meta{font-size:.68rem;color:var(--text4);font-family:var(--mono);display:flex;gap:8px}
+.ws-file-badge{padding:2px 6px;border-radius:var(--pill);font-family:var(--mono);font-size:.55rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
+.ws-file-badge.new{background:var(--green-subtle);color:var(--green)}
+.ws-file-badge.updated{background:var(--gold-subtle);color:#8B7332}
 
-/* Calibration */
-.cal-card{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:12px;margin-bottom:8px}
-.cal-title{font-family:var(--mono);font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text4);margin-bottom:8px;font-weight:600}
-.cal-row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-light);font-size:.82rem}
-.cal-row:last-child{border-bottom:none}
-.cal-row-label{color:var(--text3)}.cal-row-val{font-family:var(--mono);font-size:.8rem;font-weight:550}
+/* File preview overlay */
+.ws-preview{position:fixed;top:0;right:0;width:480px;height:100vh;background:var(--white);border-left:1px solid var(--border);box-shadow:-4px 0 24px rgba(0,0,0,.08);z-index:200;display:flex;flex-direction:column;animation:slideIn .2s ease}
+@keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+.ws-preview-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg)}
+.ws-preview-title{flex:1;font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ws-preview-actions{display:flex;gap:4px}
+.ws-preview-btn{height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border);background:var(--white);cursor:pointer;font-family:var(--mono);font-size:.65rem;font-weight:600;color:var(--text3);display:flex;align-items:center;gap:4px;transition:all .12s}
+.ws-preview-btn:hover{border-color:var(--green);color:var(--green);background:var(--green-subtle)}
+.ws-preview-btn.btn-close:hover{border-color:var(--coral);color:var(--coral);background:var(--coral-subtle)}
+.ws-preview-btn .btn-ok{color:var(--green);font-size:.7rem}
+.ws-preview-body{flex:1;overflow-y:auto;padding:16px}
+/* Raw code view */
+.ws-preview-body.view-raw{font-family:var(--mono);font-size:.78rem;line-height:1.7;color:var(--text2);white-space:pre-wrap;word-break:break-word}
+/* Rendered markdown view */
+.ws-preview-body.view-md{font-family:var(--sans);font-size:.85rem;line-height:1.8;color:var(--text)}
+.ws-preview-body.view-md h1{font-family:var(--serif);font-size:1.3rem;font-weight:700;margin:20px 0 8px;color:var(--text)}
+.ws-preview-body.view-md h2{font-family:var(--serif);font-size:1.1rem;font-weight:600;margin:16px 0 6px;color:var(--text)}
+.ws-preview-body.view-md h3{font-size:.95rem;font-weight:600;margin:12px 0 4px;color:var(--text)}
+.ws-preview-body.view-md p{margin:0 0 10px}
+.ws-preview-body.view-md ul,.ws-preview-body.view-md ol{margin:0 0 10px;padding-left:20px}
+.ws-preview-body.view-md li{margin-bottom:4px}
+.ws-preview-body.view-md code{font-family:var(--mono);font-size:.8rem;background:var(--bg);padding:1px 5px;border-radius:4px;color:var(--green)}
+.ws-preview-body.view-md pre{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:12px;margin:8px 0 12px;overflow-x:auto}
+.ws-preview-body.view-md pre code{background:none;padding:0;font-size:.76rem;line-height:1.6}
+.ws-preview-body.view-md blockquote{border-left:3px solid var(--gold);margin:8px 0;padding:4px 12px;color:var(--text3)}
+.ws-preview-body.view-md table{width:100%;border-collapse:collapse;margin:8px 0 12px;font-size:.8rem}
+.ws-preview-body.view-md th,.ws-preview-body.view-md td{border:1px solid var(--border-light);padding:6px 10px;text-align:left}
+.ws-preview-body.view-md th{background:var(--bg);font-weight:600}
+.ws-preview-body.view-md strong{color:var(--text);font-weight:600}
+.ws-preview-body.view-md hr{border:none;border-top:1px solid var(--border-light);margin:16px 0}
 
-/* Team cards */
-.team-card{background:var(--bg);border:1px solid var(--border-light);border-radius:var(--r);padding:12px;margin-bottom:8px}
-.team-card-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-.team-card-avatar{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff}
-.team-card-name{font-size:.82rem;font-weight:600}
-.team-card-role{font-size:.72rem;color:var(--text3)}
-.team-card-skills{display:flex;flex-wrap:wrap;gap:4px}
-.team-skill{padding:2px 7px;border-radius:var(--pill);font-family:var(--mono);font-size:.58rem;background:var(--border-light);color:var(--text3)}
+/* ══ FLOATING CHAT DIALOG ══ */
+.chat-dialog{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);width:560px;max-width:calc(100vw - 600px);background:var(--white);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow-lg),0 0 0 1px rgba(36,90,64,.05);z-index:300;display:flex;flex-direction:column;max-height:420px;animation:chatSlideUp .25s ease}
+@keyframes chatSlideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.chat-dialog-head{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border-light);border-radius:var(--r-lg) var(--r-lg) 0 0}
+.chat-dialog-avatar{width:26px;height:26px;border-radius:7px;background:var(--gold);display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;flex-shrink:0}
+.chat-dialog-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
+.chat-dialog-title small{font-weight:400;color:var(--text3);margin-left:6px;font-size:.72rem}
+.chat-dialog-close{width:24px;height:24px;border-radius:6px;border:none;background:none;cursor:pointer;color:var(--text4);font-size:.9rem;display:flex;align-items:center;justify-content:center;transition:all .12s}
+.chat-dialog-close:hover{background:var(--coral-subtle);color:var(--coral)}
+.chat-dialog-messages{flex:1;overflow-y:auto;padding:12px 16px;min-height:80px;max-height:260px}
+.chat-msg{margin-bottom:10px;display:flex;gap:8px;animation:fadeIn .2s ease}
+.chat-msg.from-agent{justify-content:flex-start}
+.chat-msg.from-user{justify-content:flex-end}
+.chat-bubble{max-width:85%;padding:8px 12px;border-radius:10px;font-size:.82rem;line-height:1.6;color:var(--text)}
+.chat-msg.from-agent .chat-bubble{background:var(--bg);border:1px solid var(--border-light);border-bottom-left-radius:3px}
+.chat-msg.from-user .chat-bubble{background:var(--green-subtle);border:1px solid var(--green-subtle);border-bottom-right-radius:3px;color:var(--green)}
+.chat-bubble .chat-sender{font-family:var(--mono);font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text4);margin-bottom:2px}
+.chat-msg.from-user .chat-bubble .chat-sender{color:var(--green)}
+.chat-dialog-input{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--border-light);background:var(--white);border-radius:0 0 var(--r-lg) var(--r-lg)}
+.chat-dialog-input input{flex:1;border:1.5px solid var(--border);border-radius:var(--pill);padding:8px 14px;font-family:var(--sans);font-size:.82rem;color:var(--text);background:var(--bg);outline:none;transition:border-color .15s}
+.chat-dialog-input input:focus{border-color:var(--green);box-shadow:0 0 0 2px rgba(36,90,64,.08)}
+.chat-dialog-input input::placeholder{color:var(--text4)}
+.chat-dialog-send{padding:8px 16px;border-radius:var(--pill);background:var(--green);color:#fff;border:none;font-family:var(--sans);font-size:.8rem;font-weight:600;cursor:pointer;transition:all .12s;white-space:nowrap}
+.chat-dialog-send:hover{background:var(--green-light)}
+.chat-dialog-send:disabled{opacity:.4;cursor:not-allowed}
+.chat-dialog-badge{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--coral);color:#fff;font-size:.6rem;font-weight:700;display:flex;align-items:center;justify-content:center;animation:pulse .8s ease-in-out 3}
 
 /* Responsive */
-@media(max-width:1100px){.right-panel{width:280px;min-width:280px}.sidebar{width:240px;min-width:240px}}
+@media(max-width:1100px){.right-panel{width:280px;min-width:280px}.sidebar{width:240px;min-width:240px}.chat-dialog{max-width:calc(100vw - 540px)}}
 @media(max-width:860px){
   .app{flex-direction:column;height:auto;min-height:100vh}
   .sidebar{width:100%;min-width:auto;border-right:none;border-bottom:1px solid var(--border);padding:16px;flex-direction:row;flex-wrap:wrap;gap:12px}
@@ -309,165 +461,611 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
   .right-panel{width:100%;min-width:auto;border-left:none;border-top:1px solid var(--border);max-height:300px}
   .meeting-body{grid-template-columns:1fr}
   .meeting-col+.meeting-col{border-left:none;border-top:1px solid var(--border-light)}
+  .chat-dialog{width:calc(100vw - 24px);max-width:calc(100vw - 24px);bottom:12px}
 }
 </style>
 </head>
 <body>
 <div class="app">
-  <!-- ══ SIDEBAR ══ -->
+  <!-- ══ SIDEBAR — Project Manager ══ -->
   <aside class="sidebar">
     <div class="sidebar-head">
       <div class="brand">
         <div class="brand-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
         <span class="brand-name">AutoResearch</span>
       </div>
-      <div class="lab-badge"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> OMC Research Lab</div>
-    </div>
-
-    <div class="director-card">
-      <div class="director-label">Research Director</div>
-      <div class="director-name">Dr. Pipeline</div>
-      <div class="director-status" id="dirStatus">Idle</div>
       <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
     </div>
-
-    <div class="section-label">Pipeline Stages</div>
-    <div class="stage-list" id="stageList"></div>
-
-    <div class="recent">
-      <div class="section-label">Recent</div>
-      <div class="run-item"><div class="run-dot ok"></div><div class="run-name">Efficient LoRA Fine-tuning</div><div class="run-time">2h</div></div>
-      <div class="run-item"><div class="run-dot fail"></div><div class="run-name">GNN Expressivity Bounds</div><div class="run-time">5h</div></div>
-      <div class="run-item"><div class="run-dot ok"></div><div class="run-name">Attention-Free Transformers</div><div class="run-time">1d</div></div>
-    </div>
+    <button class="btn-new-project" id="btnNewProject" onclick="document.getElementById('heroSection').style.display='';document.getElementById('pipelineBar').style.display='none';document.getElementById('meetingsArea').innerHTML=''">+ New Research</button>
+    <div id="projectList"><div class="proj-empty">No projects yet</div></div>
   </aside>
 
   <!-- ══ MAIN ══ -->
   <main class="main">
     <div id="heroSection">
       <div class="hero">
-        <div class="hero-pill"><span style="width:5px;height:5px;border-radius:50%;background:var(--gold)"></span> Adversarial Research Pipeline</div>
         <h1>What should we investigate?</h1>
-        <p>Describe a research direction. Set breakpoints on stages where you want to review and intervene before the pipeline continues.</p>
+        <p>Describe a research direction. Each stage produces a deliverable, reviewed by an adversarial critic, then approved by you before advancing.</p>
       </div>
+      <!-- Stage range selector — click to set start, click again to set end -->
+      <div class="range-selector" id="rangeSelector"></div>
       <div class="input-card">
         <textarea class="input-field" id="topicInput" placeholder="e.g. Explore whether combining sparse attention with mixture-of-experts routing can achieve sub-quadratic scaling..." rows="2"></textarea>
         <div class="config-row">
-          <div class="config-group"><label class="config-label">Model</label><select class="config-select"><option>Claude Opus 4.6</option><option>GPT-4o</option><option>DeepSeek R1</option></select></div>
-          <div class="config-group"><label class="config-label">Template</label><select class="config-select"><option>NeurIPS 2026</option><option>ICML 2026</option><option>arXiv</option></select></div>
-          <div class="config-group"><label class="config-label">Critic</label><select class="config-select"><option>Strict</option><option>Balanced</option><option>Gentle</option></select></div>
-          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}else{startDemo()}">Launch Pipeline</button>
+          <label class="config-group" style="cursor:pointer">
+            <span class="config-label">Context Files</span>
+            <input type="file" id="contextFiles" multiple style="display:none" onchange="document.getElementById('fileLabel').textContent=this.files.length+' file(s)'">
+            <span class="config-select" id="fileLabel" style="min-width:80px;text-align:center" onclick="document.getElementById('contextFiles').click()">Upload</span>
+          </label>
+          <button class="btn-launch" id="launchBtn" onclick="const t=document.getElementById('topicInput').value.trim();if(t&&window.launchPipeline){window.launchPipeline(t)}">Launch Pipeline</button>
         </div>
       </div>
+    </div>
+    <!-- Pipeline progress bar — driven by backend events -->
+    <div class="pipeline-bar" id="pipelineBar" style="display:none">
+      <div class="pipeline-stages" id="pipelineStages"></div>
+      <div class="pipeline-status" id="pipelineStatus"></div>
     </div>
     <div class="meetings" id="meetingsArea"></div>
   </main>
 
-  <!-- ══ RIGHT PANEL ══ -->
+  <!-- ══ RIGHT PANEL — WORKSPACE ══ -->
   <div class="right-panel">
     <div class="panel-tabs">
-      <button class="panel-tab active" onclick="switchTab(this,'events')">Events</button>
-      <button class="panel-tab" onclick="switchTab(this,'team')">Team</button>
-      <button class="panel-tab" onclick="switchTab(this,'calibration')">Calibration</button>
+      <button class="panel-tab active">Workspace</button>
     </div>
-    <div class="panel-body">
-      <div class="panel-section active" id="tabEvents">
-        <div class="event-stream" id="eventStream">
-          <div class="event"><span class="event-time">--:--</span><span class="event-tag stag">sys</span><span class="event-msg">OMC Research Lab initialized. Click stage dots in sidebar to set breakpoints.</span></div>
-        </div>
-      </div>
-      <div class="panel-section" id="tabTeam">
-        <div class="team-card"><div class="team-card-head"><div class="team-card-avatar" style="background:var(--gold);color:var(--text)">RD</div><div><div class="team-card-name">Research Director</div><div class="team-card-role">COO-level orchestrator</div></div></div><div class="team-card-skills"><span class="team-skill">pipeline</span><span class="team-skill">pivot-decision</span><span class="team-skill">delegation</span></div></div>
-        <div class="team-card"><div class="team-card-head"><div class="team-card-avatar" style="background:var(--green)">IG</div><div><div class="team-card-name">Idea Generator</div><div class="team-card-role">Stage 3 Producer</div></div></div><div class="team-card-skills"><span class="team-skill">hypothesis</span><span class="team-skill">novelty</span><span class="team-skill">semantic-scholar</span></div></div>
-        <div class="team-card"><div class="team-card-head"><div class="team-card-avatar" style="background:var(--coral)">AC</div><div><div class="team-card-name">Adversarial Critic</div><div class="team-card-role">Red-Team</div></div></div><div class="team-card-skills"><span class="team-skill">novelty-check</span><span class="team-skill">methodology</span><span class="team-skill">citation-verify</span></div></div>
-        <div class="team-card"><div class="team-card-head"><div class="team-card-avatar" style="background:var(--green)">LS</div><div><div class="team-card-name">Literature Surveyor</div><div class="team-card-role">Stage 2 Producer</div></div></div><div class="team-card-skills"><span class="team-skill">arxiv</span><span class="team-skill">semantic-scholar</span><span class="team-skill">gap-analysis</span></div></div>
-      </div>
-      <div class="panel-section" id="tabCalibration">
-        <div class="cal-card"><div class="cal-title">Meeting Outcomes</div>
-          <div class="cal-row"><span class="cal-row-label">Meetings</span><span class="cal-row-val" id="calM">--</span></div>
-          <div class="cal-row"><span class="cal-row-label">Pass Rate</span><span class="cal-row-val" id="calP">--</span></div>
-          <div class="cal-row"><span class="cal-row-label">Retries</span><span class="cal-row-val" id="calR">--</span></div>
-        </div>
-        <div class="cal-card"><div class="cal-title">Confidence</div>
-          <div class="cal-row"><span class="cal-row-label">Stage 1</span><span class="cal-row-val" id="c1" style="color:var(--green)">--</span></div>
-          <div class="cal-row"><span class="cal-row-label">Stage 2</span><span class="cal-row-val" id="c2" style="color:var(--green)">--</span></div>
-          <div class="cal-row"><span class="cal-row-label">Stage 3</span><span class="cal-row-val" id="c3" style="color:var(--coral)">--</span></div>
-          <div class="cal-row"><span class="cal-row-label">Stage 3 (retry)</span><span class="cal-row-val" id="c3r" style="color:var(--green)">--</span></div>
-        </div>
-      </div>
+    <div class="panel-body" id="workspacePanel">
+      <div class="ws-empty" id="wsEmpty">No files yet. Agent outputs will appear here as they write deliverables.</div>
+      <div id="wsFileList"></div>
     </div>
   </div>
 </div>
 
 <script>
 const STAGES = [
-  {id:1,name:'Topic Refinement',talent:'topic-refiner',bp:false},
-  {id:2,name:'Literature Survey',talent:'lit-surveyor',bp:false},
-  {id:3,name:'Idea Generation',talent:'idea-gen',bp:true},  // default breakpoint
-  {id:4,name:'Methodology Design',talent:'method',bp:false},
-  {id:5,name:'Experiment Design',talent:'exp-design',bp:false},
-  {id:6,name:'Auto Experiment',talent:'experimentalist',bp:false},
-  {id:7,name:'Result Analysis',talent:'analyst',bp:false},
-  {id:8,name:'Paper Generation',talent:'paper-writer',bp:false},
-  {id:9,name:'Self-Review',talent:'reviewer',bp:true},  // default breakpoint
+  {id:1,name:'Topic Refinement',talent:'topic-refiner',skill:'topic-refinement',bp:false,assignee:null},
+  {id:2,name:'Literature Survey',talent:'lit-surveyor',skill:'literature-survey',bp:false,assignee:null},
+  {id:3,name:'Idea Generation',talent:'idea-gen',skill:'idea-generation',bp:true,assignee:null},
+  {id:4,name:'Methodology Design',talent:'method',skill:'methodology-design',bp:false,assignee:null},
+  {id:5,name:'Experiment Design',talent:'exp-design',skill:'experiment-design',bp:false,assignee:null},
+  {id:6,name:'Auto Experiment',talent:'experimentalist',skill:'auto-experiment',bp:false,assignee:null},
+  {id:7,name:'Result Analysis',talent:'analyst',skill:'result-analysis',bp:false,assignee:null},
+  {id:8,name:'Paper Generation',talent:'paper-writer',skill:'paper-generation',bp:false,assignee:null},
+  {id:9,name:'Self-Review',talent:'reviewer',skill:'self-review',bp:true,assignee:null},
 ];
 
 let startTime=null, paused=false, pauseResolve=null;
 
-function renderStages(){
-  const el=document.getElementById('stageList');
-  el.innerHTML=STAGES.map((s,i)=>`
-    <div class="stage-row" data-id="${s.id}" id="sr-${s.id}">
-      <div class="bp-toggle ${s.bp?'set':''}" title="Toggle breakpoint" onclick="event.stopPropagation();toggleBP(${s.id})"></div>
-      <div class="stage-dot" id="sd-${s.id}"></div>
-      <div class="stage-info">
-        <div class="stage-name">${s.name}</div>
-        <div class="stage-meta" id="sm-${s.id}">Pending</div>
-      </div>
-      <div class="stage-actions">
-        <button class="stage-act-btn rerun" title="Run from here" onclick="event.stopPropagation();runFrom(${s.id})">&#8635;</button>
-      </div>
-    </div>
-    ${i<STAGES.length-1?'<div class="stage-connector" id="sc-'+(i+1)+'"></div>':''}
-  `).join('');
+// ══ PROJECT MANAGEMENT ══
+// Each project stores its own stage cards HTML, workspace files, and pipeline state.
+const _projects = new Map(); // projectId → { sessionId, task, status, stagesHtml, wsFiles, stageStates, controllerState }
+let _activeProjectId = null;
+
+function _getProject(pid) {
+  if (!_projects.has(pid)) {
+    _projects.set(pid, {
+      sessionId: pid,
+      task: '',
+      status: 'pending',
+      stagesHtml: '',
+      wsFiles: new Map(),
+      stageStates: {}, // stageId → 'pending'|'running'|'done'|'paused'|'failed'
+      currentCard: null,
+      controllerState: null, // { currentStage, stageCardIds, pausedStageId }
+    });
+  }
+  return _projects.get(pid);
 }
 
-function toggleBP(id){
-  const s=STAGES[id-1];
-  s.bp=!s.bp;
-  document.querySelector(`#sr-${id} .bp-toggle`).classList.toggle('set',s.bp);
-  addEvent('stag',`Breakpoint ${s.bp?'set':'removed'} on Stage ${id}: ${s.name}`);
+function switchProject(pid) {
+  if (_activeProjectId === pid) return;
+
+  const ctrl = window._controller;
+
+  // Save current state
+  if (_activeProjectId) {
+    const prev = _getProject(_activeProjectId);
+    const area = document.getElementById('meetingsArea');
+    prev.stagesHtml = area.innerHTML;
+    prev.wsFiles = new Map(_wsFiles);
+    prev.currentCard = _currentCard ? _currentCard.id : null;
+    // Save pipeline-controller state
+    if (ctrl) {
+      prev.controllerState = {
+        currentStage: ctrl.currentStage,
+        stageCardIds: { ...ctrl.stageCardIds },
+        pausedStageId: ctrl.pausedStageId || null,
+      };
+    }
+    // Save stage dot states
+    STAGES.forEach(s => {
+      const dot = document.getElementById('sd-' + s.id);
+      if (dot) prev.stageStates[s.id] = dot.className.replace('stage-dot ', '').trim() || 'pending';
+    });
+  }
+
+  _activeProjectId = pid;
+  window._currentProjectId = pid.split('/')[0];
+  window._currentSessionId = pid;
+
+  const proj = _getProject(pid);
+  const area = document.getElementById('meetingsArea');
+
+  // Restore stage cards
+  area.innerHTML = proj.stagesHtml || '';
+  // Re-query _currentCard from DOM — stored as ID string, DOM nodes are new after innerHTML
+  _currentCard = null;
+  if (proj.currentCard) _currentCard = document.getElementById(proj.currentCard);
+  if (!_currentCard) {
+    const actives = area.querySelectorAll('.stage-card.sc-active');
+    if (actives.length) _currentCard = actives[actives.length - 1];
+  }
+
+  // Restore pipeline-controller state
+  if (ctrl) {
+    if (proj.controllerState) {
+      ctrl.currentStage = proj.controllerState.currentStage;
+      ctrl.stageCardIds = { ...proj.controllerState.stageCardIds };
+      ctrl.pausedStageId = proj.controllerState.pausedStageId;
+    } else {
+      ctrl.currentStage = null;
+      ctrl.stageCardIds = {};
+      ctrl.pausedStageId = null;
+    }
+  }
+
+  // Restore workspace files
+  _wsFiles.clear();
+  for (const [k, v] of proj.wsFiles) _wsFiles.set(k, v);
+  _renderWorkspace();
+
+  // Restore sidebar stage dots
+  STAGES.forEach(s => {
+    const st = proj.stageStates[s.id] || '';
+    if (st) setStage(s.id, st);
+    else setStage(s.id, 'pending');
+  });
+
+  // Update active indicator in project list
+  document.querySelectorAll('.proj-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.pid === pid);
+  });
+
+  // Hide hero if project is active
+  const hero = document.getElementById('heroSection');
+  if (hero && proj.stagesHtml) hero.style.display = 'none';
+  else if (hero && !proj.stagesHtml) hero.style.display = '';
+
+
+  // Replay any buffered events that arrived while this project was in the background
+  if (typeof replayBufferedEvents === 'function') replayBufferedEvents(pid);
+}
+
+function renderProjectList(projects) {
+  const el = document.getElementById('projectList');
+  if (!projects || projects.length === 0) {
+    // Fall back to locally tracked projects
+    _renderProjectSidebar();
+    return;
+  }
+  el.innerHTML = projects.map(p => {
+    const pid = p.project_id;
+    const name = (p.task || p.name || pid).slice(0, 60);
+    const st = p.latest_iter_status || p.status || 'pending';
+    const dotClass = st === 'processing' ? 'running' : st === 'completed' ? 'completed' : st === 'failed' ? 'failed' : st === 'archived' ? 'completed' : 'pending';
+    const isActive = pid === _activeProjectId || (_activeProjectId && _activeProjectId.startsWith(pid + '/'));
+    // Store project info — use the session ID if this project is already tracked with one
+    let trackPid = pid;
+    for (const [existingPid] of _projects) {
+      if (existingPid.startsWith(pid + '/')) { trackPid = existingPid; break; }
+    }
+    const proj = _getProject(trackPid);
+    proj.task = p.task || p.name || '';
+    proj.status = st;
+    const clickPid = trackPid.replace(/'/g, "\\'");
+    return `<div class="proj-item${isActive ? ' active' : ''}" data-pid="${trackPid}" onclick="switchProject('${clickPid}')">
+      <div class="proj-dot ${dotClass}"></div>
+      <div class="proj-name" title="${_escHtml(p.task || p.name || '')}">${_escHtml(name)}</div>
+    </div>`;
+  }).join('');
+}
+
+// Ensure events route to the correct project's view
+function _routeToProject(projectId) {
+  if (!projectId) return;
+  // Extract base project ID from context IDs like "abc123/iter_001"
+  const basePid = projectId.split('/')[0];
+  // Find matching project — if it exists, don't auto-switch (buffering handles it)
+  for (const [pid] of _projects) {
+    if (pid === projectId || pid.startsWith(basePid) || projectId.startsWith(pid.split('/')[0])) {
+      return; // Already tracked — main.js event handler decides whether to process or buffer
+    }
+  }
+  // No matching project found — auto-create and set as active only if no project is active
+  const proj = _getProject(projectId);
+  proj.status = 'processing';
+  if (!_activeProjectId) {
+    _activeProjectId = projectId;
+    window._currentProjectId = basePid;
+    window._currentSessionId = projectId;
+    document.getElementById('heroSection').style.display = 'none';
+  }
+  // Update sidebar project list
+  _renderProjectSidebar();
+}
+
+function _renderProjectSidebar() {
+  const el = document.getElementById('projectList');
+  if (_projects.size === 0) {
+    el.innerHTML = '<div class="proj-empty">No projects yet</div>';
+    return;
+  }
+  let html = '';
+  for (const [pid, proj] of _projects) {
+    const name = (proj.task || pid).slice(0, 60);
+    const isActive = pid === _activeProjectId;
+    const st = proj.status || 'pending';
+    const dotClass = st === 'processing' ? 'running' : st === 'completed' ? 'completed' : st === 'failed' ? 'failed' : 'pending';
+    const clickPid = pid.replace(/'/g, "\\'");
+    html += `<div class="proj-item${isActive ? ' active' : ''}" data-pid="${pid}" onclick="switchProject('${clickPid}')">
+      <div class="proj-dot ${dotClass}"></div>
+      <div class="proj-name" title="${_escHtml(proj.task || pid)}">${_escHtml(name)}</div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// Expose globally for ES module (main.js) access
+window.switchProject = switchProject;
+window.renderProjectList = renderProjectList;
+window._getProject = _getProject;
+window._routeToProject = _routeToProject;
+window._renderProjectSidebar = _renderProjectSidebar;
+window._projects = _projects;
+Object.defineProperty(window, '_activeProjectId', {
+  get() { return _activeProjectId; },
+  set(v) { _activeProjectId = v; },
+});
+
+// ── Pipeline Progress Bar (backend-driven) ──
+
+let _pipelineStart = 1, _pipelineEnd = 9;
+
+function renderPipelineBar(){
+  const el=document.getElementById('pipelineStages');
+  if(!el)return;
+  el.innerHTML=STAGES.map((s,i)=>{
+    const inRange = s.id >= _pipelineStart && s.id <= _pipelineEnd;
+    const skipped = !inRange ? ' skipped' : '';
+    const dot=`<div class="ps-dot${skipped}" id="ps-${s.id}" title="${s.name}">${s.id}</div>`;
+    const line=i<STAGES.length-1?`<div class="ps-line${!inRange && s.id >= _pipelineEnd ? ' skipped' : ''}" id="pl-${s.id}"></div>`:'';
+    return `<div class="ps-stage">${dot}${line}</div>`;
+  }).join('');
+  // Show range info — only if no active stage is running (don't overwrite animated status)
+  const statusEl=document.getElementById('pipelineStatus');
+  if(statusEl && !statusEl.classList.contains('st-running') && !statusEl.classList.contains('st-reviewing')){
+    const startName=STAGES[_pipelineStart-1]?.name||'';
+    const endName=STAGES[_pipelineEnd-1]?.name||'';
+    if(_pipelineStart===1 && _pipelineEnd===9){
+      statusEl.textContent='Full pipeline (Stage 1–9)';
+    } else {
+      statusEl.textContent=`Stage ${_pipelineStart} (${startName}) → Stage ${_pipelineEnd} (${endName})`;
+    }
+  }
 }
 
 function setStage(id,status){
-  const dot=document.getElementById('sd-'+id);
-  const meta=document.getElementById('sm-'+id);
-  dot.className='stage-dot '+(status==='done'?'done':status==='running'?'running':status==='paused'?'paused':status==='failed'?'failed':'');
-  meta.textContent={done:'Complete',running:'Running...',paused:'Paused',failed:'Rejected',pending:'Pending'}[status]||status;
+  const dot=document.getElementById('ps-'+id);
+  if(!dot)return;
+  dot.className='ps-dot '+(status||'');
+  // Update connector lines
+  for(let i=_pipelineStart;i<id;i++){
+    const line=document.getElementById('pl-'+i);
+    if(line)line.className='ps-line done';
+  }
+  // Update status bar with color-coded state
+  const statusEl=document.getElementById('pipelineStatus');
+  if(statusEl){
+    const stageName=STAGES[id-1]?STAGES[id-1].name:`Stage ${id}`;
+    const labels={done:'Complete',running:'Running',gate:'Waiting for your approval',failed:'Rejected — retrying',reviewing:'Critic reviewing'};
+    const stClass={done:'st-done',running:'st-running',gate:'st-gate',failed:'st-failed',reviewing:'st-reviewing'};
+    statusEl.className='pipeline-status '+(stClass[status]||'');
+    if(status==='running'||status==='reviewing'){
+      statusEl.innerHTML=`Stage ${id}: ${stageName} — ${labels[status]}<span class="dot-anim"><span>.</span><span>.</span><span>.</span></span>`;
+    } else {
+      statusEl.textContent=`Stage ${id}: ${stageName} — ${labels[status]||status}`;
+    }
+  }
 }
 
-function runFrom(id){
-  addEvent('dtag',`User requested: run from Stage ${id}`);
-  // In real app, reset stages id+ and re-run
+// Show pipeline bar when a project is active
+function showPipelineBar(start, end){
+  if(start) _pipelineStart = start;
+  if(end) _pipelineEnd = end;
+  const bar=document.getElementById('pipelineBar');
+  if(bar)bar.style.display='';
+  renderPipelineBar();
 }
 
-function switchTab(btn,id){
-  document.querySelectorAll('.panel-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.panel-section').forEach(s=>s.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tab'+id.charAt(0).toUpperCase()+id.slice(1)).classList.add('active');
+// ── Range Selector — click dot for range, dropdown button for agent ──
+let _rangeStart = 1, _rangeEnd = 9, _rangeClickState = 0;
+const _stageAssignments = {};
+
+function _renderRangeSelector() {
+  const el = document.getElementById('rangeSelector');
+  if (!el) return;
+  let html = '';
+  STAGES.forEach((s, i) => {
+    const isStart = s.id === _rangeStart;
+    const isEnd = s.id === _rangeEnd;
+    const inRange = s.id >= _rangeStart && s.id <= _rangeEnd;
+    const dotClass = (isStart || isEnd) ? 'selected' : inRange ? 'in-range' : 'out-range';
+    const labelClass = inRange ? ' in-range' : '';
+    const assigned = _stageAssignments[s.id];
+    const agentName = assigned && window._employees
+      ? (window._employees.find(e => e.employee_number === assigned)?.name || 'Custom')
+      : 'Auto';
+    const btnClass = assigned ? ' assigned' : '';
+
+    html += `<div class="rs-node">`;
+    html += `<div class="rs-dot ${dotClass}" onclick="_onRangeClick(${s.id})">${s.id}</div>`;
+    html += `<div class="rs-label${labelClass}">${s.name}</div>`;
+    html += `<div class="rs-agent-btn${btnClass}" onclick="_showAgentPicker(${s.id},event)">▾ ${_escHtml(agentName)}</div>`;
+    html += `</div>`;
+    if (i < STAGES.length - 1) {
+      const lineClass = inRange && s.id < _rangeEnd ? 'in-range' : '';
+      html += `<div class="rs-line ${lineClass}"></div>`;
+    }
+  });
+  el.innerHTML = html;
 }
 
-function addEvent(tag,msg){
-  const elapsed=startTime?Math.floor((Date.now()-startTime)/1000):0;
-  const mm=String(Math.floor(elapsed/60)).padStart(2,'0');
-  const ss=String(elapsed%60).padStart(2,'0');
-  const stream=document.getElementById('eventStream');
-  const e=document.createElement('div');
-  e.className='event';
-  e.innerHTML=`<span class="event-time">${mm}:${ss}</span><span class="event-tag ${tag}">${{dtag:'DIRECTOR',mtag:'MEETING',ttag:'TALENT',gtag:'GATE',stag:'SYS'}[tag]||tag}</span><span class="event-msg">${msg}</span>`;
-  stream.appendChild(e);
-  stream.scrollTop=stream.scrollHeight;
+function _onRangeClick(id) {
+  if (_rangeClickState === 0) {
+    _rangeStart = id;
+    _rangeEnd = id;
+    _rangeClickState = 1;
+  } else {
+    if (id >= _rangeStart) {
+      _rangeEnd = id;
+    } else {
+      _rangeEnd = _rangeStart;
+      _rangeStart = id;
+    }
+    _rangeClickState = 0;
+  }
+  _renderRangeSelector();
+}
+
+function _showAgentPicker(stageId, event) {
+  // Remove any existing picker
+  document.getElementById('agentPicker')?.remove();
+  if (!window._employees) return;
+
+  const picker = document.createElement('div');
+  picker.id = 'agentPicker';
+  picker.style.cssText = `position:fixed;z-index:400;background:var(--white);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow-lg);padding:4px 0;min-width:180px;max-height:240px;overflow-y:auto;left:${event.clientX}px;top:${event.clientY}px`;
+
+  // Auto option
+  picker.innerHTML = `<div class="ap-item" onclick="_assignStageAgent(${stageId},'')" style="padding:6px 12px;cursor:pointer;font-size:.78rem;color:var(--text3)">Auto (by skill)</div>`;
+
+  window._employees.forEach(emp => {
+    const selected = _stageAssignments[stageId] === emp.employee_number ? ' style="padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600"' : ' style="padding:6px 12px;cursor:pointer;font-size:.78rem"';
+    picker.innerHTML += `<div${selected} onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background=''" onclick="_assignStageAgent(${stageId},'${emp.employee_number}')">${_escHtml(emp.name)} <span style="color:var(--text4);font-size:.65rem">${emp.role||''}</span></div>`;
+  });
+
+  document.body.appendChild(picker);
+  // Close on click outside
+  setTimeout(() => document.addEventListener('click', function _close() {
+    picker.remove();
+    document.removeEventListener('click', _close);
+  }), 10);
+}
+
+function _assignStageAgent(stageId, empNum) {
+  if (empNum) {
+    _stageAssignments[stageId] = empNum;
+  } else {
+    delete _stageAssignments[stageId];
+  }
+  document.getElementById('agentPicker')?.remove();
+  _renderRangeSelector();
+}
+
+window._getRangeStart = () => _rangeStart;
+window._getRangeEnd = () => _rangeEnd;
+window._getStageAssignments = () => Object.keys(_stageAssignments).length > 0 ? {..._stageAssignments} : null;
+
+_renderRangeSelector();
+
+// Legacy compat
+function addEvent(){}
+function populateAgentSelectors(){}
+function getStageAssignments(){return null;}
+
+// ── Workspace file panel ──
+const _wsFiles = new Map(); // fileName → {path, size, type, time, fullPath}
+
+function addWorkspaceFile(data) {
+  const name = data.file_name || data.fileName || 'unknown';
+  const fileInfo = {
+    path: data.file_path || '',
+    fullPath: data.full_path || '',
+    size: data.size || 0,
+    content: data.content || '',
+    type: data.type || 'create',
+    time: _time(),
+    employee: data.employee_id || '',
+  };
+  // Add to global (current view) and project-specific store
+  _wsFiles.set(name, fileInfo);
+  if (_activeProjectId) {
+    const proj = _getProject(_activeProjectId);
+    proj.wsFiles.set(name, fileInfo);
+  }
+  _renderWorkspace();
+  const el = document.getElementById('ws-' + _cssId(name));
+  if (el) { el.style.background = 'var(--gold-subtle)'; setTimeout(() => el.style.background = '', 1200); }
+}
+
+function _cssId(name) { return name.replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+function _fileIcon(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  if (ext === 'md') return ['MD', 'ft-md'];
+  if (ext === 'py') return ['PY', 'ft-py'];
+  if (ext === 'json' || ext === 'yaml' || ext === 'yml') return ['{}', 'ft-json'];
+  if (ext === 'txt' || ext === 'csv') return ['TXT', 'ft-txt'];
+  return [ext.toUpperCase().slice(0, 3) || 'F', 'ft-other'];
+}
+
+function _fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/1024/1024).toFixed(1) + ' MB';
+}
+
+function _renderWorkspace() {
+  const list = document.getElementById('wsFileList');
+  const empty = document.getElementById('wsEmpty');
+  if (_wsFiles.size === 0) { empty.style.display = ''; list.innerHTML = ''; return; }
+  empty.style.display = 'none';
+  list.innerHTML = '';
+  for (const [name, info] of _wsFiles) {
+    const [iconText, iconClass] = _fileIcon(name);
+    const badge = info.type === 'create'
+      ? '<span class="ws-file-badge new">new</span>'
+      : '<span class="ws-file-badge updated">updated</span>';
+    const el = document.createElement('div');
+    el.className = 'ws-file';
+    el.id = 'ws-' + _cssId(name);
+    el.innerHTML = `
+      <div class="ws-file-icon ${iconClass}">${iconText}</div>
+      <div class="ws-file-info">
+        <div class="ws-file-name">${name}</div>
+        <div class="ws-file-meta"><span>${_fmtSize(info.size)}</span><span>${info.time}</span></div>
+      </div>
+      ${badge}`;
+    el.onclick = () => _previewFile(name, info);
+    list.appendChild(el);
+  }
+}
+
+function _escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Simple markdown → HTML renderer (no external deps)
+function _renderMd(src) {
+  let h = _escHtml(src);
+
+  // Code blocks (``` ... ```)
+  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<pre><code>${code.trim()}</code></pre>`);
+
+  // Tables — must run before headings/lists since pipes interfere
+  // Match: header row | sep row | body rows (separator has at least --- per cell)
+  h = h.replace(/^(\|.+)\n(\|[\s:]*-{3,}[\s:]*(?:\|[\s:]*-{3,}[\s:]*)*\|?)[ \t]*\n((?:\|.+\n?)+)/gm, (_, header, sep, body) => {
+    const parseCells = row => row.split('|').slice(1, -1).length > 0
+      ? row.split('|').slice(1, -1)
+      : row.split('|').filter(c => c.trim());
+    const ths = parseCells(header).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const tds = parseCells(row).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>\n`;
+  });
+
+  // Headings
+  h = h.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold / italic
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Inline code
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Blockquotes
+  h = h.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Horizontal rules
+  h = h.replace(/^---$/gm, '<hr>');
+
+  // Unordered lists
+  h = h.replace(/^- (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/((?:<li>.*<\/li>\n?)+)/g, m => `<ul>${m}</ul>`);
+
+  // Ordered lists
+  h = h.replace(/^\d+\. (.+)$/gm, '<oli>$1</oli>');
+  h = h.replace(/((?:<oli>.*<\/oli>\n?)+)/g, m => {
+    return '<ol>' + m.replace(/<\/?oli>/g, s => s.replace('oli','li')) + '</ol>';
+  });
+
+  // Paragraphs (double newline)
+  h = h.replace(/\n\n/g, '</p><p>');
+  h = '<p>' + h + '</p>';
+
+  // Clean up empty paragraphs around block elements
+  h = h.replace(/<p>\s*(<h[1234]|<pre|<ul|<ol|<table|<blockquote|<hr)/g, '$1');
+  h = h.replace(/(<\/h[1234]>|<\/pre>|<\/ul>|<\/ol>|<\/table>|<\/blockquote>|<hr>)\s*<\/p>/g, '$1');
+  h = h.replace(/<p>\s*<\/p>/g, '');
+
+  return h;
+}
+
+function _previewFile(name, info) {
+  document.getElementById('wsPreview')?.remove();
+  const content = info.content || '';
+  const ext = name.split('.').pop().toLowerCase();
+  const isMd = (ext === 'md');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'ws-preview';
+  overlay.id = 'wsPreview';
+
+  const head = document.createElement('div');
+  head.className = 'ws-preview-head';
+  head.innerHTML = `
+    <div class="ws-preview-title">${_escHtml(name)}</div>
+    <div class="ws-preview-actions">
+      <button class="ws-preview-btn" id="wsCopyBtn">Copy</button>
+      <button class="ws-preview-btn" id="wsDownloadBtn">Download</button>
+      <button class="ws-preview-btn btn-close" id="wsCloseBtn">✕</button>
+    </div>`;
+
+  const body = document.createElement('div');
+  body.className = isMd ? 'ws-preview-body view-md' : 'ws-preview-body view-raw';
+  body.innerHTML = isMd ? _renderMd(content) : _escHtml(content);
+
+  overlay.appendChild(head);
+  overlay.appendChild(body);
+  document.body.appendChild(overlay);
+
+  // Copy
+  head.querySelector('#wsCopyBtn').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      const btn = head.querySelector('#wsCopyBtn');
+      btn.innerHTML = '<span class="btn-ok">✓</span> Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    } catch(e) { /* fallback */ }
+  };
+
+  // Download
+  head.querySelector('#wsDownloadBtn').onclick = () => {
+    const blob = new Blob([content], {type: 'text/plain;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Close
+  head.querySelector('#wsCloseBtn').onclick = () => overlay.remove();
 }
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -491,50 +1089,229 @@ function resumePipeline(){
   }
 }
 
-function createMeeting(id,prodName,prodInit,title,opts={}){
-  const card=document.createElement('div');
-  card.className='meeting-card active';
-  card.id='m-'+id;
-  const chevron='<svg class="collapse-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>';
-  card.innerHTML=`
-    <div class="meeting-head" onclick="this.parentElement.classList.toggle('collapsed')">
-      ${chevron}
-      <h2 class="meeting-label"><strong>Meeting:</strong> ${title}</h2>
-      <span class="meeting-badge in-progress">In Progress</span>
+// ── Stage Stream API ──
+// Manages stage cards and inline notices in the center area.
+
+let _currentCard = null; // reference to the active stage-card DOM element
+
+function _time() {
+  const d = new Date();
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2,'0')).join(':');
+}
+
+function _scroll() {
+  const area = document.getElementById('meetingsArea');
+  if (area) area.scrollTop = area.scrollHeight;
+}
+
+// Sanitize content: strip project IDs, file paths, raw JSON fragments
+function _clean(text) {
+  if (!text) return '';
+  let s = text;
+  // Strip [Project ID: ...] blocks
+  s = s.replace(/\[Project ID:\s*[^\]]*\]/g, '');
+  // Strip [Project workspace: ...] blocks
+  s = s.replace(/\[Project workspace:\s*[^\]]*\]/g, '');
+  // Strip absolute file paths (only /Users/... and /tmp/... — keep relative paths like company/...)
+  s = s.replace(/\/(?:Users|tmp|home)\/[^\s,)}\]]+/g, '<path>');
+  // Collapse multiple whitespace/newlines
+  s = s.replace(/\n{3,}/g, '\n\n').replace(/  +/g, ' ').trim();
+  return s;
+}
+
+// Post a compact inline notice — if a stage card is active, append inside it; otherwise top-level
+function postNotice(text, level='info') {
+  const el = document.createElement('div');
+  el.className = 'notice';
+  el.innerHTML = `<span class="notice-dot dot-${level}"></span><span class="notice-text">${_clean(text)}</span><span class="notice-time">${_time()}</span>`;
+
+  // Try to place inside the current active card's body
+  if (_currentCard) {
+    const body = _currentCard.querySelector('.sc-body');
+    if (body) { body.appendChild(el); _scroll(); return; }
+  }
+  document.getElementById('meetingsArea').appendChild(el);
+  _scroll();
+}
+
+// Create or get a stage card. Each stage has one card that updates in place.
+function getStageCard(id, title, agentName, agentInitials) {
+  let card = document.getElementById('sc-' + id);
+  if (card) return card;
+
+  const area = document.getElementById('meetingsArea');
+
+  // Create wrapper with timeline connector
+  const wrapper = document.createElement('div');
+  wrapper.className = 'stage-wrapper sw-active';
+  wrapper.id = 'sw-' + id;
+  wrapper.innerHTML = `<div class="stage-line"></div>`;
+
+  card = document.createElement('div');
+  card.className = 'stage-card sc-active';
+  card.id = 'sc-' + id;
+  card.innerHTML = `
+    <div class="sc-head">
+      <div class="sc-icon">${agentInitials}</div>
+      <div class="sc-title">${title}<small>${agentName}</small></div>
+      <span class="sc-badge badge-running">Running</span>
     </div>
-    <div class="participants">
-      <div class="participant"><div class="participant-avatar p">${prodInit}</div><div><div class="participant-name">${prodName}</div><div class="participant-role">Producer</div></div></div>
-      <div class="vs-divider">vs</div>
-      <div class="participant"><div class="participant-avatar c">AC</div><div><div class="participant-name">Adversarial Critic</div><div class="participant-role">Critic</div></div></div>
-    </div>
-    <div class="meeting-body">
-      <div class="meeting-col"><div class="col-label producer-label"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${prodName}</div><div class="col-text" id="prod-${id}"><span class="cursor"></span></div></div>
-      <div class="meeting-col critic-col"><div class="col-label critic-label"><span style="width:4px;height:4px;border-radius:50%;background:var(--coral)"></span> Adversarial Critic</div><div class="col-text" id="crit-${id}"><span style="color:var(--text4);font-style:italic">Awaiting producer...</span></div></div>
+    <div class="sc-body">
+      <div class="sc-section" id="sc-prod-${id}">
+        <div class="sc-section-label lbl-producer"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${agentName}</div>
+        <div class="sc-section-content" id="sc-prod-text-${id}"><span style="color:var(--text4)">Working...</span></div>
+      </div>
     </div>`;
-  document.getElementById('meetingsArea').prepend(card);
-  requestAnimationFrame(()=>card.classList.add('visible'));
+  wrapper.appendChild(card);
+  area.appendChild(wrapper);
+  _scroll();
+
+  // Deactivate previous card
+  if (_currentCard && _currentCard !== card) {
+    _currentCard.classList.remove('sc-active');
+    // Also update previous wrapper
+    const prevWrapper = _currentCard.closest('.stage-wrapper');
+    if (prevWrapper) prevWrapper.classList.remove('sw-active');
+  }
+  _currentCard = card;
   return card;
 }
 
-function addConf(card,pct){
-  const cls=pct>=65?'high':pct>=50?'mid':'low';
-  const row=document.createElement('div');
-  row.className='conf-row';
-  row.innerHTML=`<span class="conf-label">Confidence</span><div class="conf-bar"><div class="conf-fill ${cls}" style="width:${pct}%"></div></div><span class="conf-val ${cls}">${pct}%</span>`;
-  card.appendChild(row);
-  // Add mini conf to header for collapsed view
-  const badge=card.querySelector('.meeting-badge');
-  const mini=document.createElement('span');
-  mini.className='conf-mini '+cls;
-  mini.textContent=pct+'%';
-  badge.after(mini);
+// Update the producer section of a stage card
+function updateProducer(cardId, content) {
+  const el = document.getElementById('sc-prod-text-' + cardId);
+  if (!el) return;
+  // Always sanitize first — strips project IDs, workspace markers, and
+  // absolute /Users/... paths. The specialized lcg renderer also runs on the
+  // cleaned content so its output cannot bypass that boundary.
+  const cleaned = _clean(content);
+  // Specialized rendering for literature-conflict-graph stage output
+  // (hypothesis cards + ID hover). Falls through to plain markdown otherwise.
+  const lcgHtml = (typeof window._tryRenderLcg === 'function')
+    ? window._tryRenderLcg(cleaned)
+    : null;
+  el.innerHTML = lcgHtml || _renderMd(cleaned);
+  _scroll();
+}
+
+// Add or update the critic section of a stage card
+function updateCritic(cardId, content) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  let sec = document.getElementById('sc-crit-' + cardId);
+  if (!sec) {
+    sec = document.createElement('div');
+    sec.className = 'sc-section';
+    sec.id = 'sc-crit-' + cardId;
+    sec.style.background = 'var(--coral-subtle)';
+    sec.innerHTML = `<div class="sc-section-label lbl-critic"><span style="width:4px;height:4px;border-radius:50%;background:var(--coral)"></span> Adversarial Critic</div><div class="sc-section-content" id="sc-crit-text-${cardId}"></div>`;
+    card.querySelector('.sc-body').appendChild(sec);
+  }
+  const el = document.getElementById('sc-crit-text-' + cardId);
+  if (el) el.innerHTML = _renderMd(_clean(content));
+  _scroll();
+}
+
+// Set card status badge
+function setCardStatus(cardId, status) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  const badge = card.querySelector('.sc-badge');
+  if (!badge) return;
+  const wrapper = document.getElementById('sw-' + cardId);
+  card.classList.remove('sc-active', 'sc-error', 'sc-done');
+  if (wrapper) wrapper.classList.remove('sw-active', 'sw-done', 'sw-error');
+  if (status === 'done') {
+    badge.className = 'sc-badge badge-done'; badge.textContent = 'Passed';
+    card.classList.add('sc-done');
+    if (wrapper) wrapper.classList.add('sw-done');
+  } else if (status === 'error' || status === 'rejected') {
+    badge.className = 'sc-badge badge-error'; badge.textContent = 'Rejected';
+    card.classList.add('sc-error');
+    if (wrapper) wrapper.classList.add('sw-error');
+  } else if (status === 'reviewing') {
+    badge.className = 'sc-badge badge-reviewing'; badge.textContent = 'Reviewing';
+    card.classList.add('sc-active');
+    if (wrapper) wrapper.classList.add('sw-active');
+  } else {
+    badge.className = 'sc-badge badge-running'; badge.textContent = 'Running';
+    card.classList.add('sc-active');
+    if (wrapper) wrapper.classList.add('sw-active');
+  }
+}
+
+// Add confidence bar to a stage card
+function addCardConf(cardId, pct) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card) return;
+  if (card.querySelector('.sc-conf')) return; // already has one
+  const cls = pct >= 65 ? 'high' : pct >= 50 ? 'mid' : 'low';
+  const el = document.createElement('div');
+  el.className = 'sc-conf';
+  el.innerHTML = `<span class="sc-conf-label">Confidence</span><div class="sc-conf-bar"><div class="sc-conf-fill ${cls}" style="width:${pct}%"></div></div><span class="sc-conf-val ${cls}">${pct}%</span>`;
+  card.appendChild(el);
+  _scroll();
+}
+
+// Legacy wrappers used by pipeline-controller
+function postActivity(name, initials, role, content, tag) {
+  if (role === 'director' || role === 'system') {
+    const level = tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info';
+    postNotice(`<strong>${name}</strong>: ${content}`, level);
+    return;
+  }
+  // Producer/critic content goes into the active card
+  postNotice(`<strong>${name}</strong>: ${_clean(content)}`, tag === 'reject' ? 'error' : tag === 'pass' ? 'ok' : 'info');
+}
+
+function postDivider(text) {
+  // No-op — stage cards replace dividers
+}
+
+function postConfidence(pct) {
+  // Fallback: attach to current card if possible
+  if (_currentCard) {
+    const id = _currentCard.id.replace('sc-', '');
+    addCardConf(id, pct);
+  }
+}
+
+function createMeeting(id, prodName, prodInit, title, opts={}) {
+  return getStageCard(id, title, prodName, prodInit);
+}
+
+function addConf(card, pct) {
+  postConfidence(pct);
+}
+
+let _apObserver = null; // ResizeObserver for action panel
+
+function _syncMeetingsPadding() {
+  const panel = document.getElementById('action-panel-global');
+  const meetings = document.getElementById('meetingsArea');
+  if (!meetings) return;
+  if (panel) {
+    const ph = panel.offsetHeight;
+    meetings.style.paddingBottom = ph + 16 + 'px';
+    meetings.style.maxHeight = `calc(100vh - 120px - ${ph + 16}px)`;
+    _scroll();
+  } else {
+    meetings.style.paddingBottom = '';
+    meetings.style.maxHeight = '';
+  }
+}
+
+function removeActionBar() {
+  if (_apObserver) { _apObserver.disconnect(); _apObserver = null; }
+  document.getElementById('action-panel-global')?.remove();
+  _syncMeetingsPadding();
 }
 
 function addActionBar(card,stageId){
-  document.getElementById('action-panel-global')?.remove();
+  removeActionBar();
 
   const stageName=STAGES[stageId-1]?.name||'Stage '+stageId;
-  const producerText=document.getElementById('prod-s'+stageId)?.textContent||'';
+  const producerText='';
 
   const panel=document.createElement('div');
   panel.className='action-panel';
@@ -542,42 +1319,51 @@ function addActionBar(card,stageId){
   panel.innerHTML=`
     <div class="ap-header">
       <div class="ap-title"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/></svg> Stage ${stageId}: ${stageName}</div>
-      <button class="ap-approve" id="ap-approve-btn">Approve &amp; Continue &rarr;</button>
-    </div>
-    <div class="ap-tabs">
-      <button class="ap-tab active" data-tab="edit">Edit Output</button>
-      <button class="ap-tab" data-tab="instruct">Add Instructions</button>
-      <button class="ap-tab" data-tab="override">Override Critic</button>
-      <button class="ap-tab" data-tab="skip">Skip Stages</button>
-      <button class="ap-tab" data-tab="artifacts">Artifacts</button>
-      <button class="ap-tab" data-tab="export">Export</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="ap-approve" id="ap-revise-btn" style="background:var(--gold);animation:none">&#8635; Request Revision</button>
+        <button class="ap-approve" id="ap-approve-btn">Approve &amp; Continue &rarr;</button>
+      </div>
     </div>
     <div class="ap-body" id="ap-body">
-      <textarea class="ap-editor" id="ap-editor">${producerText}</textarea>
-      <div class="ap-hint">Edit the producer output directly. Changes will be passed to the next stage.</div>
+      <div class="ap-instruct-label">Optional: add feedback for revision or instructions for the next stage.</div>
+      <textarea class="ap-instruct" id="ap-feedback" placeholder="e.g. Novelty is not strong enough — differentiate more from Chen et al. 2025..."></textarea>
     </div>
   `;
   document.body.appendChild(panel);
 
-  // Tab switching
-  panel.querySelectorAll('.ap-tab').forEach(tab=>{
-    tab.addEventListener('click',function(){
-      panel.querySelectorAll('.ap-tab').forEach(t=>t.classList.remove('active'));
-      this.classList.add('active');
-      renderApTab(this.dataset.tab,stageId,producerText);
-    });
-  });
+  // Track panel height changes (tab switch resizes it) and keep meetings padding in sync
+  _apObserver = new ResizeObserver(() => _syncMeetingsPadding());
+  _apObserver.observe(panel);
+  _syncMeetingsPadding();
 
-  // Approve button
+  // Approve button — advance to next stage
   document.getElementById('ap-approve-btn').addEventListener('click',function(){
     this.textContent='Continuing...';
     this.disabled=true;
-    addEvent('stag','User approved Stage '+stageId+'. Continuing...');
-    // Signal OMC backend if connected
-    if (window.resumeBreakpoint) {
-      window.resumeBreakpoint('');
+    document.getElementById('ap-revise-btn').disabled=true;
+    const feedback = (document.getElementById('ap-feedback')?.value || '').trim();
+    if (window._controller && window._controller.resumeBreakpoint) {
+      window._controller.resumeBreakpoint(feedback);
     }
     resumePipeline();
+  });
+
+  // Revise button — re-run current stage with feedback
+  document.getElementById('ap-revise-btn').addEventListener('click',function(){
+    const feedbackEl = document.getElementById('ap-feedback');
+    const feedback = (feedbackEl?.value || '').trim();
+    if (!feedback) { feedbackEl?.focus(); feedbackEl?.classList.add('shake'); setTimeout(()=>feedbackEl?.classList.remove('shake'),500); return; }
+    this.textContent='Sending...';
+    this.disabled=true;
+    document.getElementById('ap-approve-btn').disabled=true;
+    // Send revision request — same as resume but with explicit "revise" instruction
+    const revisionFeedback = `[REVISION REQUESTED] CEO wants Stage ${stageId} revised: ${feedback}. Re-run this stage with the feedback above. Do NOT advance to the next stage.`;
+    if (window._controller && window._controller.resumeBreakpoint) {
+      window._controller.resumeBreakpoint(revisionFeedback);
+    }
+    removeActionBar();
+    postNotice(`Revision requested for Stage ${stageId}: ${feedback}`, 'info');
+    setStage(stageId, 'running');
   });
 }
 
@@ -686,154 +1472,306 @@ async function startDemo(){
   btn.disabled=true;btn.textContent='Running...';
   startTime=Date.now();
   document.getElementById('heroSection').style.display='none';
-  document.getElementById('eventStream').innerHTML='';
+  const es=document.getElementById('eventStream'); if(es) es.innerHTML='';
   document.getElementById('meetingsArea').innerHTML='';
 
   const topic=document.getElementById('topicInput').value||'Sparse attention with mixture-of-experts routing';
   if(!document.getElementById('topicInput').value)document.getElementById('topicInput').value=topic;
 
-  document.getElementById('dirStatus').textContent='Running pipeline...';
 
-  // ── Stage 1: Topic ──
-  addEvent('dtag','Research Director received topic. Delegating Stage 1.');
+  // ── Stage 1: Topic Refinement ──
+  postNotice('Research Director received topic. Delegating Stage 1.','info');
   setStage(1,'running');
-  addEvent('mtag','Meeting: Topic Refiner + Adversarial Critic');
+  await sleep(600);
 
-  const m1=createMeeting('s1','Topic Refiner','TR','Stage 1 — Topic Refinement');
-  await sleep(1200);
-  document.getElementById('prod-s1').innerHTML='Refined: "<span class="hl">Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning</span>, evaluated on RULER, LongBench, SCROLLS."';
-  addEvent('ttag','Topic Refiner produced output.');
+  const c1=getStageCard('s1','Stage 1 — Topic Refinement','Topic Refiner','TR');
   await sleep(800);
-  document.getElementById('crit-s1').innerHTML='Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>';
-  addConf(m1,78);
-  m1.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m1.querySelector('.meeting-badge').textContent='Passed';
-  m1.classList.remove('active');
+
+  updateProducer('s1','Refined: "Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning, evaluated on RULER, LongBench, SCROLLS."');
+  addEvent('ttag','Topic Refiner produced output.');
+  await sleep(1000);
+
+  updateCritic('s1','Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>');
+  addCardConf('s1',78);
+  setCardStatus('s1','done');
   setStage(1,'done');
-  document.getElementById('sc-1').classList.add('done');
+  document.getElementById('sc-1')?.classList.add('done');
   addEvent('gtag','PASS (78%)');
   document.getElementById('c1').textContent='78%';
 
-  if(STAGES[0].bp){m1.classList.add('paused');setStage(1,'paused');addActionBar(m1,1);addEvent('stag','Breakpoint hit. Waiting for user.');await waitForUser();m1.classList.remove('paused');setStage(1,'done')}
+  if(STAGES[0].bp){setStage(1,'paused');addActionBar(null,1);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(1,'done')}
 
   await sleep(500);
 
-  // ── Stage 2: Literature ──
-  addEvent('dtag','Delegating Stage 2: Literature Survey');
+  // ── Stage 2: Literature Survey ──
+  postNotice('Delegating Stage 2: Literature Survey','info');
   setStage(2,'running');
-  addEvent('mtag','Meeting: Lit. Surveyor + Adversarial Critic');
+  await sleep(600);
 
-  const m2=createMeeting('s2','Lit. Surveyor','LS','Stage 2 — Literature Survey');
-  await sleep(1200);
-  document.getElementById('prod-s2').innerHTML='Found <span class="hl">47 papers</span> in 3 clusters. Gap: no work combines <span class="hl">learned routing</span> with sparse attention for long-context.';
+  getStageCard('s2','Stage 2 — Literature Survey','Lit. Surveyor','LS');
   await sleep(800);
-  document.getElementById('crit-s2').innerHTML='47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <span class="hl">static</span> routing. Gap is real. <strong>PASS.</strong>';
-  addConf(m2,72);
-  m2.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m2.querySelector('.meeting-badge').textContent='Passed';
-  m2.classList.remove('active');
+
+  updateProducer('s2','Found <strong>47 papers</strong> in 3 clusters. Gap: no work combines <strong>learned routing</strong> with sparse attention for long-context.');
+  await sleep(1000);
+
+  updateCritic('s2','47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <strong>static</strong> routing. Gap is real. <strong>PASS.</strong>');
+  addCardConf('s2',72);
+  setCardStatus('s2','done');
   setStage(2,'done');
-  document.getElementById('sc-2').classList.add('done');
+  document.getElementById('sc-2')?.classList.add('done');
   addEvent('gtag','PASS (72%)');
   document.getElementById('c2').textContent='72%';
 
-  // Collapse completed stages
-  m1.classList.add('collapsed');
-
-  if(STAGES[1].bp){m2.classList.add('paused');setStage(2,'paused');addActionBar(m2,2);addEvent('stag','Breakpoint hit.');await waitForUser();m2.classList.remove('paused');setStage(2,'done')}
+  if(STAGES[1].bp){setStage(2,'paused');addActionBar(null,2);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(2,'done')}
 
   await sleep(500);
 
-  // ── Stage 3: Idea (default breakpoint) ──
-  addEvent('dtag','Delegating Stage 3: Idea Generation');
+  // ── Stage 3: Idea Generation (default breakpoint) ──
+  postNotice('Delegating Stage 3: Idea Generation','info');
   setStage(3,'running');
-  addEvent('mtag','Meeting: Idea Generator + Adversarial Critic');
+  await sleep(600);
 
-  const m3=createMeeting('s3','Idea Generator','IG','Stage 3 — Idea Generation');
-  await sleep(1200);
-  document.getElementById('prod-s3').innerHTML='Hypothesis: A <span class="hl">learned routing mechanism</span> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n&radic;n).';
+  getStageCard('s3','Stage 3 — Idea Generation','Idea Generator','IG');
+  await sleep(800);
+
+  updateProducer('s3','Hypothesis: A <strong>learned routing mechanism</strong> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n√n).');
   addEvent('ttag','Idea Generator proposed hypothesis.');
-  await sleep(1000);
-  document.getElementById('crit-s3').innerHTML='<span class="issue"><span class="sev high">HIGH</span> 3 papers with similarity &gt;0.7. Chen et al. at 0.74.</span><span class="issue"><span class="sev high">HIGH</span> "Static vs learned" is incremental without evidence of qualitative difference.</span><span class="issue"><span class="sev med">MED</span> 3-5% claim unjustified.</span>';
-  addConf(m3,45);
-  m3.querySelector('.meeting-badge').className='meeting-badge rejected';
-  m3.querySelector('.meeting-badge').textContent='Rejected';
-  m3.classList.remove('active');m3.classList.add('rejected');
+  await sleep(1200);
+
+  updateCritic('s3','<span class="error-text">HIGH:</span> 3 papers with similarity >0.7. Chen et al. at 0.74.\n<span class="error-text">HIGH:</span> "Static vs learned" is incremental without evidence of qualitative difference.\n<span class="error-text">MED:</span> 3-5% claim unjustified.');
+  addCardConf('s3',45);
+  setCardStatus('s3','rejected');
   setStage(3,'failed');
   addEvent('gtag','REJECTED (45%)');
   document.getElementById('c3').textContent='45%';
 
-  // Rejection trace
-  const mins=document.createElement('div');
-  mins.className='minutes';
-  mins.innerHTML='<div class="minutes-head">Rejection Trace</div><div class="minutes-body">Novelty claim thin. Chen et al. (2025) already explored routed sparse attention. Strengthen with input-dependent sparsity evidence from Rae et al. (2024).</div>';
-  m3.appendChild(mins);
+  await sleep(800);
 
   // Retry
-  addEvent('dtag','Retry Stage 3 (1/3). Feeding critic feedback.');
-  const rb=document.createElement('div');rb.className='retry-banner';
-  rb.innerHTML='&#8635; Research Director: Retry 1/3 — incorporating critique';
-  m3.appendChild(rb);
+  postNotice('Research Director: Retry 1/3 — incorporating critic feedback.','info');
+  setCardStatus('s3','running');
   setStage(3,'running');
-  await sleep(1500);
+  await sleep(1200);
+
+  updateProducer('s3','Revised: Input-dependent sparsity via per-layer routing gates. Key differentiator: routing is conditioned on input statistics (not fixed patterns). Evaluation includes ablation against Chen et al. baseline.');
+  await sleep(1000);
+
+  updateCritic('s3','Differentiation from Chen et al. is now clear. Ablation design addresses prior concern. <strong>PASS.</strong>');
+  // Remove old conf and add new
+  const oldConf=document.querySelector('#sc-s3 .sc-conf');
+  if(oldConf)oldConf.remove();
+  addCardConf('s3',71);
+  setCardStatus('s3','done');
+  document.getElementById('c3').textContent='71%';
   addEvent('gtag','PASS on retry (71%)');
-  m3.querySelector('.meeting-badge').className='meeting-badge concluded';
-  m3.querySelector('.meeting-badge').textContent='Passed (retry)';
-  m3.classList.remove('rejected');
-  m3.querySelector('.conf-fill').className='conf-fill mid';
-  m3.querySelector('.conf-fill').style.width='71%';
-  m3.querySelector('.conf-val').className='conf-val mid';
-  m3.querySelector('.conf-val').textContent='71%';
-  m3.querySelector('.conf-mini').className='conf-mini mid';
-  m3.querySelector('.conf-mini').textContent='71%';
-  document.getElementById('c3r').textContent='71%';
 
-  // Collapse earlier
-  m2.classList.add('collapsed');
-
-  // Breakpoint on Stage 3 (default)
+  // Breakpoint
   if(STAGES[2].bp){
     setStage(3,'paused');
-    m3.classList.add('paused');
-    addActionBar(m3,3);
-    addEvent('stag','Breakpoint on Stage 3. Review the hypothesis before continuing.');
-    document.getElementById('dirStatus').textContent='Paused at Stage 3 — waiting for user';
+    postNotice('Breakpoint at Stage 3. Review the hypothesis before continuing.','info');
+    addActionBar(null,3);
     await waitForUser();
-    // Post-approve: clear action bar, visual transition
-    m3.classList.remove('paused');
-    document.getElementById('action-panel-global')?.remove();
-    addEvent('dtag','Research Director: Stage 3 approved by user. Proceeding.');
+    removeActionBar();
+    postNotice('User approved. Continuing pipeline.','ok');
     await sleep(500);
   }
 
   setStage(3,'done');
-  document.getElementById('sc-3').classList.add('done');
-  m3.classList.add('collapsed');
+  document.getElementById('sc-3')?.classList.add('done');
 
-  // Update calibration
   document.getElementById('calM').textContent='4';
   document.getElementById('calP').textContent='75%';
   document.getElementById('calR').textContent='1';
 
   await sleep(300);
-  document.getElementById('dirStatus').textContent='Demo complete. 3/9 stages shown.';
-  addEvent('dtag','Remaining: 6 stages queued. Next: Methodology Designer.');
-  addEvent('stag','Demo: 3/9 stages. Connect OMC backend for full pipeline.');
+  postNotice('Remaining: 6 stages queued. Next: Methodology Designer.','info');
+  postNotice('Demo complete. Connect OMC backend for full 9-stage pipeline.','info');
   btn.disabled=false;btn.textContent='Launch Pipeline';
 }
 
-document.getElementById('topicInput').addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&!e.shiftKey){
-    e.preventDefault();
-    const topic = document.getElementById('topicInput').value.trim();
-    if(topic && window.launchPipeline) {
-      window.launchPipeline(topic);
-    } else {
-      startDemo();
-    }
+// ── Floating Chat Dialog ──
+let _chatDialog = null;
+let _chatMessages = []; // {from:'agent'|'user', sender:string, text:string}
+let _chatAgentName = '';
+let _chatEmployeeId = '';
+
+function openChatDialog(agentName, employeeId, message) {
+  _chatAgentName = agentName || 'Agent';
+  _chatEmployeeId = employeeId || '';
+
+  // Add the agent's message to history
+  _chatMessages.push({ from: 'agent', sender: _chatAgentName, text: message });
+
+  if (_chatDialog) {
+    // Already open — just append the new message
+    _renderChatMessages();
+    return;
   }
-});
-renderStages();
+
+  _chatDialog = document.createElement('div');
+  _chatDialog.className = 'chat-dialog';
+  _chatDialog.id = 'chatDialog';
+  _chatDialog.innerHTML = `
+    <div class="chat-dialog-head">
+      <div class="chat-dialog-avatar">?</div>
+      <div class="chat-dialog-title">${_escHtml(_chatAgentName)}<small>needs your input</small></div>
+      <button class="chat-dialog-close" id="chatClose">✕</button>
+    </div>
+    <div class="chat-dialog-messages" id="chatMessages"></div>
+    <div class="chat-dialog-input">
+      <input type="text" id="chatInput" placeholder="Type your reply..." autocomplete="off">
+      <button class="chat-dialog-send" id="chatSend">Send</button>
+    </div>`;
+
+  document.body.appendChild(_chatDialog);
+  _renderChatMessages();
+
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSend');
+
+  input.focus();
+
+  const doSend = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending...';
+
+    _chatMessages.push({ from: 'user', sender: 'You', text });
+    _renderChatMessages();
+
+    // Send to backend
+    const sessionId = window._currentSessionId || window._currentProjectId;
+    if (!sessionId || !window._omcClient) {
+      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Not connected to backend or no active project.' });
+      _renderChatMessages();
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+      return;
+    }
+
+    try {
+      const res = await window._omcClient.sendSessionMessage(sessionId, text);
+      sendBtn.textContent = 'Sent ✓';
+      sendBtn.disabled = false;
+      setTimeout(() => { sendBtn.textContent = 'Send'; }, 2000);
+      // Also post to active stage card so user sees it in pipeline
+      postNotice(`You replied: "${text}"`, 'ok');
+    } catch (e) {
+      _chatMessages.push({ from: 'agent', sender: 'System', text: 'Failed to send: ' + (e.message || 'unknown error') });
+      _renderChatMessages();
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
+    }
+  };
+
+  sendBtn.onclick = doSend;
+  input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); doSend(); } };
+
+  document.getElementById('chatClose').onclick = closeChatDialog;
+}
+
+function closeChatDialog() {
+  if (_chatDialog) {
+    _chatDialog.remove();
+    _chatDialog = null;
+  }
+}
+
+function _renderChatMessages() {
+  const container = document.getElementById('chatMessages');
+  if (!container) return;
+  container.innerHTML = _chatMessages.map(m => `
+    <div class="chat-msg from-${m.from}">
+      <div class="chat-bubble">
+        <div class="chat-sender">${_escHtml(m.sender)}</div>
+        ${m.from === 'agent' ? _renderMd(_clean(m.text)) : _escHtml(m.text)}
+      </div>
+    </div>`).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+// Also post the clarification to the active stage card as a notice
+window.openChatDialog = openChatDialog;
+window.closeChatDialog = closeChatDialog;
+window.isChatDialogOpen = () => !!_chatDialog;
+
+// ── Breakpoint Dialog (reuses chat-dialog style) ──
+let _bpDialog = null;
+let _bpStageId = null;
+
+function openBreakpointDialog(stageId, stageName) {
+  closeChatDialog(); // close any existing chat
+  if (_bpDialog) _bpDialog.remove();
+  _bpStageId = stageId;
+
+  _bpDialog = document.createElement('div');
+  _bpDialog.className = 'chat-dialog';
+  _bpDialog.id = 'bpDialog';
+  _bpDialog.innerHTML = `
+    <div class="chat-dialog-head">
+      <div class="chat-dialog-avatar" style="background:var(--gold)">S${stageId}</div>
+      <div class="chat-dialog-title">Stage ${stageId}: ${_escHtml(stageName)}<small>completed — review required</small></div>
+    </div>
+    <div class="chat-dialog-messages" id="bpMessages">
+      <div class="chat-msg from-agent">
+        <div class="chat-bubble">
+          <div class="chat-sender">Pipeline</div>
+          Stage ${stageId} (${_escHtml(stageName)}) has passed critic review. Approve to continue, or request revision with feedback.
+        </div>
+      </div>
+    </div>
+    <div class="chat-dialog-input" style="flex-wrap:wrap;gap:6px">
+      <textarea id="bpFeedback" placeholder="Optional feedback or revision instructions..." rows="2" style="flex:1;min-width:200px;border:1.5px solid var(--border);border-radius:var(--pill);padding:8px 14px;font-family:var(--sans);font-size:.82rem;color:var(--text);background:var(--bg);outline:none;resize:vertical"></textarea>
+      <button class="chat-dialog-send" id="bpReviseBtn" style="background:var(--gold)">&#8635; Revise</button>
+      <button class="chat-dialog-send" id="bpApproveBtn">Approve &rarr;</button>
+    </div>`;
+
+  document.body.appendChild(_bpDialog);
+  // Push meetings area up so content isn't hidden behind dialog
+  const meetings = document.getElementById('meetingsArea');
+  if (meetings) {
+    meetings.style.paddingBottom = '320px';
+    meetings.scrollTop = meetings.scrollHeight;
+  }
+  document.getElementById('bpFeedback').focus();
+
+  document.getElementById('bpApproveBtn').onclick = () => {
+    const fb = document.getElementById('bpFeedback').value.trim();
+    if (window._controller) window._controller.resumeBreakpoint(fb, false);
+  };
+  document.getElementById('bpReviseBtn').onclick = () => {
+    const fb = document.getElementById('bpFeedback').value.trim();
+    if (!fb) { document.getElementById('bpFeedback').focus(); return; }
+    if (window._controller) window._controller.resumeBreakpoint(fb, true);
+  };
+  // Enter = newline in textarea (default behavior, no override)
+}
+
+function addBreakpointMessage(sender, text) {
+  const container = document.getElementById('bpMessages');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = 'chat-msg from-agent';
+  el.innerHTML = `<div class="chat-bubble"><div class="chat-sender">${_escHtml(sender)}</div>${_renderMd(_clean(text))}</div>`;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+}
+
+function closeBreakpointDialog() {
+  if (_bpDialog) { _bpDialog.remove(); _bpDialog = null; }
+  _bpStageId = null;
+  // Restore meetings area padding
+  const meetings = document.getElementById('meetingsArea');
+  if (meetings) meetings.style.paddingBottom = '';
+}
+
+window.openBreakpointDialog = openBreakpointDialog;
+window.addBreakpointMessage = addBreakpointMessage;
+window.closeBreakpointDialog = closeBreakpointDialog;
+
+renderPipelineBar();
 </script>
 <script type="module" src="src/main.js"></script>
 </body>

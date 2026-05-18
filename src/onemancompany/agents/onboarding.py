@@ -23,6 +23,7 @@ from onemancompany.core.config import (
     DEFAULT_TOOL_PERMISSIONS,
     DEFAULT_TOOL_PERMISSIONS_FALLBACK,
     DEFAULT_DEPARTMENT,
+    EMPLOYEES_DIR,
     HR_ID,
     open_utf,
     MANIFEST_FILENAME,
@@ -70,6 +71,14 @@ _DEFAULT_SKILLS_DIR = Path(__file__).resolve().parent.parent / "default_skills"
 _DEFAULT_SKILL_NAMES = ["task_lifecycle"]
 # EA-only skills injected during founding team setup
 _EA_SKILL_NAMES = ["project-brainstorming"]
+# Profile-skill → required-runbook mapping.
+# When an employee carries a skill listed here, the corresponding runbook(s)
+# from default_skills/ are injected into their skills/ directory so that
+# load_skill(<runbook>) can resolve at runtime. This is the SSOT for the
+# pattern; adding a new convener-style skill is one-line dict edit.
+_SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
+    "methodology_designer": ["methodology-debate-convener"],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -624,17 +633,52 @@ async def clone_talent_repo(repo_url: str, talent_id: str) -> Path:
     return resolved if resolved.exists() else _TALENTS_CLONE_DIR
 
 
-def _inject_default_skills(skills_dir: Path, employee_id: str = "") -> None:
+def _inject_default_skills(
+    skills_dir: Path,
+    employee_id: str = "",
+    employee_skills: list[str] | None = None,
+) -> None:
     """Copy/update default skills into the employee's skills folder.
 
     Always overwrites SKILL.md from the source to pick up frontmatter
     changes (e.g. autoload flag). Preserves employee-specific files
     in the skill directory that don't exist in the source.
+
+    Skill-conditional runbook injection: if the employee carries a skill
+    listed in ``_SKILL_REQUIRED_RUNBOOKS``, the mapped runbook names are
+    added to the injection list (e.g. ``methodology_designer`` →
+    ``methodology-debate-convener``). When ``employee_skills`` is not
+    provided, the function reads ``skills_dir.parent / 'profile.yaml'`` to
+    discover the employee's skills; if no profile file is present, only the
+    universal defaults are injected.
     """
     from onemancompany.core.config import EA_ID
     names = list(_DEFAULT_SKILL_NAMES)
     if employee_id == EA_ID:
         names.extend(_EA_SKILL_NAMES)
+
+    # Discover the employee's skills if not passed explicitly.
+    if employee_skills is None:
+        profile_path = skills_dir.parent / "profile.yaml"
+        if profile_path.exists():
+            try:
+                import yaml
+                with profile_path.open(encoding="utf-8") as f:
+                    profile = yaml.safe_load(f) or {}
+                employee_skills = list(profile.get("skills") or [])
+            except Exception as exc:
+                logger.warning(
+                    "[_inject_default_skills] failed to read {}: {}", profile_path, exc
+                )
+                employee_skills = []
+        else:
+            employee_skills = []
+
+    # Add runbooks required by the employee's skills.
+    for skill in employee_skills:
+        for runbook in _SKILL_REQUIRED_RUNBOOKS.get(skill, []):
+            if runbook not in names:
+                names.append(runbook)
     for name in names:
         src = _DEFAULT_SKILLS_DIR / name
         if not src.exists():
@@ -663,6 +707,133 @@ def _inject_default_skills(skills_dir: Path, employee_id: str = "") -> None:
                                     shutil.copy2(str(f), str(dst_f))
                                 elif f.is_dir():
                                     shutil.copytree(str(f), str(dst_f))
+
+
+# ---------------------------------------------------------------------------
+# Cloud skill installation via fastskills MCP
+# (overridable hooks so unit tests can mock the MCP transport)
+# ---------------------------------------------------------------------------
+
+# Lazy imports — fastskills + MCP libs may not be installed in every dev env,
+# so we import on first use. Tests overwrite the two module-level hooks below.
+_FastskillsStdioClient = None
+_FastskillsClientSession = None
+
+
+def _fastskills_mcp_clients():
+    """Return (stdio_client, ClientSession, StdioServerParameters), importing on demand."""
+    global _FastskillsStdioClient, _FastskillsClientSession
+    from mcp import ClientSession as _CS, StdioServerParameters as _Params
+    from mcp.client.stdio import stdio_client as _stdio
+    if _FastskillsStdioClient is None:
+        _FastskillsStdioClient = _stdio
+    if _FastskillsClientSession is None:
+        _FastskillsClientSession = _CS
+    return _FastskillsStdioClient, _FastskillsClientSession, _Params
+
+
+async def _search_cloud_skills_via_fastskills(
+    query: str,
+    api_key: str = "",
+) -> str:
+    """Query the SkillsMP cloud catalog via a short-lived ``fastskills`` MCP subprocess.
+
+    company-hosted and omctalent-hosted agents do not have direct MCP access
+    (only ``hosting: self`` does, via ClaudeSessionExecutor), so this helper
+    bridges the gap: spin up fastskills as a stdio subprocess scoped to a tmp
+    skills_dir + workdir, call ``search_cloud_skills``, return the raw output.
+
+    Args:
+        query: Search keywords passed straight through to SkillsMP.
+        api_key: SkillsMP API key. Defaults to ``settings.skillsmp_api_key``.
+
+    Returns:
+        The raw textual output from the fastskills ``search_cloud_skills`` tool.
+
+    Raises:
+        RuntimeError: when ``SKILLSMP_API_KEY`` is not configured.
+    """
+    import os
+    import tempfile
+
+    effective_key = api_key or settings.skillsmp_api_key
+    if not effective_key:
+        raise RuntimeError(
+            "SKILLSMP_API_KEY is not configured; cannot search cloud skills."
+        )
+
+    stdio_client, ClientSession, StdioServerParameters = _fastskills_mcp_clients()
+
+    with tempfile.TemporaryDirectory(prefix="fastskills-search-") as tmpdir:
+        params = StdioServerParameters(
+            command="uvx",
+            args=["fastskills", "--skills-dir", tmpdir, "--workdir", tmpdir],
+            env={**os.environ, "SKILLSMP_API_KEY": effective_key},
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "search_cloud_skills", {"query": query}
+                )
+                return "".join(getattr(c, "text", "") for c in result.content)
+
+
+async def _install_cloud_skill_for_employee(
+    employee_id: str,
+    skill_github_url: str,
+    api_key: str = "",
+) -> str:
+    """Install a SkillsMP cloud skill into an employee's own skills/ directory.
+
+    Spawns ``fastskills`` as a short-lived MCP stdio subprocess scoped to the
+    target employee's ``skills/`` and ``workspace/`` dirs, calls
+    ``install_cloud_skill``, then closes.
+
+    Args:
+        employee_id: Numeric employee id (e.g. "00007").
+        skill_github_url: GitHub tree URL of the skill (e.g.
+            https://github.com/foo/repo/tree/main/skills/experiment-design).
+            SkillsMP URLs are not accepted — fastskills requires the github URL.
+        api_key: SkillsMP API key. Defaults to ``settings.skillsmp_api_key``.
+
+    Returns:
+        The install_cloud_skill tool's textual output.
+
+    Raises:
+        RuntimeError: when SKILLSMP_API_KEY is not configured.
+    """
+    import os
+
+    effective_key = api_key or settings.skillsmp_api_key
+    if not effective_key:
+        raise RuntimeError(
+            "SKILLSMP_API_KEY is not configured; cannot install cloud skills."
+        )
+
+    skills_dir = EMPLOYEES_DIR / employee_id / "skills"
+    workdir = EMPLOYEES_DIR / employee_id / WORKSPACE_DIR_NAME
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    stdio_client, ClientSession, StdioServerParameters = _fastskills_mcp_clients()
+    params = StdioServerParameters(
+        command="uvx",
+        args=["fastskills", "--skills-dir", str(skills_dir), "--workdir", str(workdir)],
+        env={**os.environ, "SKILLSMP_API_KEY": effective_key},
+    )
+
+    logger.debug(
+        "[_install_cloud_skill_for_employee] employee={} url={}",
+        employee_id, skill_github_url,
+    )
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "install_cloud_skill", {"skill_url": skill_github_url}
+            )
+            return "".join(getattr(c, "text", "") for c in result.content)
 
 
 def _assign_default_avatar(emp_dir: Path, emp_num: str) -> None:

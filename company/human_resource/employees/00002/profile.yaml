@@ -1,4 +1,4 @@
-api_provider: openrouter
+api_provider: custom
 current_quarter_tasks: 0
 department: HR
 desk_position:
@@ -7,7 +7,7 @@ desk_position:
 employee_number: '00002'
 hosting: company
 level: 4
-llm_model: google/gemini-3.1-pro-preview
+llm_model: MiniMax-M2.7
 name: Sam HR
 nickname: 暖心侠
 performance_history: []

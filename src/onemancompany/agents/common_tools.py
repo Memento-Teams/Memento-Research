@@ -22,6 +22,7 @@ from onemancompany.core import store as _store
 from onemancompany.core.store import load_employee, load_all_employees
 
 from onemancompany.tools.sandbox import SANDBOX_TOOLS, is_sandbox_enabled
+from onemancompany.core.debate import run_debate_session, select_debate_participants
 
 # Context vars for sub-task support — set by Vessel during execution
 from onemancompany.core.agent_loop import _current_vessel, _current_task_id
@@ -271,6 +272,28 @@ async def write(
         new_lines = content.splitlines()
         result["lines_before"] = len(old_lines)
         result["lines_after"] = len(new_lines)
+
+    # Emit file_written event for frontend workspace panel
+    try:
+        from onemancompany.core.events import event_bus, CompanyEvent, EventType
+        from onemancompany.core.config import SYSTEM_AGENT
+        await event_bus.publish(CompanyEvent(
+            type=EventType.STATE_SNAPSHOT,
+            payload={
+                "type": "file_written",
+                "file_name": resolved.name,
+                "file_path": str(resolved),
+                "full_path": str(resolved),
+                "size": len(content.encode("utf-8")),
+                "content": content,
+                "employee_id": employee_id,
+                "type_action": "update" if is_update else "create",
+            },
+            agent=employee_id or SYSTEM_AGENT,
+        ))
+    except Exception as exc:
+        logger.debug("write(): failed to publish file_written event: {}", exc)
+
     return result
 
 
@@ -1883,6 +1906,327 @@ async def list_background_tasks(
 
 
 # ---------------------------------------------------------------------------
+# Multi-Agent Debate tool
+# ---------------------------------------------------------------------------
+
+@tool
+async def run_debate(
+    topic: str,
+    participant_ids: list[str],
+    max_rounds: int = 5,
+    initiator_id: str = "",
+) -> dict:
+    """Run a multi-agent debate (MAD) — structured parallel discussion among multiple agents.
+
+    Unlike pull_meeting (token-grab, one speaker per turn), MAD runs in synchronized rounds:
+    every participant responds simultaneously each round, reading ALL previous responses.
+    Ends when consensus is reached or max_rounds is exhausted. A judge delivers the final verdict.
+
+    Use this for decisions that need structured argumentation — architecture choices, strategic
+    trade-offs, risk assessments — where you want every voice heard every round.
+
+    Args:
+        topic: The debate question or proposition (e.g. "Should we migrate to microservices?")
+        participant_ids: List of colleague IDs who will debate (must be 2+ people).
+        max_rounds: Maximum number of rounds before forcing the judge conclusion (default 5).
+        initiator_id: Your employee ID (auto-filled, can be left empty).
+
+    Returns:
+        Debate result with rounds, participant positions, consensus status, and final conclusion.
+    """
+    from onemancompany.core.store import load_employee
+
+    # Load participant data
+    agents_data: dict[str, dict] = {}
+    for pid in participant_ids:
+        emp = load_employee(pid)
+        if emp:
+            agents_data[pid] = emp
+
+    valid_ids = list(agents_data.keys())
+    if len(valid_ids) < 2:
+        return _tool_error(
+            "Debate requires at least 2 valid participants.",
+            hint="Use list_colleagues() to find valid employee IDs.",
+        )
+
+    logger.debug(
+        "[run_debate] topic={!r}, participants={}, max_rounds={}, judge=impartial",
+        topic, valid_ids, max_rounds,
+    )
+
+    async def _on_message(msg: dict) -> None:
+        await _chat(
+            room_id="debate",
+            speaker=msg["speaker"],
+            role=msg.get("role", "debater"),
+            message=msg["content"],
+        )
+
+    try:
+        result = await run_debate_session(
+            topic=topic,
+            participant_ids=valid_ids,
+            agents_data=agents_data,
+            max_rounds=max_rounds,
+            on_message=_on_message,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[run_debate] session failed: {}", e)
+        return {"status": "error", "is_error": True, "message": str(e)}
+
+    out = result.to_dict()
+    out["status"] = "completed"
+    return out
+
+
+@tool
+async def select_debate_participants_tool(
+    topic: str,
+    num_participants: int = 0,
+) -> dict:
+    """Select the best participants for a debate using an impartial AI selector.
+
+    Before calling run_debate, use this tool to let a neutral selector choose
+    participants whose perspectives are likely to be diverse and opposing.
+    Review the suggestions (each comes with an expected stance) and adjust if needed,
+    then pass the participant_ids directly into run_debate.
+
+    Args:
+        topic: The debate question or proposition.
+        num_participants: How many participants to select. 0 = selector decides (recommended).
+
+    Returns:
+        suggestions: List of selected participants with expected_stance for each.
+        participant_ids: Ready-to-use list for run_debate's participant_ids argument.
+    """
+    from onemancompany.core.store import load_all_employees
+
+    all_employees = load_all_employees()
+    if not all_employees:
+        return _tool_error("No employees found. Cannot select debate participants.")
+
+    n = num_participants if num_participants > 0 else None
+
+    logger.debug(
+        "[select_debate_participants_tool] topic={!r}, num={}",
+        topic, n,
+    )
+
+    try:
+        suggestions = await select_debate_participants(
+            topic=topic,
+            all_employees=all_employees,
+            num_participants=n,
+        )
+    except asyncio.CancelledError:
+        raise
+    except ValueError as e:
+        return _tool_error(f"Selector failed: {e}")
+    except Exception as e:
+        logger.exception("[select_debate_participants_tool] failed: {}", e)
+        return {"status": "error", "is_error": True, "message": str(e)}
+
+    return {
+        "status": "ok",
+        "topic": topic,
+        "suggestions": [s.to_dict() for s in suggestions],
+        "participant_ids": [s.employee_id for s in suggestions],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Specialist assembly — hire AI-generated experts backed by SkillsMP cloud skills
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def search_skillsmp(query: str) -> dict:
+    """Search the SkillsMP cloud catalog for skills matching a free-text query.
+
+    Use this BEFORE calling ``assemble_specialist_from_skill``. The search
+    returns a formatted list of candidate skills, each with both a
+    ``skillsmp.com`` URL and a ``github.com`` tree URL. You will pass the
+    **github URL** to ``assemble_specialist_from_skill``; the skillsmp URL is
+    not accepted by the installer.
+
+    This wraps the same SkillsMP search the ``fastskills`` MCP exposes, but
+    available natively to LangChain-hosted agents (company / omctalent) that
+    do not get direct MCP access.
+
+    Args:
+        query: Free-text keywords describing the methodology, domain, or
+            expertise you need (e.g. "causal inference RCT methodology",
+            "experiment design A/B testing", "ai ethics", "code review").
+
+    Returns:
+        On success: ``status="ok"``, ``query``, ``raw_results`` (the formatted
+            text block from SkillsMP — usually 5-9 hits with github URLs).
+        On failure: ``_tool_error`` with the reason.
+    """
+    from onemancompany.agents.onboarding import _search_cloud_skills_via_fastskills
+    from onemancompany.core.config import settings
+
+    if not settings.skillsmp_api_key:
+        return _tool_error(
+            "SKILLSMP_API_KEY is not configured. Cannot search the cloud catalog.",
+            hint="Ask the CEO to set SKILLSMP_API_KEY in .env, or pick participants "
+                 "from the existing roster instead.",
+        )
+
+    try:
+        raw = await _search_cloud_skills_via_fastskills(query)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[search_skillsmp] failed")
+        return _tool_error(f"search failed: {e}")
+
+    return {
+        "status": "ok",
+        "query": query,
+        "raw_results": raw,
+    }
+
+
+@tool
+async def assemble_specialist_from_skill(
+    name: str,
+    role: str,
+    skill_github_url: str,
+    department: str = "Research",
+    work_principles: str = "",
+) -> dict:
+    """Hire an AI-generated specialist whose expertise centers on a specific SkillsMP skill.
+
+    Use when your roster lacks the methodological expertise needed for a debate
+    or task. Workflow:
+      1. Call search_cloud_skills (from your fastskills MCP) to find candidate skills.
+      2. Pick a skill's GitHub tree URL from the search results.
+      3. Call this tool to create an employee built around that skill.
+      4. Repeat for additional specialists if you need multiple perspectives.
+
+    The new employee is hired into the standard roster (no CEO confirmation step),
+    the cloud skill is installed into their skills/ directory during onboarding,
+    and they become immediately addressable by employee_id for run_debate and
+    dispatch_child.
+
+    Args:
+        name: Full name with title, e.g. "Dr. Alex Causal".
+        role: Specific role / specialty, e.g. "Causal Inference Statistician".
+        skill_github_url: GitHub tree URL from search_cloud_skills results.
+            Must start with https://github.com/ — the skillsmp.com URL is NOT
+            accepted (fastskills install requires the github URL).
+        department: Org department, default "Research".
+        work_principles: One-sentence summary of methodological approach.
+
+    Returns:
+        On success: status="ok", employee_id, name, nickname, installed_skill,
+                    skill_github_url, install_result.
+        On hire-but-no-install: status="ok_partial" with the employee_id but
+                                is_error=True flagging the skill failure.
+        On any other failure: status="error" via _tool_error.
+    """
+    from onemancompany.agents.onboarding import (
+        execute_hire,
+        generate_nickname,
+        _install_cloud_skill_for_employee,
+    )
+    from onemancompany.core.config import settings, EMPLOYEES_DIR
+
+    if not settings.skillsmp_api_key:
+        return _tool_error(
+            "SKILLSMP_API_KEY is not configured. Cannot assemble specialists from cloud skills.",
+            hint="Ask the CEO to set SKILLSMP_API_KEY in .env, or pick participants from the existing roster instead.",
+        )
+
+    if not skill_github_url.startswith("https://github.com/"):
+        return _tool_error(
+            f"skill_github_url must be a github.com tree URL (got {skill_github_url!r}). "
+            "Pick the 'github:' link from search_cloud_skills output, not the skillsmp.com link.",
+        )
+
+    # Skill name from the URL — last path segment of the github tree URL.
+    import os as _os
+    skill_name = _os.path.basename(skill_github_url.rstrip("/"))
+
+    try:
+        nickname = await asyncio.wait_for(
+            generate_nickname(name, role, is_founding=False), timeout=60,
+        )
+    except asyncio.TimeoutError:
+        nickname = name.split()[0][:8] if name else "Expert"
+    except Exception as e:
+        logger.warning("[assemble_specialist] nickname generation failed: {}", e)
+        nickname = name.split()[0][:8] if name else "Expert"
+
+    logger.info(
+        "[assemble_specialist] hiring {} ({}) for skill {} from {}",
+        name, role, skill_name, skill_github_url,
+    )
+
+    try:
+        emp = await execute_hire(
+            name=name,
+            nickname=nickname,
+            role=role,
+            skills=[skill_name],
+            department=department,
+            hosting="company",
+            api_provider=settings.default_api_provider or "openrouter",
+            llm_model="",          # company default
+            temperature=0.3,
+            auth_method="api_key",
+            remote=False,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[assemble_specialist] execute_hire failed")
+        return _tool_error(f"hire failed: {e}")
+
+    # Persist work_principles if provided (overrides any default created during onboarding)
+    if work_principles:
+        try:
+            wp_path = EMPLOYEES_DIR / emp.id / "work_principles.md"
+            write_text_utf(wp_path, work_principles)
+        except Exception as e:
+            logger.warning(
+                "[assemble_specialist] failed to write work_principles for {}: {}", emp.id, e,
+            )
+
+    # Install the cloud skill into the new employee's skills/ dir.
+    try:
+        install_result = await _install_cloud_skill_for_employee(
+            emp.id, skill_github_url,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("[assemble_specialist] cloud skill install failed for {}", emp.id)
+        return {
+            "status": "ok_partial",
+            "is_error": True,
+            "message": f"Employee hired ({emp.id}) but skill install failed: {e}",
+            "employee_id": emp.id,
+            "name": name,
+            "nickname": nickname,
+        }
+
+    return {
+        "status": "ok",
+        "employee_id": emp.id,
+        "name": name,
+        "nickname": nickname,
+        "installed_skill": skill_name,
+        "skill_github_url": skill_github_url,
+        "install_result": (install_result or "")[:400],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool registration — register all internal tools into the unified registry
 # ---------------------------------------------------------------------------
 
@@ -1897,6 +2241,8 @@ def _register_all_internal_tools() -> None:
 
     _base = [
         list_colleagues, read, ls, write, edit, pull_meeting,
+        run_debate, select_debate_participants_tool,
+        search_skillsmp, assemble_specialist_from_skill,
         glob_files, grep_search,
         load_skill,
         resume_held_task, update_project_team,
@@ -1914,6 +2260,11 @@ def _register_all_internal_tools() -> None:
     # Product management tools — available to all employees
     from onemancompany.agents.product_tools import PRODUCT_TOOLS as _product_tools
     for t in _product_tools:
+        tool_registry.register(t, ToolMeta(name=t.name, category="base"))
+
+    # Product workspace tools — promote_to_product
+    from onemancompany.agents.product_workspace_tools import PRODUCT_WORKSPACE_TOOLS as _pw_tools
+    for t in _pw_tools:
         tool_registry.register(t, ToolMeta(name=t.name, category="base"))
 
     # Tree tools self-register on import

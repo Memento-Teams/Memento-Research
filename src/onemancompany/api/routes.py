@@ -25,6 +25,7 @@ from onemancompany.core.config import (
     DOT_ENV_FILENAME,
     EA_ID,
     ENCODING_UTF8,
+    EMPLOYEES_DIR,
     HR_ID,
     MANIFEST_FILENAME,
     MAX_SUMMARY_LEN,
@@ -514,6 +515,9 @@ async def ceo_submit_task(
     project_name: str = Form(""),
     product_id: str = Form(""),
     mode: str = Form("standard"),
+    start_stage: int = Form(1),
+    end_stage: int = Form(9),
+    stage_assignments: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
     """CEO submits a task with optional files, routed to EA via persistent loop."""
@@ -571,79 +575,76 @@ async def ceo_submit_task(
 
     ctx_id = f"{pid}/{iter_id}" if iter_id else pid
 
-    # Build attachment info string for EA
-    attach_info = ""
-    if attachments:
-        lines = [f"- Attachment: {a['filename']} (saved at {a['path']})" for a in attachments]
-        attach_info = "\n\nCEO attached the following files:\n" + "\n".join(lines)
+    # Initialize task tree and start pipeline engine
+    try:
+        from onemancompany.core.task_tree import TaskTree, evict_tree, register_tree
+        from onemancompany.core.vessel import _save_project_tree
+        from onemancompany.core.pipeline_engine import PipelineEngine
 
-    loop = get_agent_loop(EA_ID)
-    if loop:
-        ea_task = (
-            f"CEO has assigned a new task. Please analyze and dispatch to the appropriate owner:\n\n"
-            f"Task: {task}{attach_info}\n\n"
-            f"[Project ID: {ctx_id}] [Project workspace: {pdir}]"
-        )
-        # Initialize task tree: CEO node as root, EA as child
-        try:
-            from onemancompany.core.task_tree import TaskTree, evict_tree
-            from onemancompany.core.vessel import _save_project_tree
+        tree_path = Path(pdir) / TASK_TREE_FILENAME
+
+        # For new iterations on existing projects: archive old tree
+        if iter_id and tree_path.exists():
             from onemancompany.core.agent_loop import employee_manager
+            from onemancompany.core.project_archive import load_named_project
+            meta = (load_named_project(project_id) if project_id else {}) or {}
+            iters = meta.get("iterations", [])
+            if len(iters) >= 2:
+                prev_iter = iters[-2]
+                prev_project_id = f"{pid}/{prev_iter}"
+                cancelled = employee_manager.abort_project(prev_project_id)
+                if cancelled:
+                    logger.info("Cancelled {} tasks from old iteration {}", cancelled, prev_project_id)
+                archive_name = f"task_tree_{prev_iter}.yaml"
+                archive_path = tree_path.parent / archive_name
+                if not archive_path.exists():
+                    import shutil
+                    shutil.copy2(str(tree_path), str(archive_path))
+            evict_tree(tree_path)
 
-            tree_path = Path(pdir) / TASK_TREE_FILENAME
+        tree = TaskTree(project_id=ctx_id, mode=mode)
+        # CEO root node
+        ceo_root = tree.create_root(employee_id=CEO_ID, description=task)
+        ceo_root.node_type = NodeType.CEO_PROMPT
+        ceo_root.set_status(TaskPhase.PROCESSING)
+        register_tree(tree_path, tree)
+        _save_project_tree(pdir, tree)
 
-            # For new iterations on existing projects: cancel old iteration + archive tree
-            if iter_id and tree_path.exists():
-                from onemancompany.core.project_archive import load_named_project
-                meta = load_named_project(project_id) if project_id else {}
-                iters = meta.get("iterations", [])
-                if len(iters) >= 2:
-                    prev_iter = iters[-2]
-                    prev_project_id = f"{pid}/{prev_iter}"
-                    # Cancel all running tasks from old iteration
-                    cancelled = employee_manager.abort_project(prev_project_id)
-                    if cancelled:
-                        logger.info("Cancelled {} tasks from old iteration {}", cancelled, prev_project_id)
-                    # Archive old tree
-                    archive_name = f"task_tree_{prev_iter}.yaml"
-                    archive_path = tree_path.parent / archive_name
-                    if not archive_path.exists():
-                        import shutil
-                        shutil.copy2(str(tree_path), str(archive_path))
-                        logger.info("Archived previous tree to {}", archive_name)
-                # Evict old tree from memory cache
-                evict_tree(tree_path)
+        # Create project conversation
+        from onemancompany.core.conversation import get_conversation_service
+        _conv_svc = get_conversation_service()
+        _conv = await _conv_svc.get_or_create_project_conversation(ctx_id, [CEO_ID])
+        await _conv_svc.push_system_message(_conv.id, f"Project created: {task[:100]}", source_employee="system")
 
-            tree = TaskTree(project_id=ctx_id, mode=mode)
-            # CEO root node — records original prompt
-            ceo_root = tree.create_root(employee_id=CEO_ID, description=task)
-            ceo_root.node_type = NodeType.CEO_PROMPT
-            ceo_root.set_status(TaskPhase.PROCESSING)
-            # EA node as child of CEO
-            ea_node = tree.add_child(
-                parent_id=ceo_root.id,
-                employee_id=EA_ID,
-                description=ea_task,
-                acceptance_criteria=[],
-            )
-            _save_project_tree(pdir, tree)
-            # Create project conversation
-            from onemancompany.core.conversation import get_conversation_service
-            _conv_svc = get_conversation_service()
-            _conv = await _conv_svc.get_or_create_project_conversation(ctx_id, [CEO_ID, EA_ID])
-            await _conv_svc.push_system_message(_conv.id, f"Project created: {task[:100]}", source_employee="system")
-            # Register CEO and EA in project team for project history
-            from onemancompany.agents.tree_tools import _add_to_project_team
-            _add_to_project_team(pdir, CEO_ID)
-            _add_to_project_team(pdir, EA_ID)
-            # Schedule EA node for execution
-            employee_manager.schedule_node(EA_ID, ea_node.id, str(tree_path))
-            employee_manager._schedule_next(EA_ID)
-        except Exception as e:
-            logger.error("Failed to initialize task tree: {}", e)
-    else:
-        logger.error("EA agent not registered in EmployeeManager — cannot dispatch task")
-        raise HTTPException(status_code=503, detail="EA agent not available")
+        # Read uploaded files as prior context
+        prior_context = ""
+        if attachments:
+            for a in attachments:
+                try:
+                    fpath = Path(a["path"])
+                    if fpath.exists() and fpath.stat().st_size < 500_000:
+                        prior_context += f"\n--- {a['filename']} ---\n{fpath.read_text(encoding='utf-8')}\n"
+                except Exception as exc:
+                    logger.warning("Failed to read uploaded attachment {}: {}", a.get("path", ""), exc)
+
+        # Start pipeline engine
+        engine = PipelineEngine(ctx_id, str(pdir), task)
+        # Parse stage assignments
+        _assignments = {}
+        if stage_assignments:
+            try:
+                import json as _json2
+                _assignments = _json2.loads(stage_assignments)
+            except Exception as exc:
+                logger.warning("Ignoring invalid stage_assignments JSON: {}", exc)
+
+        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments)
+
+    except Exception as e:
+        logger.error("Failed to start pipeline: {}", e)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Pipeline start failed: {e}")
     return {
         "routed_to": "EA",
         "status": "processing",
@@ -655,7 +656,7 @@ async def ceo_submit_task(
 
 @router.post("/api/task/{project_id}/followup")
 async def task_followup(project_id: str, body: dict) -> dict:
-    """CEO adds follow-up instructions to an existing task, dispatched to EA with context."""
+    """CEO adds follow-up instructions to an existing task, dispatched to assignee (product owner or EA) with context."""
     from datetime import datetime as _dt
 
     from onemancompany.core.agent_loop import get_agent_loop
@@ -699,7 +700,23 @@ async def task_followup(project_id: str, body: dict) -> dict:
             for fname in deliverables:
                 work_summary_lines.append(f"  {fname}")
 
-    # Build follow-up task for EA
+    # Determine assignee: product owner if product-linked, else EA
+    assignee_id = EA_ID
+    product_id = doc.get("product_id", "")
+    if product_id:
+        from onemancompany.core.product import find_slug_by_product_id, load_product
+        product_slug = find_slug_by_product_id(product_id)
+        if product_slug:
+            product = load_product(product_slug)
+            if product and product.get("owner_id"):
+                assignee_id = product["owner_id"]
+                logger.debug("[FOLLOWUP] Product-linked project {}, routing to owner {}",
+                             project_id, assignee_id)
+        if assignee_id == EA_ID:
+            logger.debug("[FOLLOWUP] No product owner found for project {}, falling back to EA",
+                         project_id)
+
+    # Build follow-up task for assignee
     context_parts = [
         f"CEO has added follow-up instructions to a completed task:\n",
         f"Original task: {original_task}\n",
@@ -721,11 +738,11 @@ async def task_followup(project_id: str, body: dict) -> dict:
     else:
         tree = TaskTree(project_id=project_id)
 
-    ea_loop = get_agent_loop(EA_ID)
-    if not ea_loop:
-        raise HTTPException(status_code=503, detail="EA agent not available")
+    assignee_loop = get_agent_loop(assignee_id)
+    if not assignee_loop:
+        raise HTTPException(status_code=503, detail=f"Agent {assignee_id} not available")
 
-    schedule_node_id = ""  # will be set to the EA node to schedule
+    schedule_node_id = ""  # will be set to the assignee node to schedule
 
     if tree.root_id:
         # Add a new subtree from CEO root — old subtree stays intact
@@ -741,39 +758,39 @@ async def task_followup(project_id: str, body: dict) -> dict:
         followup_node.node_type = NodeType.CEO_FOLLOWUP
         followup_node.status = TaskPhase.ACCEPTED.value
 
-        # Create a new EA node under the followup node for execution
-        ea_child = tree.add_child(
+        # Create execution node under the followup node
+        exec_child = tree.add_child(
             parent_id=followup_node.id,
-            employee_id=EA_ID,
+            employee_id=assignee_id,
             description=followup_task,
             acceptance_criteria=[],
         )
-        schedule_node_id = ea_child.id
+        schedule_node_id = exec_child.id
 
         # Keep CEO root in PROCESSING while new subtree runs
         if root and root.node_type == NodeType.CEO_PROMPT:
             root.status = TaskPhase.PROCESSING.value
     else:
-        # No root yet — create CEO root + EA child
+        # No root yet — create CEO root + assignee child
         ceo_root = tree.create_root(employee_id=CEO_ID, description=instructions)
         ceo_root.node_type = NodeType.CEO_PROMPT
         ceo_root.set_status(TaskPhase.PROCESSING)
-        ea_child = tree.add_child(
+        exec_child = tree.add_child(
             parent_id=ceo_root.id,
-            employee_id=EA_ID,
+            employee_id=assignee_id,
             description=instructions,
             acceptance_criteria=[],
         )
-        schedule_node_id = ea_child.id
+        schedule_node_id = exec_child.id
 
     _save_project_tree(pdir, tree)
 
-    # Schedule the EA node for execution
+    # Schedule the assignee node for execution
     if schedule_node_id:
         tree_path = str(Path(pdir) / TASK_TREE_FILENAME)
         from onemancompany.core.agent_loop import employee_manager
-        employee_manager.schedule_node(EA_ID, schedule_node_id, tree_path)
-        employee_manager._schedule_next(EA_ID)
+        employee_manager.schedule_node(assignee_id, schedule_node_id, tree_path)
+        employee_manager._schedule_next(assignee_id)
 
     # Update project.yaml status back to in_progress
     doc["status"] = "in_progress"
@@ -789,6 +806,91 @@ async def task_followup(project_id: str, body: dict) -> dict:
     )
 
     return {"status": "ok", "project_id": project_id}
+
+
+@router.post("/api/pipeline/resume")
+async def resume_pipeline_breakpoint(body: dict):
+    """Resume pipeline after a breakpoint.
+
+    Finds the HOLDING parent node with hold_reason 'breakpoint:stage_N'
+    and resumes it with optional CEO feedback.
+    """
+    from pathlib import Path
+    from onemancompany.core.task_tree import get_tree, save_tree_async
+    from onemancompany.core.agent_loop import employee_manager
+
+    project_id = body.get("project_id", "")
+    stage = body.get("stage")
+    feedback = body.get("feedback", "")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Missing project_id")
+
+    from onemancompany.core.project_archive import get_project_dir
+    pdir = str(get_project_dir(project_id))
+    tree_path = Path(pdir) / TASK_TREE_FILENAME
+    if not tree_path.exists():
+        raise HTTPException(status_code=404, detail="Task tree not found")
+
+    # Use PipelineEngine to handle the resume
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline
+
+    engine = get_or_load_pipeline(project_id, pdir)
+    if not engine:
+        raise HTTPException(status_code=404, detail="No active pipeline found for this project")
+
+    logger.info("[PIPELINE_RESUME] stage={} feedback={}", stage, feedback[:100] if feedback else "(none)")
+    engine.on_ceo_approve(feedback=feedback)
+
+    return {"status": "resumed", "stage": stage, "pipeline_stage": engine.current_stage, "phase": engine.phase}
+
+
+@router.get("/api/pipeline/{project_id}/status")
+async def pipeline_status(project_id: str):
+    """Get current pipeline state for a project."""
+    from onemancompany.core.pipeline_engine import get_or_load_pipeline, STAGES
+    from onemancompany.core.project_archive import get_project_dir
+
+    pdir = str(get_project_dir(project_id))
+    engine = get_or_load_pipeline(project_id, pdir) if pdir else None
+
+    if not engine:
+        return {"error": "No pipeline found", "stages": STAGES}
+
+    # Collect workspace files
+    ws_files = []
+    if pdir:
+        from pathlib import Path as _P
+        for f in sorted(_P(pdir).rglob("*")):
+            if f.is_file() and f.suffix in (".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv"):
+                rel = str(f.relative_to(pdir))
+                if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
+                    continue
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except Exception:
+                    content = ""
+                ws_files.append({
+                    "file_name": f.name,
+                    "file_path": rel,
+                    "full_path": str(f),
+                    "size": f.stat().st_size,
+                    "content": content,
+                    "type": "create",
+                })
+
+    return {
+        "current_stage": engine.current_stage,
+        "phase": engine.phase,
+        "retries": engine.state.get("retries", 0),
+        "topic": engine.topic,
+        "start_stage": engine.state.get("start_stage", 1),
+        "end_stage": engine.state.get("end_stage", 9),
+        "stage_results": engine.state.get("stage_results", {}),
+        "critic_result": engine.state.get("critic_result", None),
+        "stages": STAGES,
+        "workspace_files": ws_files,
+    }
 
 
 @router.post("/api/oneonone/chat")
@@ -1907,15 +2009,15 @@ async def update_employee_model(employee_id: str, body: dict) -> dict:
 async def update_employee_hosting(employee_id: str, body: dict) -> dict:
     """Switch an employee's hosting mode (agent family) with live hot-swap.
 
-    Supported values: company (LangChain), self (Claude Code), openclaw.
+    Supported values: company (LangChain), omctalent (OMC Talent), self (Claude Code), openclaw.
     Employee must be idle. No server restart required.
     """
     from onemancompany.core.config import FOUNDING_IDS, employee_configs
     from onemancompany.core.vessel import switch_hosting
 
     new_hosting = body.get("hosting", "").strip().lower()
-    if new_hosting not in (HostingMode.COMPANY, HostingMode.SELF, HostingMode.OPENCLAW):
-        raise HTTPException(status_code=400, detail="Invalid hosting. Must be company, self, or openclaw.")
+    if new_hosting not in (HostingMode.COMPANY, HostingMode.OMCTALENT, HostingMode.SELF, HostingMode.OPENCLAW):
+        raise HTTPException(status_code=400, detail="Invalid hosting. Must be company, omctalent, self, or openclaw.")
 
     emp = _require_employee(employee_id)
     cfg = employee_configs.get(employee_id)
@@ -1987,7 +2089,7 @@ async def update_employee_hosting(employee_id: str, body: dict) -> dict:
         write_text_utf(manifest_path, _json.dumps(manifest, indent=2, ensure_ascii=False))
         invalidate_manifest_cache(employee_id)
 
-    hosting_labels = {"company": "LangChain", "self": "Claude Code", "openclaw": "OpenClaw"}
+    hosting_labels = {"company": "LangChain", "omctalent": "OMC Talent", "self": "Claude Code", "openclaw": "OpenClaw"}
     label = hosting_labels.get(new_hosting, new_hosting)
 
     await event_bus.publish(
@@ -2643,9 +2745,10 @@ async def delete_employee_session(employee_id: str, project_id: str) -> dict:
 # ===== Company Culture =====
 
 @router.get("/api/company-culture")
-async def get_company_culture() -> dict:
+async def get_company_culture(limit: int = 100, offset: int = 0) -> dict:
     """Get all company culture items."""
-    return {"items": _store.load_culture()}
+    items = _store.load_culture()
+    return {"items": items[offset:offset + limit], "total": len(items)}
 
 
 @router.post("/api/company-culture")
@@ -2830,10 +2933,11 @@ async def get_dashboard_costs() -> dict:
 
 
 @router.get("/api/projects")
-async def get_projects() -> dict:
+async def get_projects(limit: int = 100, offset: int = 0) -> dict:
     """List all projects (v1 + v2 summary view for the project wall)."""
     from onemancompany.core.project_archive import list_projects
-    return {"projects": list_projects()}
+    all_projects = list_projects()
+    return {"projects": all_projects[offset:offset + limit], "total": len(all_projects)}
 
 
 @router.post("/api/projects")
@@ -3776,44 +3880,6 @@ async def get_project_file(project_id: str, file_path: str):
         return Response(content=content, media_type=media)
 
 
-@router.get("/api/projects/{project_id}/download")
-async def download_project_files(project_id: str):
-    """Download all project workspace files as a zip archive."""
-    import io
-    import zipfile
-    from pathlib import Path
-
-    from fastapi.responses import StreamingResponse
-
-    from onemancompany.core.project_archive import get_project_dir, list_project_files
-
-    workspace = Path(get_project_dir(project_id))
-    if not workspace.exists():
-        raise HTTPException(status_code=404, detail="Project workspace not found")
-
-    files = list_project_files(project_id)
-    if not files:
-        raise HTTPException(status_code=404, detail="No files to download")
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for rel_path in files:
-            abs_path = workspace / rel_path
-            if abs_path.is_file():
-                zf.write(abs_path, rel_path)
-    buf.seek(0)
-
-    slug = project_id.split("/")[0]
-    from urllib.parse import quote as _quote_url
-    _safe = slug.encode("ascii", "ignore").decode() or "project"
-    _enc = _quote_url(f"{slug}-files.zip", safe="")
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_safe}-files.zip"; filename*=UTF-8\'\'{_enc}'},
-    )
-
-
 # ===== Employee Workspace =====
 
 @router.get("/api/employee/{employee_id}/workspace")
@@ -3954,10 +4020,11 @@ async def download_project_workspace(project_id: str):
 # ===== Ex-Employees =====
 
 @router.get("/api/ex-employees")
-async def get_ex_employees() -> dict:
+async def get_ex_employees(limit: int = 100, offset: int = 0) -> dict:
     """List all ex-employees."""
     ex_emps = _store.load_ex_employees()
-    return {"ex_employees": list(ex_emps.values())}
+    all_ex = list(ex_emps.values())
+    return {"ex_employees": all_ex[offset:offset + limit], "total": len(all_ex)}
 
 
 @router.post("/api/ex-employees/{employee_id}/rehire")
@@ -4608,19 +4675,22 @@ async def hire_from_cv(body: dict) -> dict:
                 hosting=hosting,
                 auth_method=cv.get("auth_method", "api_key"),
                 remote=False,
+                department=cv.get("department", ""),
                 progress_callback=_cv_progress,
             )
             await event_bus.publish(CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent="CEO"))
             logger.info("[cv_hire] Hired {} ({})", name, emp.id)
 
-            # Dispatch COO to assign department and desk position
-            _push_adhoc_task(
-                COO_ID,
-                f"A new employee has just onboarded via CV hire. Please assign department and role using assign_department(target_employee_id, department, role).\n"
-                f"Available departments: Engineering, Design, Analytics, Marketing\n"
-                f"Determine the role based on the employee's name and skills.\n\n"
-                f"- {name}（{nickname}）#{emp.id}",
-            )
+            # Generic OMC asks COO to normalize department/role after hiring.
+            # AutoResearch source does not ship a COO, so fixed CV departments are final.
+            if (EMPLOYEES_DIR / COO_ID / "profile.yaml").exists():
+                _push_adhoc_task(
+                    COO_ID,
+                    f"A new employee has just onboarded via CV hire. Please assign department and role using assign_department(target_employee_id, department, role).\n"
+                    f"Available departments: Engineering, Design, Analytics, Marketing, Research\n"
+                    f"Determine the role based on the employee's name and skills.\n\n"
+                    f"- {name}（{nickname}）#{emp.id}",
+                )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -4932,7 +5002,7 @@ async def _do_batch_hire(
 
         # Dispatch COO task for department assignment (only if no project context)
         last_coo_ctx = coo_ctxs[-1] if coo_ctxs else {}
-        if not last_coo_ctx.get("project_id"):
+        if not last_coo_ctx.get("project_id") and (EMPLOYEES_DIR / COO_ID / "profile.yaml").exists():
             hired_entries = [r for r in results if r["status"] == "hired"]
             if hired_entries:
                 emp_lines = "\n".join(
@@ -6046,35 +6116,6 @@ async def get_room_chat(room_id: str):
     return load_room_chat(room_id)
 
 
-@router.get("/api/rooms/{room_id}/minutes")
-async def get_room_minutes(room_id: str):
-    """List archived meeting minutes for a room."""
-    from onemancompany.core.store import load_meeting_minutes
-    minutes = load_meeting_minutes(room_id)
-    # Return lightweight list (exclude full messages)
-    return [
-        {
-            "minute_id": m.get("minute_id", ""),
-            "topic": m.get("topic", ""),
-            "room_name": m.get("room_name", ""),
-            "participants": m.get("participants", []),
-            "summary": (m.get("summary", "") or "")[:200],
-            "message_count": len(m.get("messages", [])),
-        }
-        for m in minutes
-    ]
-
-
-@router.get("/api/meeting-minutes/{minute_id}")
-async def get_meeting_minute(minute_id: str):
-    """Get full content of a single meeting minute."""
-    from onemancompany.core.store import load_meeting_minute
-    data = load_meeting_minute(minute_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Meeting minute not found")
-    return data
-
-
 @router.post("/api/rooms/{room_id}/chat")
 async def post_room_chat(room_id: str, body: dict):
     """CEO sends a message to a meeting room chat.
@@ -7125,6 +7166,18 @@ async def api_update_kr(slug: str, kr_id: str, request: Request) -> dict:
     return result
 
 
+@router.delete("/api/product/{slug}/kr/{kr_id}")
+async def api_delete_kr(slug: str, kr_id: str) -> dict:
+    """Delete a key result from a product."""
+    from onemancompany.core import product as prod
+
+    try:
+        prod.delete_key_result(slug, kr_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"ok": True}
+
+
 # ── Issues ──────────────────────────────────────────────────────────────────
 
 
@@ -7181,8 +7234,11 @@ async def api_list_issues(slug: str, status: str = "", priority: str = "") -> li
     from onemancompany.core import product as prod
     from onemancompany.core.models import IssuePriority, IssueStatus
 
-    status_filter = IssueStatus(status) if status else None
-    priority_filter = IssuePriority(priority) if priority else None
+    try:
+        status_filter = IssueStatus(status) if status else None
+        priority_filter = IssuePriority(priority) if priority else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return prod.list_issues(slug, status=status_filter, priority=priority_filter)
 
 
@@ -7207,13 +7263,17 @@ async def api_update_issue(slug: str, issue_id: str, request: Request) -> dict:
     ISSUE_MUTABLE_FIELDS = {"title", "status", "priority", "assignee_id", "labels", "milestone_version", "description", "story_points", "sprint"}
     body = await request.json()
     filtered = {k: v for k, v in body.items() if k in ISSUE_MUTABLE_FIELDS}
-    if "status" in filtered:
-        filtered["status"] = _IS(filtered["status"]).value
-    if "priority" in filtered:
-        filtered["priority"] = _IP2(filtered["priority"]).value
-    result = prod.update_issue(slug, issue_id, **filtered)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        if "status" in filtered:
+            filtered["status"] = _IS(filtered["status"]).value
+        if "priority" in filtered:
+            filtered["priority"] = _IP2(filtered["priority"]).value
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = prod.update_issue(slug, issue_id, **filtered)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
     # Publish ISSUE_ASSIGNED event when assignee changes
     if "assignee_id" in filtered and filtered["assignee_id"]:
@@ -7241,9 +7301,14 @@ async def api_close_issue(slug: str, issue_id: str, request: Request) -> dict:
 
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     resolution_str = body.get("resolution", "fixed")
-    result = prod.close_issue(slug, issue_id, resolution=IssueResolution(resolution_str))
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        resolution = IssueResolution(resolution_str)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        result = prod.close_issue(slug, issue_id, resolution=resolution)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     await event_bus.publish(
         CompanyEvent(
             type=EventType.ISSUE_CLOSED,
@@ -7259,10 +7324,23 @@ async def api_reopen_issue(slug: str, issue_id: str) -> dict:
     """Reopen a closed issue."""
     from onemancompany.core import product as prod
 
-    result = prod.reopen_issue(slug, issue_id)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Issue '{issue_id}' not found")
+    try:
+        result = prod.reopen_issue(slug, issue_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     return result
+
+
+@router.delete("/api/product/{slug}/issue/{issue_id}")
+async def api_delete_issue(slug: str, issue_id: str) -> dict:
+    """Delete an issue and clean up all links."""
+    from onemancompany.core import product as prod
+
+    try:
+        prod.delete_issue(slug, issue_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"ok": True}
 
 
 # ── Versions ────────────────────────────────────────────────────────────────
@@ -7315,11 +7393,27 @@ async def api_product_detail(slug: str) -> dict:
     all_projects = list_projects()
     linked_projects = [p for p in all_projects if p.get("product_id") == product.get("id")]
 
+    # Sprints
+    sprints = prod.list_sprints(slug)
+    active_sprint = prod.get_active_sprint(slug)
+    suggested_capacity = prod.suggest_capacity(slug)
+
+    # Reviews
+    reviews = prod.list_reviews(slug)
+
+    # Blocked issues count
+    blocked_count = sum(1 for i in issues if prod.is_blocked(slug, i["id"]))
+
     return {
         "product": product,
         "issues": issues,
         "versions": versions,
         "projects": linked_projects,
+        "sprints": sprints,
+        "active_sprint": active_sprint,
+        "suggested_capacity": suggested_capacity,
+        "reviews": reviews,
+        "blocked_issues_count": blocked_count,
     }
 
 
@@ -7399,3 +7493,322 @@ async def api_start_product_planning(slug: str) -> dict:
         product_id=product["id"],
     )
     return {"conversation_id": conv.id, "existing": False}
+
+
+# ── Sprints ──────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/product/{slug}/sprint")
+async def api_create_sprint(slug: str, request: Request) -> dict:
+    """Create a sprint for a product."""
+    from onemancompany.core import product as prod
+
+    body = await request.json()
+    name = body.get("name")
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
+    if not name or not start_date or not end_date:
+        raise HTTPException(status_code=400, detail="Missing required fields: name, start_date, end_date")
+    try:
+        result = prod.create_sprint(
+            slug=slug,
+            name=name,
+            start_date=start_date,
+            end_date=end_date,
+            goal=body.get("goal", ""),
+            capacity=int(body["capacity"]) if body.get("capacity") else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.SPRINT_CREATED,
+            payload={"product_slug": slug, "sprint_id": result["id"]},
+            agent=SYSTEM_AGENT,
+        )
+    )
+    return result
+
+
+@router.get("/api/product/{slug}/sprints")
+async def api_list_sprints(slug: str, status: str = "") -> list[dict]:
+    """List sprints for a product, optionally filtered by status."""
+    from onemancompany.core import product as prod
+
+    return prod.list_sprints(slug, status=status or None)
+
+
+@router.get("/api/product/{slug}/sprint/{sprint_id}")
+async def api_get_sprint(slug: str, sprint_id: str) -> dict:
+    """Get a single sprint by ID."""
+    from onemancompany.core import product as prod
+
+    sprint = prod.load_sprint(slug, sprint_id)
+    if not sprint:
+        raise HTTPException(status_code=404, detail=f"Sprint '{sprint_id}' not found")
+    return sprint
+
+
+@router.put("/api/product/{slug}/sprint/{sprint_id}")
+async def api_update_sprint(slug: str, sprint_id: str, request: Request) -> dict:
+    """Update sprint fields (name, goal, start_date, end_date, capacity, status)."""
+    from onemancompany.core import product as prod
+
+    body = await request.json()
+    SPRINT_MUTABLE_FIELDS = {"name", "goal", "start_date", "end_date", "capacity", "status"}
+    filtered = {k: v for k, v in body.items() if k in SPRINT_MUTABLE_FIELDS}
+    if "capacity" in filtered and filtered["capacity"] is not None:
+        filtered["capacity"] = int(filtered["capacity"])
+    try:
+        result = prod.update_sprint(slug, sprint_id, **filtered)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
+@router.post("/api/product/{slug}/sprint/{sprint_id}/close")
+async def api_close_sprint(slug: str, sprint_id: str) -> dict:
+    """Close a sprint: calculate velocity, carry over unfinished issues, generate retrospective."""
+    from onemancompany.core import product as prod
+
+    try:
+        result = prod.close_sprint(slug, sprint_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.SPRINT_CLOSED,
+            payload={"product_slug": slug, "sprint_id": sprint_id},
+            agent=SYSTEM_AGENT,
+        )
+    )
+    return result
+
+
+@router.post("/api/product/{slug}/sprint/{sprint_id}/start")
+async def api_start_sprint(slug: str, sprint_id: str) -> dict:
+    """Start a sprint (set to active). Only one sprint can be active at a time."""
+    from onemancompany.core import product as prod
+
+    try:
+        result = prod.start_sprint(slug, sprint_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.SPRINT_STARTED,
+            payload={"product_slug": slug, "sprint_id": sprint_id},
+            agent=SYSTEM_AGENT,
+        )
+    )
+    return result
+
+
+@router.delete("/api/product/{slug}/sprint/{sprint_id}")
+async def api_delete_sprint(slug: str, sprint_id: str) -> dict:
+    """Delete a sprint. Cannot delete active sprints."""
+    from onemancompany.core import product as prod
+
+    try:
+        prod.delete_sprint(slug, sprint_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True}
+
+
+@router.get("/api/product/{slug}/sprint/suggest-capacity")
+async def api_suggest_sprint_capacity(slug: str) -> dict:
+    """Suggest sprint capacity based on historical velocity (sliding average of last 3)."""
+    from onemancompany.core import product as prod
+
+    suggestion = prod.suggest_capacity(slug)
+    return {"suggested_capacity": suggestion}
+
+
+# ---------------------------------------------------------------------------
+# Issue Links
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/product/{slug}/issue/{issue_id}/link")
+async def api_add_issue_link(slug: str, issue_id: str, request: Request) -> dict:
+    """Add a link between two issues."""
+    from onemancompany.core import product as prod
+    from onemancompany.core.models import IssueRelation
+
+    body = await request.json()
+    target_id = body.get("target_id", "")
+    relation = body.get("relation", "")
+
+    if not target_id or not relation:
+        raise HTTPException(status_code=400, detail="target_id and relation are required")
+
+    rel_map = {r.value: r for r in IssueRelation}
+    rel = rel_map.get(relation)
+    if not rel:
+        raise HTTPException(status_code=400, detail=f"Invalid relation. Must be one of: {', '.join(rel_map)}")
+
+    try:
+        prod.add_issue_link(slug, issue_id, target_id, rel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {"linked": True, "issue_id": issue_id, "target_id": target_id, "relation": relation}
+
+
+@router.delete("/api/product/{slug}/issue/{issue_id}/link/{target_id}")
+async def api_remove_issue_link(slug: str, issue_id: str, target_id: str) -> dict:
+    """Remove all links between two issues."""
+    from onemancompany.core import product as prod
+
+    prod.remove_issue_link(slug, issue_id, target_id)
+    return {"unlinked": True, "issue_id": issue_id, "target_id": target_id}
+
+
+@router.get("/api/product/{slug}/issue/{issue_id}/links")
+async def api_get_issue_links(slug: str, issue_id: str) -> list[dict]:
+    """Get all links for an issue."""
+    from onemancompany.core import product as prod
+
+    return prod.get_issue_links(slug, issue_id)
+
+
+@router.get("/api/product/{slug}/blocked-issues")
+async def api_blocked_issues(slug: str) -> list[dict]:
+    """List all blocked issues for a product."""
+    from onemancompany.core import product as prod
+
+    all_issues = prod.list_issues(slug)
+    blocked = []
+    for issue in all_issues:
+        if prod.is_blocked(slug, issue["id"]):
+            blocked.append(issue)
+    return blocked
+
+
+# ---------------------------------------------------------------------------
+# Reviews
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/product/{slug}/review")
+async def api_create_review(slug: str, request: Request) -> dict:
+    """Create a review checklist."""
+    from onemancompany.core import product as prod
+
+    body = await request.json()
+    trigger = body.get("trigger", "manual")
+    trigger_ref = body.get("trigger_ref", "")
+    owner = body.get("owner", "")
+
+    review = prod.create_review(
+        slug=slug,
+        trigger=trigger,
+        trigger_ref=trigger_ref,
+        owner=owner,
+    )
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.REVIEW_CREATED,
+            payload={"product_slug": slug, "review_id": review["id"]},
+            agent=SYSTEM_AGENT,
+        )
+    )
+    return review
+
+
+@router.get("/api/product/{slug}/reviews")
+async def api_list_reviews(slug: str, status: str = "") -> list[dict]:
+    """List reviews for a product, optionally filtered by status."""
+    from onemancompany.core import product as prod
+
+    return prod.list_reviews(slug, status=status or None)
+
+
+@router.get("/api/product/{slug}/review/{review_id}")
+async def api_get_review(slug: str, review_id: str) -> dict:
+    """Get a single review."""
+    from onemancompany.core import product as prod
+
+    review = prod.load_review(slug, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail=f"Review '{review_id}' not found")
+    return review
+
+
+@router.put("/api/product/{slug}/review/{review_id}/item/{item_key}")
+async def api_update_review_item(slug: str, review_id: str, item_key: str, request: Request) -> dict:
+    """Check or uncheck a review checklist item."""
+    from onemancompany.core import product as prod
+
+    body = await request.json()
+    checked = body.get("checked", False)
+
+    try:
+        return prod.update_review_item(slug, review_id, item_key, checked=checked)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/api/product/{slug}/review/{review_id}/complete")
+async def api_complete_review(slug: str, review_id: str) -> dict:
+    """Complete a review (all items must be checked)."""
+    from onemancompany.core import product as prod
+
+    try:
+        result = prod.complete_review(slug, review_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await event_bus.publish(
+        CompanyEvent(
+            type=EventType.REVIEW_COMPLETED,
+            payload={"product_slug": slug, "review_id": review_id},
+            agent=SYSTEM_AGENT,
+        )
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Kanban Board
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/product/{slug}/kanban")
+async def api_kanban_board(slug: str) -> dict:
+    """Return issues grouped by status columns for kanban view."""
+    from onemancompany.core import product as prod
+
+    try:
+        return prod.kanban_board(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Roadmap Timeline
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/product/{slug}/roadmap")
+async def api_roadmap_timeline(slug: str) -> dict:
+    """Return sprints, versions, and milestoned issues for timeline view."""
+    from onemancompany.core import product as prod
+
+    try:
+        return prod.roadmap_timeline(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Product Activity Feed
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/product/{slug}/activity")
+async def api_product_activity(slug: str, limit: int = 50) -> list[dict]:
+    """Return product-scoped activity feed, newest first."""
+    from onemancompany.core import product as prod
+
+    return prod.list_product_activity(slug, limit=limit)

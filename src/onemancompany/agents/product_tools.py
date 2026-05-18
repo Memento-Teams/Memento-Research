@@ -11,7 +11,7 @@ from langchain_core.tools import tool
 from loguru import logger
 
 from onemancompany.core import product as prod
-from onemancompany.core.models import IssueResolution, IssuePriority, IssueStatus
+from onemancompany.core.models import IssueRelation, IssueResolution, IssuePriority, IssueStatus
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +21,7 @@ from onemancompany.core.models import IssueResolution, IssuePriority, IssueStatu
 _RESOLUTION_MAP = {r.value: r for r in IssueResolution}
 _PRIORITY_MAP = {p.value: p for p in IssuePriority}
 _STATUS_MAP = {s.value: s for s in IssueStatus}
+_RELATION_MAP = {r.value: r for r in IssueRelation}
 
 
 def _resolve_caller_id() -> str:
@@ -298,6 +299,491 @@ async def update_kr_progress_tool(
 
 
 # ---------------------------------------------------------------------------
+# Sprint tools
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def create_sprint_tool(
+    product_slug: str,
+    name: str,
+    start_date: str,
+    end_date: str,
+    goal: str = "",
+    capacity: str = "",
+) -> str:
+    """Create a new sprint for a product.
+
+    Args:
+        product_slug: The product slug
+        name: Sprint name (e.g. "Sprint 3")
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        goal: Sprint goal description
+        capacity: Optional capacity in story points
+    """
+    try:
+        cap = int(capacity) if capacity else None
+        sprint = prod.create_sprint(
+            slug=product_slug,
+            name=name,
+            start_date=start_date,
+            end_date=end_date,
+            goal=goal,
+            capacity=cap,
+        )
+        logger.debug("create_sprint_tool: {} in {}", sprint["id"], product_slug)
+        return f"Created sprint '{name}' ({sprint['id']}) for {product_slug}: {start_date} → {end_date}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def close_sprint_tool(
+    product_slug: str,
+    sprint_id: str = "",
+) -> str:
+    """Close the active sprint for a product. Calculates velocity, carries over unfinished issues, generates retrospective.
+
+    Args:
+        product_slug: The product slug
+        sprint_id: Sprint ID to close. If empty, closes the active sprint.
+    """
+    try:
+        if not sprint_id:
+            active = prod.get_active_sprint(product_slug)
+            if not active:
+                return f"No active sprint found for {product_slug}"
+            sprint_id = active["id"]
+        result = prod.close_sprint(product_slug, sprint_id)
+        vel = result.get("velocity", 0)
+        rate = result.get("completion_rate", 0)
+        carry = result.get("carry_over_count", 0)
+        logger.debug("close_sprint_tool: {} closed — vel={}", sprint_id, vel)
+        return (
+            f"Sprint closed: velocity={vel} pts, completion={rate}%, "
+            f"carry_over={carry} issues\n\n{result.get('retrospective', '')}"
+        )
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def get_sprint_info_tool(
+    product_slug: str,
+    sprint_id: str = "",
+) -> str:
+    """Get sprint information. Defaults to the active sprint if no ID given.
+
+    Args:
+        product_slug: The product slug
+        sprint_id: Sprint ID. If empty, returns the active sprint.
+    """
+    try:
+        if sprint_id:
+            sprint = prod.load_sprint(product_slug, sprint_id)
+        else:
+            sprint = prod.get_active_sprint(product_slug)
+
+        if not sprint:
+            # List all sprints as fallback
+            all_sprints = prod.list_sprints(product_slug)
+            if not all_sprints:
+                return f"No sprints found for {product_slug}"
+            lines = [f"No active sprint. All sprints for {product_slug}:"]
+            for s in all_sprints:
+                lines.append(f"- [{s['status']}] {s['name']} ({s['id']}) {s['start_date']}→{s['end_date']}")
+            return "\n".join(lines)
+
+        # Show sprint details
+        issues = prod.list_issues(product_slug, sprint=sprint["id"])
+        done = [i for i in issues if i.get("status") in ("done", "released")]
+        vel = sum(i.get("story_points") or 0 for i in done)
+        total_pts = sum(i.get("story_points") or 0 for i in issues)
+
+        lines = [
+            f"**{sprint['name']}** ({sprint['id']})",
+            f"Status: {sprint['status']}",
+            f"Goal: {sprint.get('goal') or 'N/A'}",
+            f"Period: {sprint['start_date']} → {sprint['end_date']}",
+            f"Issues: {len(done)}/{len(issues)} done",
+            f"Points: {vel}/{total_pts}",
+        ]
+        if sprint.get("capacity"):
+            lines.append(f"Capacity: {sprint['capacity']} pts")
+
+        suggestion = prod.suggest_capacity(product_slug)
+        if suggestion is not None:
+            lines.append(f"Suggested capacity (avg last 3): {suggestion} pts")
+
+        return "\n".join(lines)
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Issue link tools
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def link_issues_tool(
+    product_slug: str,
+    issue_id: str,
+    target_id: str,
+    relation: str,
+) -> str:
+    """Link two issues with a dependency or relation.
+
+    Args:
+        product_slug: The product slug
+        issue_id: Source issue ID
+        target_id: Target issue ID
+        relation: blocks, blocked_by, or relates_to
+    """
+    rel = _RELATION_MAP.get(relation)
+    if rel is None:
+        return f"Error: invalid relation '{relation}'. Must be one of: {', '.join(_RELATION_MAP)}"
+    try:
+        prod.add_issue_link(product_slug, issue_id, target_id, rel)
+        logger.debug("link_issues_tool: {} —{}→ {}", issue_id, relation, target_id)
+        return f"Linked {issue_id} —{relation}→ {target_id}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@tool
+async def unlink_issues_tool(
+    product_slug: str,
+    issue_id: str,
+    target_id: str,
+) -> str:
+    """Remove all links between two issues.
+
+    Args:
+        product_slug: The product slug
+        issue_id: First issue ID
+        target_id: Second issue ID
+    """
+    prod.remove_issue_link(product_slug, issue_id, target_id)
+    logger.debug("unlink_issues_tool: {} ↔ {}", issue_id, target_id)
+    return f"Unlinked {issue_id} ↔ {target_id}"
+
+
+@tool
+async def check_blocked_issues_tool(
+    product_slug: str,
+) -> str:
+    """List all issues that are currently blocked by unfinished dependencies.
+
+    Args:
+        product_slug: The product slug
+    """
+    all_issues = prod.list_issues(product_slug)
+    blocked = []
+    for issue in all_issues:
+        if issue.get("status") in (IssueStatus.DONE.value, IssueStatus.RELEASED.value):
+            continue
+        if prod.is_blocked(product_slug, issue["id"]):
+            blockers = [
+                l["issue_id"] for l in issue.get("issue_links", [])
+                if l["relation"] == IssueRelation.BLOCKED_BY.value
+            ]
+            blocked.append(f"- [{issue.get('priority', '?')}] {issue['title']} ({issue['id']}) blocked by: {', '.join(blockers)}")
+    if not blocked:
+        return "No blocked issues found"
+    return f"Blocked issues ({len(blocked)}):\n" + "\n".join(blocked)
+
+
+@tool
+async def manage_review_tool(
+    product_slug: str,
+    action: str,
+    review_id: str = "",
+    item_key: str = "",
+    checked: str = "",
+) -> str:
+    """Manage product review checklists: list, view, check items, or complete.
+
+    Args:
+        product_slug: The product slug
+        action: list, view, check, uncheck, or complete
+        review_id: Review ID (required for view/check/uncheck/complete)
+        item_key: Checklist item key (required for check/uncheck)
+        checked: 'true' or 'false' (for check/uncheck, overrides action)
+    """
+    try:
+        if action == "list":
+            reviews = prod.list_reviews(product_slug)
+            if not reviews:
+                return "No reviews found"
+            lines = []
+            for r in reviews:
+                checked_count = sum(1 for i in r.get("items", []) if i.get("checked"))
+                total = len(r.get("items", []))
+                lines.append(f"- [{r['status']}] {r['id']} ({r['trigger']}) {checked_count}/{total} items checked")
+            return "\n".join(lines)
+
+        if not review_id:
+            return "Error: review_id is required for this action"
+
+        if action == "view":
+            review = prod.load_review(product_slug, review_id)
+            if not review:
+                return f"Review '{review_id}' not found"
+            lines = [
+                f"**Review {review['id']}**",
+                f"Status: {review['status']}",
+                f"Trigger: {review['trigger']} ({review.get('trigger_ref', '')})",
+                f"Owner: {review['owner']}",
+                "",
+                "Checklist:",
+            ]
+            for item in review.get("items", []):
+                mark = "✓" if item.get("checked") else "○"
+                lines.append(f"  {mark} [{item['key']}] {item['label']}")
+            return "\n".join(lines)
+
+        if action in ("check", "uncheck"):
+            if not item_key:
+                return "Error: item_key is required for check/uncheck"
+            is_checked = action == "check"
+            if checked:
+                is_checked = checked.lower() == "true"
+            prod.update_review_item(product_slug, review_id, item_key, checked=is_checked)
+            return f"{'Checked' if is_checked else 'Unchecked'} item '{item_key}' in review {review_id}"
+
+        if action == "complete":
+            review = prod.complete_review(product_slug, review_id)
+            return f"Review {review_id} completed at {review['completed_at']}"
+
+        return f"Error: unknown action '{action}'. Use: list, view, check, uncheck, complete"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# B2: Missing CRUD + analytics tools
+# ---------------------------------------------------------------------------
+
+
+@tool
+def delete_issue_tool(product_slug: str, issue_id: str) -> str:
+    """Delete an issue and clean up all links referencing it.
+
+    Args:
+        product_slug: The product slug
+        issue_id: The issue ID to delete
+    """
+    try:
+        prod.delete_issue(product_slug, issue_id)
+        return f"Deleted issue {issue_id} from {product_slug}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+def reopen_issue_tool(product_slug: str, issue_id: str) -> str:
+    """Reopen a closed issue (moves it back to backlog).
+
+    Args:
+        product_slug: The product slug
+        issue_id: The issue ID to reopen
+    """
+    try:
+        issue = prod.reopen_issue(product_slug, issue_id)
+        return f"Reopened issue {issue_id}: status={issue['status']}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+def start_sprint_tool(product_slug: str, sprint_id: str) -> str:
+    """Start a sprint (set it to active). Only one sprint can be active at a time.
+
+    Args:
+        product_slug: The product slug
+        sprint_id: The sprint ID to start
+    """
+    try:
+        sprint = prod.start_sprint(product_slug, sprint_id)
+        return f"Started sprint {sprint_id}: {sprint['name']}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+def delete_sprint_tool(product_slug: str, sprint_id: str) -> str:
+    """Delete a sprint. Cannot delete an active sprint — close it first.
+
+    Args:
+        product_slug: The product slug
+        sprint_id: The sprint ID to delete
+    """
+    try:
+        prod.delete_sprint(product_slug, sprint_id)
+        return f"Deleted sprint {sprint_id} from {product_slug}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+def sprint_analytics_tool(product_slug: str, sprint_id: str) -> str:
+    """Get sprint analytics: velocity (story points completed).
+
+    Args:
+        product_slug: The product slug
+        sprint_id: The sprint ID
+    """
+    try:
+        sprint = prod.load_sprint(product_slug, sprint_id)
+        if not sprint:
+            return f"Error: Sprint '{sprint_id}' not found"
+        velocity = prod.get_sprint_velocity(product_slug, sprint_id)
+        issues = prod.list_issues(product_slug, sprint=sprint_id)
+        done = sum(1 for i in issues if i.get("status") in ("done", "released"))
+        total = len(issues)
+        lines = [
+            f"Sprint: {sprint['name']} ({sprint['status']})",
+            f"Velocity: {velocity} story points",
+            f"Issues: {done}/{total} done",
+            f"Dates: {sprint['start_date']} → {sprint['end_date']}",
+        ]
+        if sprint.get("goal"):
+            lines.append(f"Goal: {sprint['goal']}")
+        return "\n".join(lines)
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+def version_management_tool(
+    product_slug: str,
+    action: str,
+    resolved_issue_ids: str = "",
+    bump: str = "patch",
+) -> str:
+    """Manage product versions. Actions: list, release.
+
+    Args:
+        product_slug: The product slug
+        action: 'list' to list versions, 'release' to release a new version
+        resolved_issue_ids: Comma-separated issue IDs resolved in this release (for 'release')
+        bump: Version bump type: 'patch', 'minor', or 'major' (default: 'patch')
+    """
+    try:
+        if action == "list":
+            versions = prod.list_versions(product_slug)
+            if not versions:
+                return f"No versions released for {product_slug}"
+            lines = [f"Versions for {product_slug}:"]
+            for v in versions:
+                lines.append(f"  {v['version']} — released {v.get('released_at', '?')}")
+            return "\n".join(lines)
+
+        if action == "release":
+            ids = [i.strip() for i in resolved_issue_ids.split(",") if i.strip()]
+            version = prod.release_version(product_slug, ids, bump=bump)
+            return f"Released v{version['version']} with {len(ids)} resolved issues"
+
+        return f"Error: unknown action '{action}'. Use: list, release"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def update_product_tool(
+    product_slug: str,
+    name: str = "",
+    description: str = "",
+    objective: str = "",
+) -> str:
+    """Update a product's name, description, or objective.
+
+    Args:
+        product_slug: Product slug identifier
+        name: New product name (leave empty to keep current)
+        description: New description (leave empty to keep current)
+        objective: New objective (leave empty to keep current)
+    """
+    fields: dict = {}
+    if name:
+        fields["name"] = name
+    if description:
+        fields["description"] = description
+    if objective:
+        fields["objective"] = objective
+    if not fields:
+        return "Error: no fields to update. Provide name, description, or objective."
+    try:
+        result = prod.update_product(product_slug, **fields)
+        if result is None:
+            return f"Error: product '{product_slug}' not found"
+        return f"Updated product '{product_slug}': {', '.join(fields.keys())}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def delete_product_tool(product_slug: str) -> str:
+    """Delete a product and all its issues, versions, and linked projects.
+
+    Args:
+        product_slug: Product slug identifier
+    """
+    try:
+        summary = prod.delete_product(product_slug)
+        return (
+            f"Deleted product '{product_slug}'. "
+            f"Removed {summary.get('issues', 0)} issues, "
+            f"{summary.get('versions', 0)} versions, "
+            f"{summary.get('projects', 0)} linked projects."
+        )
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def assign_issue_tool(
+    product_slug: str,
+    issue_id: str,
+    assignee_id: str,
+) -> str:
+    """Assign (or reassign) an issue to an employee.
+
+    Args:
+        product_slug: The product slug
+        issue_id: The issue ID
+        assignee_id: Employee ID to assign
+    """
+    try:
+        issue = prod.update_issue(product_slug, issue_id, assignee_id=assignee_id)
+        return f"Issue {issue_id} assigned to {assignee_id}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+@tool
+async def transfer_product_ownership_tool(
+    product_slug: str,
+    new_owner_id: str,
+) -> str:
+    """Transfer product ownership to a different employee.
+
+    Args:
+        product_slug: The product slug
+        new_owner_id: Employee ID of the new owner
+    """
+    try:
+        result = prod.update_product(product_slug, owner_id=new_owner_id)
+        if result is None:
+            return f"Error: product '{product_slug}' not found"
+        return f"Product '{product_slug}' ownership transferred to {new_owner_id}"
+    except (ValueError, FileNotFoundError) as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
@@ -309,4 +795,21 @@ PRODUCT_TOOLS = [
     get_product_context_tool,
     list_product_issues_tool,
     update_kr_progress_tool,
+    create_sprint_tool,
+    close_sprint_tool,
+    get_sprint_info_tool,
+    link_issues_tool,
+    unlink_issues_tool,
+    check_blocked_issues_tool,
+    manage_review_tool,
+    delete_issue_tool,
+    reopen_issue_tool,
+    start_sprint_tool,
+    delete_sprint_tool,
+    sprint_analytics_tool,
+    version_management_tool,
+    update_product_tool,
+    delete_product_tool,
+    assign_issue_tool,
+    transfer_product_ownership_tool,
 ]

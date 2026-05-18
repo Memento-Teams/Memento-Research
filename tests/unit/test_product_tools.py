@@ -8,6 +8,11 @@ from onemancompany.core import product as prod
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(prod, "PRODUCTS_DIR", tmp_path)
+    emp_dir = tmp_path / "employees"
+    emp_dir.mkdir()
+    monkeypatch.setattr(prod, "EMPLOYEES_DIR", emp_dir)
+    for eid in ("00004", "00010", "00011", "emp-1", "agent", "emp001"):
+        (emp_dir / eid).mkdir()
     prod.create_product(name="ToolTest", owner_id="00004", description="test product")
     yield
 
@@ -205,7 +210,7 @@ class TestProductTools:
     async def test_product_tools_list(self):
         from onemancompany.agents.product_tools import PRODUCT_TOOLS
 
-        assert len(PRODUCT_TOOLS) == 7
+        assert len(PRODUCT_TOOLS) == 24
         names = {t.name for t in PRODUCT_TOOLS}
         assert "create_product_tool" in names
         assert "create_product_issue" in names
@@ -652,12 +657,451 @@ class TestProductTools:
         assert "Critical issue" in result
 
     # ------------------------------------------------------------------
-    # PRODUCT_TOOLS export (line 292)
+    # PRODUCT_TOOLS export
     # ------------------------------------------------------------------
     def test_product_tools_export_is_list(self):
-        """PRODUCT_TOOLS is a list of tool objects (line 292)."""
         from onemancompany.agents.product_tools import PRODUCT_TOOLS
 
         assert isinstance(PRODUCT_TOOLS, list)
+        assert len(PRODUCT_TOOLS) == 24  # 7 original + 3 sprint tools
         for t in PRODUCT_TOOLS:
             assert hasattr(t, "ainvoke")
+
+
+# ---------------------------------------------------------------------------
+# Sprint tools
+# ---------------------------------------------------------------------------
+
+
+class TestSprintTools:
+    @pytest.mark.asyncio
+    async def test_create_sprint_tool(self, product_slug):
+        from onemancompany.agents.product_tools import create_sprint_tool
+
+        result = await create_sprint_tool.ainvoke({
+            "product_slug": product_slug,
+            "name": "Sprint 1",
+            "start_date": "2026-04-21",
+            "end_date": "2026-05-05",
+            "goal": "MVP",
+        })
+        assert "Created sprint" in result
+        assert "Sprint 1" in result
+
+    @pytest.mark.asyncio
+    async def test_create_sprint_tool_with_capacity(self, product_slug):
+        from onemancompany.agents.product_tools import create_sprint_tool
+
+        result = await create_sprint_tool.ainvoke({
+            "product_slug": product_slug,
+            "name": "Sprint 2",
+            "start_date": "2026-05-06",
+            "end_date": "2026-05-20",
+            "capacity": "21",
+        })
+        assert "Created sprint" in result
+        sprints = prod.list_sprints(product_slug)
+        s2 = [s for s in sprints if s["name"] == "Sprint 2"][0]
+        assert s2["capacity"] == 21
+
+    @pytest.mark.asyncio
+    async def test_close_sprint_tool(self, product_slug):
+        from onemancompany.agents.product_tools import close_sprint_tool
+
+        s = prod.create_sprint(slug=product_slug, name="S1", start_date="2026-04-01", end_date="2026-04-15")
+        prod.update_sprint(product_slug, s["id"], status="active")
+        result = await close_sprint_tool.ainvoke({"product_slug": product_slug})
+        assert "Sprint closed" in result
+        assert "velocity=" in result
+
+    @pytest.mark.asyncio
+    async def test_close_sprint_tool_no_active(self, product_slug):
+        from onemancompany.agents.product_tools import close_sprint_tool
+
+        result = await close_sprint_tool.ainvoke({"product_slug": product_slug})
+        assert "No active sprint" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_active(self, product_slug):
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+
+        s = prod.create_sprint(slug=product_slug, name="S1", start_date="2026-04-01", end_date="2026-04-15", goal="Build it")
+        prod.update_sprint(product_slug, s["id"], status="active")
+        result = await get_sprint_info_tool.ainvoke({"product_slug": product_slug})
+        assert "S1" in result
+        assert "Build it" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_no_sprints(self, product_slug):
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+
+        result = await get_sprint_info_tool.ainvoke({"product_slug": product_slug})
+        assert "No sprints found" in result
+
+    @pytest.mark.asyncio
+    async def test_create_sprint_tool_error(self):
+        from onemancompany.agents.product_tools import create_sprint_tool
+
+        result = await create_sprint_tool.ainvoke({
+            "product_slug": "nonexistent",
+            "name": "S1",
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-15",
+        })
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_close_sprint_tool_error(self, product_slug):
+        from onemancompany.agents.product_tools import close_sprint_tool
+
+        s = prod.create_sprint(slug=product_slug, name="S1", start_date="2026-04-01", end_date="2026-04-15")
+        # Try closing a non-active sprint
+        result = await close_sprint_tool.ainvoke({
+            "product_slug": product_slug,
+            "sprint_id": s["id"],
+        })
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_by_id(self, product_slug):
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+
+        s = prod.create_sprint(slug=product_slug, name="ById", start_date="2026-04-01", end_date="2026-04-15")
+        result = await get_sprint_info_tool.ainvoke({
+            "product_slug": product_slug,
+            "sprint_id": s["id"],
+        })
+        assert "ById" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_fallback_listing(self, product_slug):
+        """No active sprint but sprints exist → lists all sprints."""
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+
+        prod.create_sprint(slug=product_slug, name="Closed1", start_date="2026-04-01", end_date="2026-04-15")
+        result = await get_sprint_info_tool.ainvoke({"product_slug": product_slug})
+        assert "No active sprint" in result
+        assert "Closed1" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_with_capacity_and_suggestion(self, product_slug):
+        """Active sprint with capacity set and enough history for suggestion."""
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+        from onemancompany.core.models import IssueResolution
+
+        slug = product_slug
+        # Create 3 closed sprints for velocity history
+        for i in range(3):
+            s = prod.create_sprint(slug=slug, name=f"H{i}", start_date="2026-01-01", end_date="2026-01-15")
+            prod.update_sprint(slug, s["id"], status="active")
+            issue = prod.create_issue(slug=slug, title=f"T{i}", created_by="x", story_points=10, sprint=s["id"])
+            prod.close_issue(slug, issue["id"], resolution=IssueResolution.FIXED)
+            prod.close_sprint(slug, s["id"])
+
+        # Create active sprint with capacity
+        active = prod.create_sprint(slug=slug, name="Current", start_date="2026-04-01", end_date="2026-04-15")
+        prod.update_sprint(slug, active["id"], status="active", capacity=15)
+
+        result = await get_sprint_info_tool.ainvoke({"product_slug": slug})
+        assert "Capacity: 15 pts" in result
+        assert "Suggested capacity" in result
+
+    @pytest.mark.asyncio
+    async def test_get_sprint_info_error(self):
+        from onemancompany.agents.product_tools import get_sprint_info_tool
+
+        # Use a product slug that doesn't exist but won't raise — just returns empty
+        # Force an error by patching
+        from unittest.mock import patch
+        with patch("onemancompany.agents.product_tools.prod.get_active_sprint", side_effect=ValueError("boom")):
+            result = await get_sprint_info_tool.ainvoke({"product_slug": "x"})
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# Issue link tools
+# ---------------------------------------------------------------------------
+
+
+class TestIssueLinkTools:
+    @pytest.mark.asyncio
+    async def test_link_issues_tool(self, product_slug):
+        from onemancompany.agents.product_tools import link_issues_tool
+
+        i1 = prod.create_issue(slug=product_slug, title="A", created_by="ceo")
+        i2 = prod.create_issue(slug=product_slug, title="B", created_by="ceo")
+        result = await link_issues_tool.ainvoke({
+            "product_slug": product_slug,
+            "issue_id": i1["id"],
+            "target_id": i2["id"],
+            "relation": "blocks",
+        })
+        assert "Linked" in result
+        assert "blocks" in result
+
+    @pytest.mark.asyncio
+    async def test_link_issues_invalid_relation(self, product_slug):
+        from onemancompany.agents.product_tools import link_issues_tool
+
+        result = await link_issues_tool.ainvoke({
+            "product_slug": product_slug,
+            "issue_id": "i1",
+            "target_id": "i2",
+            "relation": "invalid",
+        })
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_link_issues_self_reference(self, product_slug):
+        from onemancompany.agents.product_tools import link_issues_tool
+
+        i1 = prod.create_issue(slug=product_slug, title="Self", created_by="ceo")
+        result = await link_issues_tool.ainvoke({
+            "product_slug": product_slug,
+            "issue_id": i1["id"],
+            "target_id": i1["id"],
+            "relation": "blocks",
+        })
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_unlink_issues_tool(self, product_slug):
+        from onemancompany.agents.product_tools import unlink_issues_tool
+
+        i1 = prod.create_issue(slug=product_slug, title="A", created_by="ceo")
+        i2 = prod.create_issue(slug=product_slug, title="B", created_by="ceo")
+        from onemancompany.core.models import IssueRelation
+        prod.add_issue_link(product_slug, i1["id"], i2["id"], IssueRelation.BLOCKS)
+        result = await unlink_issues_tool.ainvoke({
+            "product_slug": product_slug,
+            "issue_id": i1["id"],
+            "target_id": i2["id"],
+        })
+        assert "Unlinked" in result
+
+    @pytest.mark.asyncio
+    async def test_check_blocked_issues_none(self, product_slug):
+        from onemancompany.agents.product_tools import check_blocked_issues_tool
+
+        result = await check_blocked_issues_tool.ainvoke({"product_slug": product_slug})
+        assert "No blocked issues" in result
+
+    @pytest.mark.asyncio
+    async def test_check_blocked_issues_found(self, product_slug):
+        from onemancompany.agents.product_tools import check_blocked_issues_tool
+
+        i1 = prod.create_issue(slug=product_slug, title="Blocker", created_by="ceo")
+        i2 = prod.create_issue(slug=product_slug, title="Blocked", created_by="ceo")
+        from onemancompany.core.models import IssueRelation
+        prod.add_issue_link(product_slug, i2["id"], i1["id"], IssueRelation.BLOCKED_BY)
+
+        result = await check_blocked_issues_tool.ainvoke({"product_slug": product_slug})
+        assert "Blocked" in result
+        assert i1["id"] in result
+
+
+# ---------------------------------------------------------------------------
+# Review tools
+# ---------------------------------------------------------------------------
+
+
+class TestReviewTools:
+    @pytest.mark.asyncio
+    async def test_manage_review_list_empty(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "list",
+        })
+        assert "No reviews" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_review_create_and_list(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "list",
+        })
+        assert "open" in result.lower()
+        assert "rev_" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_review_view(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="sprint_closed", owner="00010")
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "view",
+            "review_id": review["id"],
+        })
+        assert "Checklist" in result
+        assert "sprint_closed" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_review_view_not_found(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "view",
+            "review_id": "rev_nonexist",
+        })
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_review_check_item(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        first_key = review["items"][0]["key"]
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "check",
+            "review_id": review["id"],
+            "item_key": first_key,
+        })
+        assert "Checked" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_review_uncheck_item(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        first_key = review["items"][0]["key"]
+        prod.update_review_item(product_slug, review["id"], first_key, checked=True)
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "uncheck",
+            "review_id": review["id"],
+            "item_key": first_key,
+        })
+        assert "Unchecked" in result
+
+    @pytest.mark.asyncio
+    async def test_manage_review_complete(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        for item in review["items"]:
+            prod.update_review_item(product_slug, review["id"], item["key"], checked=True)
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "complete",
+            "review_id": review["id"],
+        })
+        assert "completed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_review_complete_unchecked_error(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "complete",
+            "review_id": review["id"],
+        })
+        assert "Error" in result
+        assert "unchecked" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_review_no_review_id(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "view",
+        })
+        assert "Error" in result
+        assert "review_id" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_review_check_no_item_key(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        review = prod.create_review(slug=product_slug, trigger="test", owner="00010")
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "check",
+            "review_id": review["id"],
+        })
+        assert "Error" in result
+        assert "item_key" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_manage_review_unknown_action(self, product_slug):
+        from onemancompany.agents.product_tools import manage_review_tool
+
+        result = await manage_review_tool.ainvoke({
+            "product_slug": product_slug,
+            "action": "delete",
+            "review_id": "rev_fake",
+        })
+        assert "Error" in result
+        assert "unknown action" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# B5: update_product_tool and delete_product_tool
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateProductTool:
+    """Agent tool: update_product_tool wraps prod.update_product."""
+
+    @pytest.mark.asyncio
+    async def test_update_name_and_description(self):
+        from onemancompany.agents.product_tools import update_product_tool
+
+        p = prod.create_product(name="OrigName", owner_id="00010", description="Old desc")
+        result = await update_product_tool.ainvoke(
+            {"product_slug": p["slug"], "name": "NewName", "description": "New desc"}
+        )
+        assert "Updated" in result
+        loaded = prod.load_product(p["slug"])
+        assert loaded["name"] == "NewName"
+        assert loaded["description"] == "New desc"
+
+    @pytest.mark.asyncio
+    async def test_update_nonexistent_product(self):
+        from onemancompany.agents.product_tools import update_product_tool
+
+        result = await update_product_tool.ainvoke({"product_slug": "nope", "name": "X"})
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_update_partial_fields(self):
+        from onemancompany.agents.product_tools import update_product_tool
+
+        p = prod.create_product(name="Partial", owner_id="00010", description="Keep me")
+        result = await update_product_tool.ainvoke(
+            {"product_slug": p["slug"], "name": "Changed"}
+        )
+        assert "Updated" in result
+        loaded = prod.load_product(p["slug"])
+        assert loaded["name"] == "Changed"
+        assert loaded["description"] == "Keep me"
+
+
+class TestDeleteProductTool:
+    """Agent tool: delete_product_tool wraps prod.delete_product."""
+
+    @pytest.mark.asyncio
+    async def test_delete_existing_product(self):
+        from onemancompany.agents.product_tools import delete_product_tool
+
+        p = prod.create_product(name="ToDelete", owner_id="00010")
+        result = await delete_product_tool.ainvoke({"product_slug": p["slug"]})
+        assert "Deleted" in result
+        assert prod.load_product(p["slug"]) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_product(self):
+        from onemancompany.agents.product_tools import delete_product_tool
+
+        result = await delete_product_tool.ainvoke({"product_slug": "ghost"})
+        assert "error" in result.lower() or "not found" in result.lower()

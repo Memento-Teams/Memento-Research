@@ -1,170 +1,227 @@
 // src/pipeline-controller.js
-// Drives UI state in response to domain events from EventAdapter.
+// Drives stage cards in response to domain events from EventAdapter.
+// Uses: getStageCard(), updateProducer(), updateCritic(), setCardStatus(),
+//       addCardConf(), postNotice() — all defined in index.html.
 
 export class PipelineController {
   constructor(adapter) {
     this.adapter = adapter;
     this.currentStage = null;
-    this.meetingCards = {}; // stageId → DOM element
+    this.stageCardIds = {}; // stageId → card DOM id
 
-    // Subscribe to domain events
     adapter.on('stage_start', (e) => this.handleStageStart(e));
     adapter.on('meeting_message', (e) => this.handleMeetingMessage(e));
     adapter.on('stage_complete', (e) => this.handleStageComplete(e));
+    adapter.on('stage_reviewing', (e) => this.handleStageReviewing(e));
     adapter.on('stage_failed', (e) => this.handleStageFailed(e));
     adapter.on('director_action', (e) => this.handleDirectorAction(e));
     adapter.on('system_event', (e) => this.handleSystemEvent(e));
+    adapter.on('file_written', (e) => this.handleFileWritten(e));
+    adapter.on('clarification_needed', (e) => this.handleClarification(e));
+    adapter.on('breakpoint_hit', (e) => this.handleBreakpointHit(e));
   }
 
-  handleStageStart({ stageId, roomName, participants }) {
+  _cardId(stageId) {
+    return this.stageCardIds[stageId] || `stage${stageId}`;
+  }
+
+  _ensureCard(stageId) {
+    if (this.stageCardIds[stageId]) return this._cardId(stageId);
+    const name = this._getProducerName(stageId);
+    const initials = this._getInitials(name);
+    const title = `Stage ${stageId} — ${this._getStageName(stageId)}`;
+    const id = `stage${stageId}`;
+    getStageCard(id, title, name, initials);
+    this.stageCardIds[stageId] = id;
+    return id;
+  }
+
+  handleStageStart({ stageId, stageName, employeeName, employeeId, roomName, participants }) {
     if (!stageId) return;
-
-    // Collapse previous meeting card
-    if (this.currentStage && this.meetingCards[this.currentStage]) {
-      this.meetingCards[this.currentStage].classList.add('collapsed');
-    }
-
     this.currentStage = stageId;
+    if (typeof showPipelineBar === 'function') showPipelineBar();
     setStage(stageId, 'running');
-    addEvent('dtag', `Delegating Stage ${stageId}`);
-    addEvent('mtag', `Meeting: ${roomName || `Stage ${stageId}`}`);
 
-    // Create meeting card using existing createMeeting() from index.html
-    const producerName = this._getProducerName(stageId);
-    const initials = this._getInitials(producerName);
-    const card = createMeeting(
-      `s${stageId}`,
-      producerName,
-      initials,
-      `Stage ${stageId} — ${this._getStageName(stageId)}`
-    );
-    this.meetingCards[stageId] = card;
+    // Create card with actual employee name
+    const name = employeeName || this._getProducerName(stageId);
+    const initials = this._getInitials(name);
+    const title = `Stage ${stageId} — ${stageName || this._getStageName(stageId)}`;
+    const id = `stage${stageId}`;
+    if (!this.stageCardIds[stageId]) {
+      getStageCard(id, title, name, initials);
+      this.stageCardIds[stageId] = id;
+    }
   }
 
   handleMeetingMessage({ agent, role, message }) {
-    if (!this.currentStage) return;
-    const card = this.meetingCards[this.currentStage];
-    if (!card) return;
+    if (!message || !message.trim()) return;
 
-    if (role === 'producer') {
-      const prodEl = card.querySelector(`#prod-s${this.currentStage}`);
-      if (prodEl) prodEl.innerHTML = message;
-    } else if (role === 'critic') {
-      const critEl = card.querySelector(`#crit-s${this.currentStage}`);
-      if (critEl) critEl.innerHTML = message;
+    // Find or create the right card
+    const sid = this.currentStage;
+    if (!sid) {
+      // No stage yet — show as notice
+      postNotice(`<strong>${agent || 'Agent'}</strong>: ${message}`, 'info');
+      return;
     }
+
+    const cardId = this._ensureCard(sid);
+
+    // Update active agent bar with current speaker
+    const bar = document.getElementById('activeAgentBar');
+    const label = document.getElementById('activeAgentLabel');
+    if (bar && label) {
+      const stageName = this._getStageName(sid);
+      const producerName = this._getProducerName(sid);
+      const isRealName = agent && agent.length > 2 && !/^(System|You|system|unknown|Employee)/.test(agent);
+      const displayName = isRealName ? agent : producerName;
+      if (role === 'critic') {
+        bar.style.display = 'flex'; bar.className = 'active-agent-bar reviewing';
+        label.textContent = `Stage ${sid}: ${stageName} — Critic reviewing`;
+      } else {
+        bar.style.display = 'flex'; bar.className = 'active-agent-bar';
+        label.textContent = `Stage ${sid}: ${stageName} — ${displayName} working`;
+      }
+    }
+
+    if (role === 'critic') {
+      updateCritic(cardId, message);
+    } else {
+      updateProducer(cardId, message);
+    }
+  }
+
+  handleStageReviewing({ stageId }) {
+    const sid = stageId || this.currentStage;
+    if (!sid) return;
+
+    const cardId = this._ensureCard(sid);
+    setCardStatus(cardId, 'reviewing');
+    setStage(sid, 'reviewing');
   }
 
   handleStageComplete({ stageId, confidence, result }) {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
-    const card = this.meetingCards[sid];
-    if (card) {
-      const badge = card.querySelector('.meeting-badge');
-      if (badge) {
-        badge.className = 'meeting-badge concluded';
-        badge.textContent = 'Passed';
-      }
-      card.classList.remove('active');
+    const cardId = this._ensureCard(sid);
+    setCardStatus(cardId, 'done');
 
-      // Add confidence gauge if score available
-      if (confidence != null) {
-        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
-        addConf(card, pct);
-        const confEl = document.getElementById(`c${sid}`);
-        if (confEl) confEl.textContent = `${pct}%`;
-        addEvent('gtag', `PASS (${pct}%) — Stage ${sid}`);
-      } else {
-        addEvent('gtag', `PASS — Stage ${sid}`);
-      }
-    } else {
-      addEvent('gtag', `PASS — Stage ${sid}`);
+    if (result) updateProducer(cardId, result);
+
+    if (confidence != null) {
+      const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+      addCardConf(cardId, pct);
     }
 
+    // Pipeline engine sends breakpoint_hit separately — don't check here
     setStage(sid, 'done');
-    const connector = document.getElementById(`sc-${sid}`);
-    if (connector) connector.classList.add('done');
-
-    // Check breakpoint
-    if (typeof STAGES !== 'undefined' && STAGES[sid - 1] && STAGES[sid - 1].bp) {
-      this._triggerBreakpoint(sid, card);
-    }
   }
 
   handleStageFailed({ stageId, confidence, reason }) {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
-    const card = this.meetingCards[sid];
-    if (card) {
-      const badge = card.querySelector('.meeting-badge');
-      if (badge) {
-        badge.className = 'meeting-badge rejected';
-        badge.textContent = 'Rejected';
-      }
-      card.classList.remove('active');
-      card.classList.add('rejected');
+    const cardId = this._ensureCard(sid);
+    setCardStatus(cardId, 'rejected');
 
-      // Add confidence gauge for rejected stage too
-      if (confidence != null) {
-        const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
-        addConf(card, pct);
-        addEvent('gtag', `REJECTED (${pct}%) — Stage ${sid}`);
-      } else {
-        addEvent('gtag', `REJECTED — Stage ${sid}`);
-      }
-    } else {
-      addEvent('gtag', `REJECTED — Stage ${sid}`);
+    if (reason) updateCritic(cardId, reason);
+
+    if (confidence != null) {
+      const pct = Math.round(confidence <= 1 ? confidence * 100 : confidence);
+      addCardConf(cardId, pct);
     }
 
     setStage(sid, 'failed');
   }
 
   handleDirectorAction({ phase, message }) {
-    addEvent('dtag', message || phase);
+    const text = message || phase;
+    postNotice(text, 'info');
+    void 0;
     const dirStatus = document.getElementById('dirStatus');
-    if (dirStatus) dirStatus.textContent = message || phase;
+    if (dirStatus) dirStatus.textContent = text;
   }
 
   handleSystemEvent({ type, agent, payload }) {
     if (type === 'heartbeat') return;
-    addEvent('stag', `[${type}] ${agent || ''}: ${JSON.stringify(payload || {}).slice(0, 80)}`);
+    const text = (payload && payload.text) ? payload.text : '';
+    if (!text) return;
+    // Only show in the right-panel events, not center area
+    void 0;
   }
 
-  _triggerBreakpoint(stageId, card) {
+  _triggerBreakpoint(stageId) {
     this.pausedStageId = stageId;
     setStage(stageId, 'paused');
-    if (card) card.classList.add('paused');
-    addActionBar(card, stageId);
-    addEvent('stag', `Breakpoint on Stage ${stageId}. Waiting for user.`);
     const dirStatus = document.getElementById('dirStatus');
     if (dirStatus) dirStatus.textContent = `Paused at Stage ${stageId} — waiting for user`;
+
+    const stageName = this._getStageName(stageId);
+    if (typeof openBreakpointDialog === 'function') {
+      openBreakpointDialog(stageId, stageName);
+    }
   }
 
-  async resumeBreakpoint(feedback = '') {
+  handleBreakpointHit({ stage, project_id, message }) {
+    const sid = stage || this.currentStage;
+    if (!sid) return;
+    this._triggerBreakpoint(sid);
+  }
+
+  async resumeBreakpoint(feedback = '', isRevision = false) {
     if (!this.pausedStageId) return;
     const sid = this.pausedStageId;
     this.pausedStageId = null;
 
-    const card = this.meetingCards[sid];
-    if (card) card.classList.remove('paused');
+    if (typeof closeBreakpointDialog === 'function') closeBreakpointDialog();
+    if (isRevision) {
+      setStage(sid, 'running');
+      postNotice(`Revision requested for Stage ${sid}. Re-running with feedback.`, 'info');
+    } else {
+      setStage(sid, 'done');
+      postNotice('Approved by user. Continuing pipeline.', 'ok');
+    }
 
-    document.getElementById('action-panel-global')?.remove();
-    setStage(sid, 'done');
-    addEvent('dtag', `Stage ${sid} approved by user. Proceeding.`);
-
-    // Signal OMC to continue
-    if (window._omcClient && window._currentProjectId) {
-      await window._omcClient.resumeAfterBreakpoint(
-        window._currentProjectId, sid, feedback
-      );
+    const projectId = window._currentSessionId || window._currentProjectId;
+    if (window._omcClient && projectId) {
+      const actualFeedback = isRevision
+        ? `[REVISION REQUESTED] CEO wants Stage ${sid} revised: ${feedback}. Re-run this stage. Do NOT advance.`
+        : feedback;
+      try {
+        await window._omcClient.resumePipelineBreakpoint(projectId, sid, actualFeedback);
+      } catch (e) {
+        await window._omcClient.resumeAfterBreakpoint(
+          window._currentProjectId, sid, actualFeedback
+        );
+      }
     }
   }
 
-  // --- Stage metadata ---
+  handleFileWritten(data) {
+    if (typeof addWorkspaceFile === 'function') {
+      addWorkspaceFile(data);
+    }
+  }
+
+  handleClarification({ agent, employeeId, message }) {
+    // If a breakpoint dialog is showing, just add the message to it
+    if (this.pausedStageId && typeof addBreakpointMessage === 'function') {
+      addBreakpointMessage(agent, message);
+      return;
+    }
+    if (typeof openChatDialog === 'function') {
+      openChatDialog(agent, employeeId, message);
+    }
+  }
 
   _getProducerName(stageId) {
+    if (typeof STAGES !== 'undefined' && STAGES[stageId - 1]) {
+      const assignee = STAGES[stageId - 1].assignee;
+      if (assignee && window._employees) {
+        const emp = window._employees.find(e => e.employee_number === assignee);
+        if (emp) return emp.name;
+      }
+    }
     const names = {
       1: 'Topic Refiner', 2: 'Lit. Surveyor', 3: 'Idea Generator',
       4: 'Methodology Designer', 5: 'Experiment Designer',

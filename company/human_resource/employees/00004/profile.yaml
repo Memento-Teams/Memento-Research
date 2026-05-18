@@ -1,4 +1,4 @@
-api_provider: openrouter
+api_provider: custom
 current_quarter_tasks: 0
 department: CEO Office
 desk_position:
@@ -7,9 +7,9 @@ desk_position:
 employee_number: '00004'
 hosting: company
 level: 4
-llm_model: google/gemini-3.1-pro-preview
-name: Pat EA
-nickname: 玲珑阁
+llm_model: MiniMax-M2.7
+name: Research Director
+nickname: 研究总监
 performance_history: []
 permissions:
 - company_file_access
@@ -20,6 +20,8 @@ skills:
 - task_analysis
 - task_routing
 - project_management
-sprite: ''
-temperature: 0.7
+- operations
+- research_orchestration
+sprite: ea
+temperature: 0.3
 title: Founding

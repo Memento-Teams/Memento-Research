@@ -126,10 +126,44 @@ def _save_project_tree(project_dir: str, tree):
 
 
 # ---------------------------------------------------------------------------
-# Stall detection — detect unfulfilled action promises in agent output
+# Pipeline breakpoint helper
 # ---------------------------------------------------------------------------
 
 import re as _re
+
+
+def _extract_breakpoint_stage(node) -> int | None:
+    """If the completed node is a gate review for Stage N and N is a breakpoint, return N.
+
+    Only matches "Gate Review: Stage N" titles (critic finished), NOT
+    "Stage N: ..." titles (producer finished). This ensures the producer-critic
+    loop runs to completion before the user gate fires.
+    """
+    from onemancompany.core.config import settings
+    bp_str = getattr(settings, 'pipeline_breakpoints', '')
+    if not bp_str:
+        return None
+    try:
+        bp_set = {int(x.strip()) for x in bp_str.split(',') if x.strip().isdigit()}
+    except ValueError:
+        return None
+    if not bp_set:
+        return None
+
+    title = str(node.title or '') + ' ' + str(node.description or '')[:200]
+    # Only match gate reviews, not stage executions
+    m = _re.search(r'Gate\s+Review.*?Stage\s+(\d+)', title, _re.IGNORECASE)
+    if not m:
+        # Also match "Stage N" but ONLY if the title starts with "Gate Review"
+        # This prevents matching producer tasks like "Stage 3: Idea Generation"
+        return None
+    stage_num = int(m.group(1))
+    return stage_num if stage_num in bp_set else None
+
+
+# ---------------------------------------------------------------------------
+# Stall detection — detect unfulfilled action promises in agent output
+# ---------------------------------------------------------------------------
 
 # Patterns that indicate the agent is promising future actions it hasn't taken.
 # These are checked ONLY when the task completes WITHOUT dispatching children.
@@ -139,11 +173,14 @@ _PROMISE_PATTERNS = _re.compile(
     r"我将|接下来|下一步|现在开始|马上开始|即将开始|准备开始"
     r"|我会(?:立即|马上|开始)"
     r"|下面我(?:来|将|要)"
+    r"|分配给\w+处理|派遣给\w+负责"
     # English future-action phrases
     r"|I will (?:now |start |begin )|I'll (?:now |start |begin )"
     r"|Let me (?:start|begin|proceed)"
     r"|Next,? I'?(?:ll| will)"
     r"|I'?m going to (?:start|begin)"
+    r"|Going to dispatch"
+    r"|I need to dispatch_child"
     r")",
     _re.IGNORECASE,
 )
@@ -158,6 +195,27 @@ def detect_unfulfilled_promises(output: str | None) -> bool:
     if not output:
         return False
     return bool(_PROMISE_PATTERNS.search(output))
+
+
+MAX_STALL_RETRIES: int = 2  # max times to re-run a stalled agent before giving up
+
+
+def _should_retry_stall(node) -> bool:
+    """Check if a completed node should be retried due to stall detection.
+
+    Returns True if:
+    - Node is not a system node
+    - Node has no children (didn't actually dispatch)
+    - Node output contains promise patterns
+    - stall_retry_count < MAX_STALL_RETRIES
+    """
+    if node.node_type in SYSTEM_NODE_TYPES:
+        return False
+    if node.children_ids:
+        return False
+    if not detect_unfulfilled_promises(node.result):
+        return False
+    return getattr(node, 'stall_retry_count', 0) < MAX_STALL_RETRIES
 
 
 # ---------------------------------------------------------------------------
@@ -1459,6 +1517,12 @@ class EmployeeManager:
                 if _effective_dir:
                     task_with_ctx += f"\n\n[Project workspace: {_effective_dir} — save all outputs here]"
 
+                # Product workspace — inject if project has a product worktree
+                if project_id:
+                    _pw_ctx = self._get_product_workspace_context(project_id)
+                    if _pw_ctx:
+                        task_with_ctx += f"\n\n{_pw_ctx}"
+
                 if project_id:
                     proj_ctx = self._get_project_history_context(project_id)
                     if proj_ctx:
@@ -1726,18 +1790,42 @@ class EmployeeManager:
                                  employee_id, entry.node_id)
 
                 # Stall detection: agent said "I will do X" but dispatched no children
-                if (node.node_type not in SYSTEM_NODE_TYPES
+                if _should_retry_stall(node):
+                    node.stall_retry_count = getattr(node, 'stall_retry_count', 0) + 1
+                    logger.warning(
+                        "[STALL] employee={} node={}: output contains action promises "
+                        "but no subtasks dispatched. Retrying ({}/{}).",
+                        employee_id, entry.node_id,
+                        node.stall_retry_count, MAX_STALL_RETRIES,
+                    )
+                    # Revert to PROCESSING and re-schedule with explicit nudge
+                    node.set_status(TaskPhase.PROCESSING)
+                    nudge = (
+                        "\n\n[SYSTEM] You said you would dispatch tasks but did NOT "
+                        "actually call dispatch_child(). You MUST call the tool now. "
+                        "Do NOT describe what you plan to do — invoke dispatch_child() directly."
+                    )
+                    node.result = (node.result or "") + nudge
+                    save_tree_async(entry.tree_path)
+                    self.schedule_node(employee_id, entry.node_id, entry.tree_path)
+                    self._schedule_next(employee_id)
+                    self._log_node(employee_id, entry.node_id, "stall_retry",
+                                   f"Retrying stalled task (attempt {node.stall_retry_count})")
+                    return  # skip normal completion flow
+                elif (node.node_type not in SYSTEM_NODE_TYPES
                         and not node.children_ids
                         and detect_unfulfilled_promises(node.result)):
-                    logger.warning(  # pragma: no cover
-                        "[STALL] employee={} node={}: output contains action promises "
-                        "but no subtasks were dispatched. Agent may have stalled.",
+                    # Max retries exhausted — warn CEO
+                    logger.warning(
+                        "[STALL] employee={} node={}: stall retries exhausted ({}/{}). "
+                        "Marking COMPLETED with warning.",
                         employee_id, entry.node_id,
+                        getattr(node, 'stall_retry_count', 0), MAX_STALL_RETRIES,
                     )
-                    self._push_to_conversation(  # pragma: no cover
+                    self._push_to_conversation(
                         node,
-                        "⚠️ Agent claimed it would execute follow-up work but did not "
-                        "create any tasks. It may have stalled. Please review and re-dispatch.",
+                        "⚠️ Agent repeatedly claimed it would execute follow-up work but "
+                        "did not create any tasks after multiple retries. Please review and re-dispatch manually.",
                     )
 
                 save_tree_async(entry.tree_path)
@@ -1793,6 +1881,11 @@ class EmployeeManager:
 
             # Unschedule completed node
             self.unschedule(employee_id, entry.node_id)
+
+            # Drain any deferred schedules — ensures child tasks dispatched
+            # by tools (e.g. dispatch_child) that hit a sync/async boundary
+            # actually start executing (I1: prevents silent defer).
+            self.drain_pending()
         else:
             self._publish_node_update(employee_id, node)
 
@@ -2064,6 +2157,37 @@ class EmployeeManager:
     _CTX_TASK_DESC_CHARS = 200
     _CTX_MAX_WORKSPACE_FILES = 30
     _CTX_MAX_CRITERIA = 5
+
+    @staticmethod
+    def _get_product_workspace_context(project_id: str) -> str:
+        """Build product workspace context string if project is linked to a product."""
+        from onemancompany.core.project_archive import load_named_project
+        from onemancompany.core.product import find_slug_by_product_id, load_product
+        from onemancompany.core.config import PRODUCTS_DIR, PROJECTS_DIR, PRODUCT_WORKTREE_DIR_NAME
+
+        base_project_id = project_id.split("/")[0]
+        proj_doc = load_named_project(base_project_id)
+        if not proj_doc:
+            return ""
+        product_id = proj_doc.get("product_id", "")
+        if not product_id:
+            return ""
+
+        slug = find_slug_by_product_id(product_id)
+        if not slug:
+            return ""
+
+        product = load_product(slug)
+        if not product or not product.get("workspace_initialized", False):
+            return ""
+
+        worktree_path = PROJECTS_DIR / base_project_id / PRODUCT_WORKTREE_DIR_NAME
+        if not worktree_path.is_dir():
+            return ""
+
+        from onemancompany.core.product_workspace import format_workspace_context, count_worktree_files
+        file_count = count_worktree_files(worktree_path)
+        return format_workspace_context(str(worktree_path), product.get("name", slug), file_count)
 
     def _get_project_history_context(self, project_id: str) -> str:
         from onemancompany.core.project_archive import (
@@ -2423,6 +2547,30 @@ class EmployeeManager:
             await _store.save_project_status(project_id, ITER_STATUS_FAILED)
             return
 
+        # --- Pipeline engine check ---
+        # If this task is managed by the pipeline engine, route to it
+        # instead of normal gate/review logic. The engine handles everything.
+        if node.status in (TaskPhase.COMPLETED.value, TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value):
+            from onemancompany.core.pipeline_engine import get_or_load_pipeline
+            _node_meta = getattr(node, 'metadata', None) or {}
+            if _node_meta.get("pipeline_managed"):
+                _pdir = node.project_dir or str(Path(entry.tree_path).parent)
+                engine = get_or_load_pipeline(project_id, _pdir)
+                if engine:
+                    result = node.result or ""
+                    logger.info(
+                        "[PIPELINE] Task complete: employee={} node={} → routing to pipeline engine (stage={}, phase={})",
+                        employee_id, entry.node_id, engine.current_stage, engine.phase,
+                    )
+                    # Auto-accept the node so the tree stays clean
+                    if node.status == TaskPhase.COMPLETED.value:
+                        node.set_status(TaskPhase.ACCEPTED)
+                        node.acceptance_result = {"passed": True, "notes": "auto-accepted (pipeline engine)"}
+                        node.set_status(TaskPhase.FINISHED)
+                        save_tree_async(entry.tree_path)
+                    engine.on_task_complete(employee_id, entry.node_id, result)
+                    return  # Pipeline engine handles everything from here
+
         # --- Propagate upward: review / auto-complete parent ---
         # CEO prompt nodes are containers — they don't need review or auto-complete.
         # Their child (EA) completing is handled by the project completion check below.
@@ -2430,6 +2578,39 @@ class EmployeeManager:
         if parent_node and parent_node.is_ceo_node:
             logger.debug("[ON_CHILD_COMPLETE] parent {} is CEO node — skipping review/auto-complete", parent_node.id)
             parent_node = None  # Skip propagation, fall through to project completion check
+
+        # --- Pipeline breakpoint check ---
+        # If the completed node is a gate review at a breakpoint stage,
+        # hold the parent director and emit a breakpoint event for the frontend.
+        # This fires AFTER the critic review completes, not after the producer.
+        if parent_node and node.status in (TaskPhase.COMPLETED.value, TaskPhase.ACCEPTED.value, TaskPhase.FINISHED.value):
+            bp_stage = _extract_breakpoint_stage(node)
+            if bp_stage:
+                logger.info(
+                    "[BREAKPOINT] Stage {} gate review hit breakpoint — holding parent {} ({})",
+                    bp_stage, parent_node.id, parent_node.employee_id,
+                )
+                if parent_node.status == TaskPhase.PROCESSING.value:
+                    running = self._running_tasks.pop(parent_node.employee_id, None)
+                    if running and not running.done():
+                        running.cancel()
+                    parent_node.set_status(TaskPhase.HOLDING)
+                parent_node.hold_reason = f"breakpoint:stage_{bp_stage}"
+                save_tree_async(entry.tree_path)
+                self._publish_node_update(parent_node.employee_id, parent_node)
+                await event_bus.publish(CompanyEvent(
+                    type=EventType.STATE_SNAPSHOT,
+                    payload={
+                        "type": "breakpoint_hit",
+                        "stage": bp_stage,
+                        "project_id": project_id,
+                        "node_id": node.id,
+                        "parent_id": parent_node.id,
+                        "message": f"Stage {bp_stage} gate review complete. Waiting for user approval.",
+                    },
+                    agent=SYSTEM_AGENT,
+                ))
+                return  # Don't propagate — wait for CEO to resume
 
         # --- Auto-accept orphaned COMPLETED children after REVIEW finishes ---
         # MUST run BEFORE Gate 1/Gate 2 to prevent review spawn loop:
@@ -3572,6 +3753,7 @@ def register_founding_employee(
 
     hosting → executor mapping:
       company   → LangChainExecutor (with agent-specific class)
+      omctalent → LangChainExecutor (platform-internal OMC talent)
       self      → ClaudeSessionExecutor
       openclaw  → SubprocessExecutor (launch.sh)
     """
@@ -3610,6 +3792,12 @@ def _create_executor_for_hosting(
         from onemancompany.core.subprocess_executor import SubprocessExecutor
         script_path = str(emp_dir / LAUNCH_SH_FILENAME)
         return SubprocessExecutor(employee_id, script_path=script_path)
+    elif hosting == "omctalent":
+        runner = agent_cls() if agent_cls else None
+        if runner is None:
+            from onemancompany.agents.base import EmployeeAgent
+            runner = EmployeeAgent(employee_id)
+        return LangChainExecutor(runner)
     else:
         # Default: company → langchain
         runner = agent_cls() if agent_cls else None
@@ -3637,8 +3825,8 @@ async def switch_hosting(
         raise RuntimeError(f"Employee {employee_id} has a system task running, cannot switch")
 
     new_hosting = new_hosting.strip().lower()
-    if new_hosting not in ("company", "self", "openclaw"):
-        raise ValueError(f"Invalid hosting: {new_hosting}. Must be company, self, or openclaw.")
+    if new_hosting not in ("company", "omctalent", "self", "openclaw"):
+        raise ValueError(f"Invalid hosting: {new_hosting}. Must be company, omctalent, self, or openclaw.")
 
     emp_dir = EMPLOYEES_DIR / employee_id
     executor = _create_executor_for_hosting(new_hosting, employee_id, agent_cls, emp_dir)

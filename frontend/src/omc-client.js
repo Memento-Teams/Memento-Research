@@ -2,7 +2,7 @@
 // Connects to OMC backend, exposes event stream + command methods.
 
 export class OmcClient {
-  constructor(baseUrl = 'http://localhost:8000') {
+  constructor(baseUrl = window.location.origin) {
     this.baseUrl = baseUrl;
     this.ws = null;
     this.listeners = [];
@@ -42,6 +42,14 @@ export class OmcClient {
     form.append('task', topic);
     if (config.projectName) form.append('project_name', config.projectName);
     form.append('mode', 'standard');
+    if (config.startStage) form.append('start_stage', String(config.startStage));
+    if (config.endStage) form.append('end_stage', String(config.endStage));
+    if (config.stageAssignments) {
+      form.append('stage_assignments', JSON.stringify(config.stageAssignments));
+    }
+    if (config.files && config.files.length > 0) {
+      for (const f of config.files) form.append('files', f);
+    }
 
     const res = await fetch(`${this.baseUrl}/api/ceo/task`, { method: 'POST', body: form });
     return res.json();
@@ -49,6 +57,16 @@ export class OmcClient {
 
   async getBootstrap() {
     const res = await fetch(`${this.baseUrl}/api/bootstrap`);
+    return res.json();
+  }
+
+  async listProjects() {
+    const res = await fetch(`${this.baseUrl}/api/projects`);
+    return res.json();
+  }
+
+  async getPipelineStatus(projectId) {
+    const res = await fetch(`${this.baseUrl}/api/pipeline/${projectId}/status`);
     return res.json();
   }
 
@@ -74,6 +92,32 @@ export class OmcClient {
         message: userFeedback || `Stage ${stageId} approved. Continue.`,
       }),
     });
+    return res.json();
+  }
+
+  async sendSessionMessage(projectId, text) {
+    const res = await fetch(`${this.baseUrl}/api/ceo/sessions/${projectId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    return res.json();
+  }
+
+  async resumePipelineBreakpoint(projectId, stage, feedback = '') {
+    const res = await fetch(`${this.baseUrl}/api/pipeline/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, stage, feedback }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${detail}`);
+    }
     return res.json();
   }
 

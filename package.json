@@ -6,7 +6,13 @@
     "memento-research": "bin/cli.js"
   },
   "files": [
-    "bin/cli.js"
+    "bin/cli.js",
+    "src/",
+    "frontend/",
+    "company/",
+    "pyproject.toml",
+    "config.yaml",
+    "uv.lock"
   ],
   "keywords": [
     "ai",
@@ -23,6 +29,6 @@
   "author": "Memento-Teams",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
   }
 }

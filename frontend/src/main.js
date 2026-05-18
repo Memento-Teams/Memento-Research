@@ -4,79 +4,307 @@
 import { OmcClient } from './omc-client.js';
 import { EventAdapter } from './event-adapter.js';
 import { PipelineController } from './pipeline-controller.js';
+import { tryRenderLcg, setupLcgHover } from './lcg-renderer.js';
 
-const OMC_URL = 'http://localhost:8000';
+const OMC_URL = window.location.origin;
+
+window._tryRenderLcg = tryRenderLcg;
+setupLcgHover();
 
 let client;
 let adapter;
 let controller;
+const _knownProjectIds = new Set();
+const _eventBuffers = new Map();
+
+function _setStatus(text) {
+  const el = document.getElementById('pipelineStatus');
+  if (el) el.textContent = text;
+}
 
 async function init() {
   client = new OmcClient(OMC_URL);
   adapter = new EventAdapter();
   controller = new PipelineController(adapter);
 
-  // Wire: OMC events → adapter → controller
-  client.onEvent((event) => adapter.process(event));
+  client.onEvent((event) => {
+    const pid = event.payload && (event.payload.project_id || event.payload.context_id);
+    if (pid) {
+      const basePid = pid.split('/')[0];
+      if (!_knownProjectIds.has(basePid)) return;
 
-  // Expose for other modules (breakpoint resume etc.)
+      const trackedPid = _resolveProjectId(pid);
+      if (window._activeProjectId && trackedPid && trackedPid !== window._activeProjectId) {
+        if (!_eventBuffers.has(trackedPid)) _eventBuffers.set(trackedPid, []);
+        _eventBuffers.get(trackedPid).push(event);
+        if (window._getProject) {
+          const proj = window._getProject(trackedPid);
+          proj.status = 'processing';
+          if (window._renderProjectSidebar) window._renderProjectSidebar();
+        }
+        return;
+      }
+
+      if (!window._activeProjectId) {
+        if (window._routeToProject) window._routeToProject(pid);
+      }
+    }
+    adapter.process(event);
+  });
+
   window._omcClient = client;
   window._controller = controller;
 
   try {
     await client.connect();
-    setConnectionStatus(true);
-    addEvent('stag', 'Connected to OMC backend.');
-    document.getElementById('dirStatus').textContent = 'Connected — ready';
+    _setConnectionStatus(true);
+    _setStatus('Connected');
+
+    // Fetch employee list for agent assignment
+    try {
+      const boot = await client.getBootstrap();
+      if (boot && boot.employees) {
+        window._employees = boot.employees.map(e => ({
+          employee_number: e.employee_number,
+          name: e.name || e.nickname,
+          skills: e.skills || [],
+          role: e.role || '',
+        }));
+      }
+    } catch (e) { /* best-effort */ }
+
+    await loadProjects();
+    await restoreLastSession();
   } catch (err) {
-    setConnectionStatus(false);
-    addEvent('stag', `Connection failed: ${err.message || 'unreachable'}. Running in demo mode.`);
-    document.getElementById('dirStatus').textContent = 'Offline — demo mode';
+    _setConnectionStatus(false);
+    _setStatus('Offline');
     return false;
   }
 
-  // Track connection state changes
-  client.ws.addEventListener('close', () => setConnectionStatus(false));
-
+  client.ws.addEventListener('close', () => _setConnectionStatus(false));
   return true;
 }
 
-async function launchPipeline(topic) {
-  if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
-    // Fallback to demo if not connected
-    startDemo();
-    return;
+async function loadProjects() {
+  if (!client) return;
+  try {
+    const res = await client.listProjects();
+    const projects = res.projects || [];
+    for (const p of projects) {
+      if (p.project_id) _knownProjectIds.add(p.project_id);
+    }
+    if (window.renderProjectList) {
+      window.renderProjectList(projects);
+    }
+  } catch (e) {
+    // silently fail
   }
-
-  addEvent('dtag', `Submitting: "${topic}"`);
-  document.getElementById('dirStatus').textContent = 'Submitting task...';
-
-  const result = await client.submitTask(topic, {
-    projectName: `research-${Date.now()}`,
-  });
-
-  if (result.error) {
-    addEvent('stag', `Error: ${result.error}`);
-    return;
-  }
-
-  window._currentProjectId = result.project_id;
-  addEvent('dtag', `Task accepted. Project: ${result.project_id}`);
-  document.getElementById('dirStatus').textContent = 'Pipeline running...';
 }
 
-function setConnectionStatus(connected) {
+async function launchPipeline(topic) {
+  const btn = document.getElementById('launchBtn');
+
+  if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
+    if (window.postNotice) window.postNotice('Backend not connected.', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+
+  try {
+    const startStage = window._getRangeStart ? window._getRangeStart() : 1;
+    const endStage = window._getRangeEnd ? window._getRangeEnd() : 9;
+    const fileInput = document.getElementById('contextFiles');
+    const files = fileInput ? Array.from(fileInput.files) : [];
+
+    const stageAssignments = window._getStageAssignments ? window._getStageAssignments() : null;
+
+    const result = await client.submitTask(topic, {
+      projectName: `research-${Date.now()}`,
+      startStage,
+      endStage,
+      files,
+      stageAssignments,
+    });
+
+    if (result.error) {
+      if (window.postNotice) window.postNotice(`Error: ${result.error}`, 'error');
+      btn.textContent = 'Launch Pipeline';
+      btn.disabled = false;
+      return;
+    }
+
+    const pid = result.project_id;
+    _knownProjectIds.add(pid);
+    const sessionId = result.iteration_id ? `${pid}/${result.iteration_id}` : pid;
+
+    if (window._getProject) {
+      const proj = window._getProject(sessionId);
+      proj.task = topic;
+      proj.status = 'processing';
+      proj.sessionId = sessionId;
+    }
+
+    if (window.switchProject) {
+      window.switchProject(sessionId);
+    }
+
+    document.getElementById('meetingsArea').innerHTML = '';
+    document.getElementById('heroSection').style.display = 'none';
+    if (typeof showPipelineBar === 'function') showPipelineBar(startStage, endStage);
+
+    window._currentProjectId = pid;
+    window._currentSessionId = sessionId;
+
+    await loadProjects();
+
+    if (window.postNotice) {
+      window.postNotice(`Research topic: <strong>${_escHtml(topic)}</strong>`, 'info');
+      window.postNotice('Pipeline started. Stage 1 dispatched.', 'ok');
+    }
+    btn.textContent = 'Launch Pipeline';
+    btn.disabled = false;
+  } catch (err) {
+    if (window.postNotice) window.postNotice(`Submit failed: ${err.message}`, 'error');
+    btn.textContent = 'Launch Pipeline';
+    btn.disabled = false;
+  }
+}
+
+function _setConnectionStatus(connected) {
   const el = document.getElementById('connStatus');
   if (!el) return;
   el.className = connected ? 'conn-status connected' : 'conn-status';
-  el.querySelector('.conn-label').textContent = connected ? 'Connected' : 'Offline';
+  const label = el.querySelector('.conn-label');
+  if (label) label.textContent = connected ? 'Connected' : 'Offline';
 }
 
-// Expose for HTML
-window.launchPipeline = launchPipeline;
-window.resumeBreakpoint = (feedback) => controller.resumeBreakpoint(feedback);
+function _escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-// Initialize on load
+function _resolveProjectId(rawPid) {
+  if (!rawPid) return null;
+  const basePid = rawPid.split('/')[0];
+  if (window._projects) {
+    for (const [pid] of window._projects) {
+      if (pid === rawPid || pid.startsWith(basePid) || rawPid.startsWith(pid.split('/')[0])) {
+        return pid;
+      }
+    }
+  }
+  return null;
+}
+
+function replayBufferedEvents(pid) {
+  const buf = _eventBuffers.get(pid);
+  if (!buf || buf.length === 0) return;
+  _eventBuffers.delete(pid);
+  for (const event of buf) {
+    adapter.process(event);
+  }
+}
+
+async function restoreLastSession() {
+  if (!client) return;
+  try {
+    const res = await client.listProjects();
+    const projects = res.projects || [];
+    if (projects.length === 0) return;
+
+    // Pick the most recent processing/completed project
+    const active = projects.find(p => p.latest_iter_status === 'processing')
+      || projects[0];
+    if (!active || !active.project_id) return;
+
+    const pid = active.project_id;
+    _knownProjectIds.add(pid);
+
+    // Get pipeline status
+    const status = await client.getPipelineStatus(pid);
+    if (status.error) return;
+
+    // Set as active project
+    const sessionId = pid;
+    if (window._getProject) {
+      const proj = window._getProject(sessionId);
+      proj.task = status.topic || active.task || '';
+      proj.status = active.latest_iter_status || 'processing';
+    }
+
+    window._currentProjectId = pid;
+    window._currentSessionId = sessionId;
+    window._activeProjectId = sessionId;
+
+    // Hide hero, show pipeline bar
+    document.getElementById('heroSection').style.display = 'none';
+    if (typeof showPipelineBar === 'function') showPipelineBar(status.start_stage || 1, status.end_stage || 9);
+
+    // Restore pipeline bar stage states
+    const currentStage = status.current_stage || 1;
+    const phase = status.phase || 'producer';
+    for (let i = 1; i < currentStage; i++) {
+      setStage(i, 'done');
+    }
+    if (phase === 'gate') {
+      setStage(currentStage, 'gate');
+    } else if (phase === 'critic') {
+      setStage(currentStage, 'reviewing');
+    } else if (phase === 'done') {
+      setStage(currentStage, 'done');
+    } else {
+      setStage(currentStage, 'running');
+    }
+
+    // Restore stage result cards
+    for (const [sid, result] of Object.entries(status.stage_results || {})) {
+      const stageId = parseInt(sid);
+      const stageDef = (status.stages || [])[stageId - 1];
+      const name = stageDef ? stageDef.name : `Stage ${stageId}`;
+      const cardId = `stage${stageId}`;
+      getStageCard(cardId, `Stage ${stageId} — ${name}`, name, name.slice(0, 2).toUpperCase());
+      updateProducer(cardId, result);
+      if (stageId < currentStage) {
+        setCardStatus(cardId, 'done');
+      } else if (stageId === currentStage && (phase === 'gate' || phase === 'critic')) {
+        // Current stage — show critic result if available
+        if (status.critic_result) {
+          updateCritic(cardId, status.critic_result);
+        }
+      }
+    }
+
+    // Restore workspace files
+    if (status.workspace_files && typeof addWorkspaceFile === 'function') {
+      for (const f of status.workspace_files) {
+        addWorkspaceFile(f);
+      }
+    }
+
+    // If pipeline is at gate, show breakpoint dialog
+    if (phase === 'gate' && window._controller) {
+      window._controller.pausedStageId = currentStage;
+      window._controller.currentStage = currentStage;
+      const stageDef = (status.stages || [])[currentStage - 1];
+      if (typeof openBreakpointDialog === 'function') {
+        openBreakpointDialog(currentStage, stageDef ? stageDef.name : `Stage ${currentStage}`);
+      }
+    }
+
+    // Update sidebar
+    if (window._renderProjectSidebar) window._renderProjectSidebar();
+
+  } catch (e) {
+    // Non-critical — page still works without restore
+  }
+}
+
+window.launchPipeline = launchPipeline;
+window.loadProjects = loadProjects;
+window.replayBufferedEvents = replayBufferedEvents;
+window.resumeBreakpoint = (feedback, isRevision) => controller.resumeBreakpoint(feedback, isRevision);
+
 document.addEventListener('DOMContentLoaded', () => {
   init();
 });
