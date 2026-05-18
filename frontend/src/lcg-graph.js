@@ -36,10 +36,14 @@ const EDGE_STYLE = {
 };
 
 function _parseTopic(content) {
-  const m = content.match(/##\s+Advisor Answer[\s\S]*?#\s+Stage \d+:[^—\n]*—\s+([^\n]+)/);
+  // Accept "# Stage N: ... — topic" anywhere (not just inside the
+  // advisor block) — hydration may prepend it when the producer didn't.
+  const m = content.match(/#\s+Stage \d+:[^—\n]*—\s+([^\n]+)/);
   if (m) return m[1].trim();
   const h1 = content.match(/^#\s+([^\n]+)/m);
-  return h1 ? h1[1].trim() : null;
+  if (!h1) return null;
+  // Strip any leading "Stage N: foo — " prefix that snuck through.
+  return h1[1].replace(/^Stage \d+:[^—]*—\s+/, '').trim();
 }
 
 function _escape(s) {
