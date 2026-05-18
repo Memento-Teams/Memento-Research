@@ -8,8 +8,17 @@
 ## Quick Start
 
 ```bash
-# Pull latest and restart (bootstrap runtime data + backend)
-git pull && bash start.sh
+# 1. Create a local env file
+cp .env.example .env
+
+# 2. Edit .env and set at least:
+#    OPENROUTER_API_KEY=...
+#    DEFAULT_LLM_MODEL=...
+#    HOST=0.0.0.0
+#    PORT=8000
+
+# 3. Start the app (bootstraps runtime data + backend)
+bash start.sh
 
 # Open in browser
 open http://localhost:8000
@@ -31,6 +40,8 @@ bash start.sh --start
 This project does not use OMC's interactive onboarding wizard.
 `start.sh` bootstraps `.onemancompany/` directly from checked-in `company/`,
 `config.yaml`, and `.env`.
+If you change repo-root `.env`, run `bash start.sh` once so the updated config
+is copied into `.onemancompany/.env`.
 
 ## Logs
 
