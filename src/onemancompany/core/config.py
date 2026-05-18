@@ -1047,8 +1047,13 @@ def load_talent_tools(talent_id: str) -> list[str]:
 
     Returns a flat list of all tool names (builtin + custom).
     """
-    manifest_path = TALENTS_DIR / talent_id / "tools" / "manifest.yaml"
-    if not manifest_path.exists():
+    manifest_path = None
+    for base in (TALENTS_RUNTIME_DIR, TALENTS_DIR):
+        candidate = base / talent_id / "tools" / "manifest.yaml"
+        if candidate.exists():
+            manifest_path = candidate
+            break
+    if manifest_path is None:
         return []
     with open_utf(manifest_path) as f:
         data = yaml.safe_load(f) or {}
@@ -1060,15 +1065,29 @@ def load_talent_tools(talent_id: str) -> list[str]:
 def load_talent_skills(talent_id: str) -> list[str]:
     """Load skill markdown files from talents/{id}/skills/.
 
-    Returns a list of skill file contents (one string per .md file).
+    Returns a list of skill file contents.
+
+    Supports both legacy ``skills/*.md`` talents and the current
+    folder-based ``skills/{name}/SKILL.md`` format.
     """
-    skills_dir = TALENTS_DIR / talent_id / "skills"
+    skills_dir = None
+    for base in (TALENTS_RUNTIME_DIR, TALENTS_DIR):
+        candidate = base / talent_id / "skills"
+        if candidate.exists():
+            skills_dir = candidate
+            break
+    if skills_dir is None:
+        return []
     if not skills_dir.exists():
         return []
     result: list[str] = []
     for skill_file in sorted(skills_dir.iterdir()):
         if skill_file.suffix == ".md" and skill_file.is_file():
             result.append(skill_file.read_text(encoding=ENCODING_UTF8))
+        elif skill_file.is_dir():
+            skill_md = skill_file / "SKILL.md"
+            if skill_md.exists() and skill_md.is_file():
+                result.append(skill_md.read_text(encoding=ENCODING_UTF8))
     return result
 
 

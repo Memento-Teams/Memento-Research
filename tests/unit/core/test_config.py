@@ -794,6 +794,19 @@ class TestLoadTalentSkills:
         assert any("Python" in s for s in result)
         assert any("Go" in s for s in result)
 
+    def test_loads_folder_based_skill_files(self, tmp_path, monkeypatch):
+        """Loads current skills/{name}/SKILL.md format."""
+        import onemancompany.core.config as config_mod
+
+        monkeypatch.setattr(config_mod, "TALENTS_DIR", tmp_path)
+        skill_dir = tmp_path / "my_talent" / "skills" / "experiment-execution"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Experiment Execution\nRun experiments")
+
+        result = config_mod.load_talent_skills("my_talent")
+
+        assert result == ["# Experiment Execution\nRun experiments"]
+
 
 # ---------------------------------------------------------------------------
 # move_employee_to_ex / move_ex_employee_back — early returns
