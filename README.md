@@ -45,7 +45,7 @@ bash start.sh start
 
 This project does not use OMC's interactive onboarding wizard.
 `start.sh` bootstraps `.onemancompany/` directly from checked-in `company/`,
-`config.yaml`, and `.env`.
+and `.env`.
 If you change repo-root `.env`, run `bash start.sh` once so the updated config
 is copied into `.onemancompany/.env`.
 

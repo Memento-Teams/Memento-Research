@@ -44,7 +44,7 @@ Commands:
 
 Notes:
   - This repo does not use the interactive OMC onboarding wizard.
-  - Runtime data is bootstrapped from ./company, ./config.yaml, and ./.env.
+  - Runtime data is bootstrapped from ./company and ./.env.
 EOF
 }
 
@@ -161,9 +161,6 @@ init_data() {
   mkdir -p "$DATA_DIR/company/business/products"
 
   cp "$env_source" "$DATA_DIR/.env"
-  if [ -f "$REPO_DIR/config.yaml" ]; then
-    cp "$REPO_DIR/config.yaml" "$DATA_DIR/config.yaml"
-  fi
 
   info "Runtime data initialized."
 }

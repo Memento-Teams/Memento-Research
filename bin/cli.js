@@ -327,7 +327,7 @@ ${green("What gets installed automatically:")}
   // ── Install or update ──────────────────────────────────────────────────
   // The npm package bundles the full source. Copy it to installDir.
   // Only fall back to git clone if source is missing (shouldn't happen).
-  const SOURCE_ITEMS = ["src", "frontend", "company", "pyproject.toml", "config.yaml", "uv.lock"];
+  const SOURCE_ITEMS = ["src", "frontend", "company", "pyproject.toml", "uv.lock"];
   const wantUpdate = passthrough.includes("--update");
 
   function copyItems(items, destRoot) {

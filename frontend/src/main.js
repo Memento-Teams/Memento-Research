@@ -28,6 +28,10 @@ async function init() {
   controller = new PipelineController(adapter);
 
   client.onEvent((event) => {
+    if (_eventShouldRefreshEmployees(event)) {
+      refreshEmployees();
+    }
+
     const pid = event.payload && (event.payload.project_id || event.payload.context_id);
     if (pid) {
       const basePid = pid.split('/')[0];
@@ -60,18 +64,7 @@ async function init() {
     _setConnectionStatus(true);
     _setStatus('Connected');
 
-    // Fetch employee list for agent assignment
-    try {
-      const boot = await client.getBootstrap();
-      if (boot && boot.employees) {
-        window._employees = boot.employees.map(e => ({
-          employee_number: e.employee_number,
-          name: e.name || e.nickname,
-          skills: e.skills || [],
-          role: e.role || '',
-        }));
-      }
-    } catch (e) { /* best-effort */ }
+    await refreshEmployees();
 
     await loadProjects();
     await restoreLastSession();
@@ -83,6 +76,41 @@ async function init() {
 
   client.ws.addEventListener('close', () => _setConnectionStatus(false));
   return true;
+}
+
+function _eventShouldRefreshEmployees(event) {
+  if (!event) return false;
+  if (event.type === 'employee_hired') return true;
+  const payload = event.payload || {};
+  return Array.isArray(payload.employees_added) && payload.employees_added.length > 0;
+}
+
+async function refreshEmployees() {
+  if (!client) return;
+  try {
+    const boot = await client.getBootstrap();
+    if (!boot || !Array.isArray(boot.employees)) return;
+    window._employees = boot.employees.map(e => ({
+      employee_number: e.employee_number,
+      name: e.name || e.nickname,
+      skills: e.skills || [],
+      role: e.role || '',
+    }));
+    _pruneStageAssignments();
+    if (window._renderRangeSelector) window._renderRangeSelector();
+  } catch (e) {
+    // Employee refresh is best-effort; existing assignments remain usable offline.
+  }
+}
+
+function _pruneStageAssignments() {
+  if (!window._employees || !window._stageAssignments) return;
+  const validEmployees = new Set(window._employees.map(e => e.employee_number));
+  for (const [stageId, employeeId] of Object.entries(window._stageAssignments)) {
+    if (employeeId && !validEmployees.has(employeeId)) {
+      delete window._stageAssignments[stageId];
+    }
+  }
 }
 
 async function loadProjects() {

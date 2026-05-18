@@ -383,7 +383,7 @@ bash start.sh status
 ```
 
 这个仓库不使用交互式 OMC onboarding。`start.sh` 会基于仓库中的
-`company/`、`config.yaml` 和 repo-root `.env` 自举 `.onemancompany/`。
+`company/` 和 repo-root `.env` 自举 `.onemancompany/`。
 
 ### 卸载
 
@@ -397,8 +397,7 @@ npx --yes @1mancompany/onemancompany@latest uninstall
 
 | 文件                         | 用途                                   |
 | ---------------------------- | -------------------------------------- |
-| `.onemancompany/.env`        | API Keys（OpenRouter、Anthropic 等）   |
-| `.onemancompany/config.yaml` | 应用配置（人才市场 URL 等）            |
+| `.onemancompany/.env`        | API Keys 与应用配置                    |
 | 浏览器 Settings 面板         | 前端偏好设置                           |
 
 ---
