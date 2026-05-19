@@ -110,6 +110,55 @@ def test_dispatch_producer_with_feedback_uses_skill_lookup(tmp_path, monkeypatch
     assert emitted == [(("stage_start", 1), {"employee_name": "emp-topic", "employee_id": "emp-topic"})]
 
 
+def test_queue_pending_feedback_appends_and_persists(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("first hint")
+    engine.queue_pending_feedback("second hint")
+    assert "first hint" in engine.state["pending_user_feedback"]
+    assert "second hint" in engine.state["pending_user_feedback"]
+
+    # Reload from disk → still there
+    reloaded = pe._load_state(str(tmp_path))
+    assert "first hint" in reloaded["pending_user_feedback"]
+    assert "second hint" in reloaded["pending_user_feedback"]
+
+
+def test_dispatch_producer_consumes_pending_user_feedback(tmp_path, monkeypatch):
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.queue_pending_feedback("按意见整改")
+    engine._dispatch_producer(feedback="critic says shorten")
+
+    # Both critic feedback and queued CEO feedback land in the prompt.
+    desc = dispatched[0][1]
+    assert "shorten" in desc
+    assert "按意见整改" in desc
+    # Pending feedback is consumed after dispatch (single-use).
+    assert engine.state.get("pending_user_feedback", "") == ""
+
+
+def test_dispatch_producer_without_pending_feedback_unchanged(tmp_path, monkeypatch):
+    dispatched = []
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine._dispatch_producer()
+
+    desc = dispatched[0][1]
+    assert "Direct guidance from CEO" not in desc
+    assert "pending_user_feedback" not in engine.state or engine.state.get("pending_user_feedback", "") == ""
+
+
 def test_dispatch_to_employee_uses_ea_child_as_parent_and_schedules(tmp_path, monkeypatch):
     scheduled = []
 
@@ -268,6 +317,47 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     engine.on_ceo_approve()
     assert engine.phase == "done"
     assert completed == ["p1"]
+
+
+@pytest.mark.parametrize("feedback,expect_revise", [
+    # advance-with-comment chats that must NOT trigger a redo
+    ("再补充一点细节", False),
+    ("再讨论一下这个点", False),
+    ("可以修改一下措辞", False),
+    ("再加一个 baseline", False),
+    # explicit redo triggers
+    ("重新写 stage 4", True),
+    ("重做这部分", True),
+    ("please REVISE the methodology", True),
+    ("Let's redo this stage", True),
+    ("再写一遍 introduction", True),
+])
+def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedback, expect_revise):
+    """Narrow keyword matcher: single-char '再' / ambiguous '修改' must not
+    trigger a redo on otherwise benign CEO chat. Explicit multi-char redo
+    triggers should fire."""
+    redispatched = []
+    advanced = []
+
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append((self.current_stage, feedback)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 2
+    engine.state["end_stage"] = 9
+    initial_stage = engine.current_stage
+
+    engine.on_ceo_approve(feedback)
+
+    if expect_revise:
+        # revise path: same stage, _dispatch_producer called with feedback
+        assert redispatched and redispatched[-1][0] == initial_stage
+        assert engine.state["retries"] == 0
+    else:
+        # advance path: stage advanced, no producer redispatch with feedback
+        assert engine.current_stage == initial_stage + 1
+        # _dispatch_producer is called on advance too (for the new stage) — feedback should be empty
+        assert all(fb == "" for _, fb in redispatched), f"unexpected redispatch with feedback: {redispatched}"
 
 
 def test_parse_critic_decision_and_confidence():

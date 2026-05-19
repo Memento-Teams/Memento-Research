@@ -229,6 +229,33 @@ class PipelineEngine:
         logger.info("[PIPELINE] Starting from stage {} to stage {}", self.state["current_stage"], self.state["end_stage"])
         self._dispatch_producer()
 
+    def queue_pending_feedback(self, text: str) -> None:
+        """Buffer CEO/user feedback to inject into the next producer dispatch.
+
+        Called when the CEO sends a chat message while the pipeline is mid-flight
+        (producer/critic running, or auto-retrying after a REJECT). The pipeline
+        is not at a gate, so we cannot call ``on_ceo_approve`` — but the user's
+        guidance is valuable for the next producer iteration. The buffered text
+        is consumed on the next ``_dispatch_producer`` call.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        pending = self.state.get("pending_user_feedback", "")
+        self.state["pending_user_feedback"] = (pending + "\n\n" + text) if pending else text
+        self._save()
+        logger.info(
+            "[PIPELINE] Queued CEO feedback (len={}) at stage {} phase {}",
+            len(text), self.current_stage, self.phase,
+        )
+
+    def _consume_pending_feedback(self) -> str:
+        text = self.state.get("pending_user_feedback", "")
+        if text:
+            self.state["pending_user_feedback"] = ""
+            self._save()
+        return text
+
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
         stage = self._stage_def()
@@ -249,6 +276,9 @@ class PipelineEngine:
         )
         if feedback:
             desc += f"\nFeedback from previous review:\n{feedback}\n"
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
@@ -348,11 +378,26 @@ class PipelineEngine:
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
 
+    # Keywords that trigger a *full re-dispatch* of the current stage from
+    # scratch (retries=0). Kept narrow on purpose: every CEO chat at the
+    # gate flows through this matcher (since task_followup now routes
+    # gate-phase feedback here), so any false positive silently undoes the
+    # stage and confuses the user. Single-character triggers like "再" or
+    # ambiguous edits like "修改" are excluded — they appear in legitimate
+    # advance-with-comment chats ("再补充一点", "可以修改一下措辞") that
+    # should NOT trigger a redo.
+    _REVISION_KEYWORDS = (
+        "REVISION", "REVISE", "RE-RUN", "REDO",
+        "重新",  # "重新跑", "重新写", "重新做"
+        "重做", "重写", "重跑",
+        "再来一遍", "再做一遍", "再写一遍", "再跑一遍",
+    )
+
     def on_ceo_approve(self, feedback: str = ""):
         """CEO approved the current stage. Advance or re-run."""
         stage = self._stage_def()
 
-        if feedback and any(kw in feedback.upper() for kw in ["REVISION", "REVISE", "RE-RUN", "重新", "修改", "再"]):
+        if feedback and any(kw in feedback.upper() for kw in self._REVISION_KEYWORDS):
             # CEO wants revision
             logger.info("[PIPELINE] CEO requested revision for stage {}", stage["id"])
             self.state["retries"] = 0
