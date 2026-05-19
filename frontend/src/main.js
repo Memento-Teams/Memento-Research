@@ -5,10 +5,13 @@ import { OmcClient } from './omc-client.js';
 import { EventAdapter } from './event-adapter.js';
 import { PipelineController } from './pipeline-controller.js';
 import { tryRenderLcg, setupLcgHover } from './lcg-renderer.js';
+import { canShowRevertButton, revertDisabledTooltip } from './revert-gate.js';
 
 const OMC_URL = window.location.origin;
 
 window._tryRenderLcg = tryRenderLcg;
+window._canShowRevertButton = canShowRevertButton;
+window._revertDisabledTooltip = revertDisabledTooltip;
 setupLcgHover();
 
 let client;

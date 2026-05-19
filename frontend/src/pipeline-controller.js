@@ -8,6 +8,10 @@ export class PipelineController {
     this.adapter = adapter;
     this.currentStage = null;
     this.stageCardIds = {}; // stageId → card DOM id
+    // Mirrors PipelineEngine.phase ("producer" | "critic" | "gate" | "done" |
+    // "failed"). Tracked here so the revert button knows when it can safely
+    // be clicked — clicking during "producer"/"critic" gets a backend reject.
+    this._setPipelinePhase(null);
 
     adapter.on('stage_start', (e) => this.handleStageStart(e));
     adapter.on('meeting_message', (e) => this.handleMeetingMessage(e));
@@ -19,10 +23,19 @@ export class PipelineController {
     adapter.on('file_written', (e) => this.handleFileWritten(e));
     adapter.on('clarification_needed', (e) => this.handleClarification(e));
     adapter.on('breakpoint_hit', (e) => this.handleBreakpointHit(e));
+    adapter.on('pipeline_complete', () => this._setPipelinePhase('done'));
   }
 
   _cardId(stageId) {
     return this.stageCardIds[stageId] || `stage${stageId}`;
+  }
+
+  _setPipelinePhase(phase) {
+    this.pipelinePhase = phase;
+    window._pipelinePhase = phase;
+    if (typeof window._refreshRevertButtons === 'function') {
+      window._refreshRevertButtons();
+    }
   }
 
   _ensureCard(stageId) {
@@ -39,6 +52,7 @@ export class PipelineController {
   handleStageStart({ stageId, stageName, employeeName, employeeId, roomName, participants }) {
     if (!stageId) return;
     this.currentStage = stageId;
+    this._setPipelinePhase('producer');
     if (typeof showPipelineBar === 'function') showPipelineBar();
     setStage(stageId, 'running');
 
@@ -94,6 +108,7 @@ export class PipelineController {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
+    this._setPipelinePhase('critic');
     const cardId = this._ensureCard(sid);
     setCardStatus(cardId, 'reviewing');
     setStage(sid, 'reviewing');
@@ -121,6 +136,7 @@ export class PipelineController {
     const sid = stageId || this.currentStage;
     if (!sid) return;
 
+    this._setPipelinePhase('failed');
     const cardId = this._ensureCard(sid);
     setCardStatus(cardId, 'rejected');
 
@@ -165,6 +181,7 @@ export class PipelineController {
   handleBreakpointHit({ stage, project_id, message }) {
     const sid = stage || this.currentStage;
     if (!sid) return;
+    this._setPipelinePhase('gate');
     this._triggerBreakpoint(sid);
   }
 

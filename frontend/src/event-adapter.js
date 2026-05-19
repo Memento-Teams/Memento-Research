@@ -15,6 +15,7 @@ export class EventAdapter {
       file_written: [],
       clarification_needed: [],
       breakpoint_hit: [],
+      pipeline_complete: [],
     };
 
     // Employee ID → display info
@@ -114,6 +115,7 @@ export class EventAdapter {
             this.emit('breakpoint_hit', payload);
           } else if (payload.type === 'pipeline_complete') {
             this.emit('director_action', { phase: 'complete', message: 'Pipeline complete! All 9 stages finished.' });
+            this.emit('pipeline_complete', { stagesCompleted: payload.stages_completed });
           }
         } else if (payload && payload.type === 'file_written') {
           this.emit('file_written', payload);

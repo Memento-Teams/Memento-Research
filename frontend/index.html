@@ -1242,6 +1242,35 @@ function updateCritic(cardId, content) {
   _scroll();
 }
 
+// Apply the revert button's visibility to a single card. Visible iff
+// the per-card status is "done" AND the pipeline as a whole is currently
+// at an approval gate (or finished) — see frontend/src/revert-gate.js for
+// the contract and tests. Clicking the button outside that window
+// surfaces the engine's "Cannot revert while pipeline phase is …" error,
+// which is what we want to avoid.
+function _applyRevertBtnVisibility(revertBtn, status) {
+  if (!revertBtn) return;
+  const phase = window._pipelinePhase ?? null;
+  const can = (window._canShowRevertButton || (() => status === 'done'))({
+    cardStatus: status, pipelinePhase: phase,
+  });
+  revertBtn.style.display = can ? '' : 'none';
+}
+
+// Re-evaluate every revert button on screen. Called when the pipeline phase
+// changes (PipelineController._setPipelinePhase publishes to window).
+window._refreshRevertButtons = function _refreshRevertButtons() {
+  document.querySelectorAll('.stage-card').forEach((card) => {
+    const revertBtn = card.querySelector('.sc-revert-btn');
+    if (!revertBtn) return;
+    const status = card.classList.contains('sc-done') ? 'done'
+      : card.classList.contains('sc-error') ? 'rejected'
+      : card.classList.contains('sc-active') ? 'running'
+      : '';
+    _applyRevertBtnVisibility(revertBtn, status);
+  });
+};
+
 // Set card status badge
 function setCardStatus(cardId, status) {
   const card = document.getElementById('sc-' + cardId);
@@ -1256,25 +1285,20 @@ function setCardStatus(cardId, status) {
     badge.className = 'sc-badge badge-done'; badge.textContent = 'Passed';
     card.classList.add('sc-done');
     if (wrapper) wrapper.classList.add('sw-done');
-    // Reveal the revert button: a completed stage is the only safe
-    // checkpoint to fork from.
-    if (revertBtn) revertBtn.style.display = '';
   } else if (status === 'error' || status === 'rejected') {
     badge.className = 'sc-badge badge-error'; badge.textContent = 'Rejected';
     card.classList.add('sc-error');
     if (wrapper) wrapper.classList.add('sw-error');
-    if (revertBtn) revertBtn.style.display = 'none';
   } else if (status === 'reviewing') {
     badge.className = 'sc-badge badge-reviewing'; badge.textContent = 'Reviewing';
     card.classList.add('sc-active');
     if (wrapper) wrapper.classList.add('sw-active');
-    if (revertBtn) revertBtn.style.display = 'none';
   } else {
     badge.className = 'sc-badge badge-running'; badge.textContent = 'Running';
     card.classList.add('sc-active');
     if (wrapper) wrapper.classList.add('sw-active');
-    if (revertBtn) revertBtn.style.display = 'none';
   }
+  _applyRevertBtnVisibility(revertBtn, status);
 }
 
 // Open a dialog asking the user for instructions, then POST to
