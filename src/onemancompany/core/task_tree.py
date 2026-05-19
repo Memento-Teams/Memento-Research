@@ -494,14 +494,16 @@ class TaskTree:
         The EA anchor itself may still be COMPLETED (not yet ACCEPTED)
         because acceptance happens as part of the project completion flow.
 
-        Pipeline-managed projects always return False — the
-        ``PipelineEngine`` owns completion via ``_emit_pipeline_complete``,
-        and the legacy EA-anchor heuristic mis-fires on them (it picks up
-        Stage 1's producer as the "EA anchor" and declares completion the
-        moment Stage 1 finishes, even though stages 2-9 are still queued).
+        This is the *legacy* completion semantic and is meaningful only
+        for trees orchestrated by the EA. Pipeline-managed trees own
+        their own completion via ``PipelineEngine._emit_pipeline_complete``;
+        callers must guard with ``has_pipeline_managed_nodes()`` before
+        using this signal, otherwise Stage 1's producer is mis-detected
+        as the "EA anchor" and the project is declared done as soon as
+        Stage 1 finishes. (Mixed trees — e.g. a pipeline plus a product-
+        owner sidecar followup — must not be silently pinned to False
+        here; the gating belongs at the call site.)
         """
-        if self.has_pipeline_managed_nodes():
-            return False
         ea = self.get_ea_node()
         if not ea:
             return False

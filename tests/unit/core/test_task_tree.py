@@ -659,38 +659,15 @@ class TestSubtreeResolved:
         child.status = "accepted"
         assert tree.is_project_complete() is True
 
-    def test_is_project_complete_false_for_pipeline_managed_tree(self):
-        """Pipeline-managed trees must not be declared complete via the
-        legacy EA-anchor heuristic. The pipeline_engine owns the completion
-        decision (via _emit_pipeline_complete), so is_project_complete()
-        defers to it and returns False whenever any node in the tree carries
-        the ``pipeline_managed`` metadata tag.
-
-        Regression: before this guard, Stage 1 producer finishing while
-        pipeline_engine was still on stages 2-9 caused is_project_complete
-        to return True (because the legacy code mistook Stage 1's TASK node
-        for the EA anchor), and vessel.py spuriously created a CEO_REQUEST
-        "Stage 1 is complete, confirm" node — even though stages 2-9 were
-        still running."""
-        tree = TaskTree(project_id="proj1")
-        root = tree.create_root("00001", "CEO prompt")
-        root.node_type = "ceo_prompt"
-
-        # Pipeline dispatches Stage 1 producer directly under root (no EA)
-        stage1 = tree.add_child(root.id, "00006", "Stage 1: Topic Refinement", [])
-        stage1.node_type = "task"
-        stage1.metadata = {"pipeline_managed": True}
-        stage1.status = "finished"
-
-        # Stage 1 critic also under root, sibling to stage1
-        critic1 = tree.add_child(root.id, "00011", "Gate Review: Stage 1", [])
-        critic1.node_type = "task"
-        critic1.metadata = {"pipeline_managed": True}
-        critic1.status = "finished"
-
-        assert tree.is_project_complete() is False
-
     def test_has_pipeline_managed_nodes_helper(self):
+        """Predicate for callers (vessel.py) to gate legacy completion logic.
+
+        ``is_project_complete`` itself keeps its legacy EA-anchor semantics —
+        the pipeline-vs-EA decision belongs at the call site, not inside
+        this generic method. Otherwise mixed trees (a pipeline plus a
+        product-owner sidecar followup, possible per task_followup route 3)
+        would be silently pinned to never-complete inside is_project_complete.
+        """
         tree = TaskTree(project_id="proj1")
         root = tree.create_root("00001", "CEO prompt")
         root.node_type = "ceo_prompt"
