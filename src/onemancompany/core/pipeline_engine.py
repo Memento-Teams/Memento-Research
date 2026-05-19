@@ -76,6 +76,21 @@ def _find_employee_by_skill(skill: str) -> str | None:
     return None
 
 
+def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
+    """Resolve the producer employee for a stage with stage-specific fallbacks.
+
+    Stage 6 (Auto Experiment) prefers an `experiment_runner` employee — they
+    carry the `autoresearch` runbook and can actually drive remote infra.
+    If no runner is on the roster, fall back to `experimentalist` (the
+    default research talent), who can still produce a simulated report.
+    """
+    if stage_id == 6:
+        runner = _find_employee_by_skill("experiment_runner")
+        if runner:
+            return runner
+    return _find_employee_by_skill(primary_skill)
+
+
 # ---------------------------------------------------------------------------
 # In-memory registry of active pipelines
 # ---------------------------------------------------------------------------
@@ -235,7 +250,7 @@ class PipelineEngine:
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage["id"]))
-        employee_id = assigned if assigned else _find_employee_by_skill(stage["skill"])
+        employee_id = assigned if assigned else _find_employee_for_stage(stage["id"], stage["skill"])
         if not employee_id:
             logger.error("[PIPELINE] No employee with skill '{}' for stage {}", stage["skill"], stage["id"])
             self.state["phase"] = "failed"
@@ -255,10 +270,41 @@ class PipelineEngine:
             desc += (
                 "\n## REQUIRED FIRST STEP\n"
                 'Before doing anything else, call load_skill("methodology-debate-convener") '
-                "and follow the runbook exactly. It walks you through convening a debate "
-                "with diverse colleagues, running run_debate(), and synthesising the "
-                "transcript into the methodology document. Do not write the methodology "
-                "directly without convening the debate first.\n"
+                "and follow the runbook exactly. It walks you through the full "
+                "draft → debate → revise flow: assemble a diverse team, write a v1 "
+                "methodology draft, convene a debate that critiques the draft, save "
+                "the transcript, and revise v1 into a CCF-A-grade final methodology "
+                "(8 sections, English only). Do not skip any phase.\n"
+            )
+        # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
+        # → revise → coordination (assignments table). The experiment convener
+        # skill is the runbook.
+        elif stage["id"] == 5:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("experiment-debate-convener") '
+                "and follow the runbook exactly. It walks you through reading the Stage 4 "
+                "methodology, drafting an initial experiment plan, debating it with the "
+                "team, revising it into a CCF-A-grade experiment plan, and producing a "
+                "coordination assignments table for Stage 6 execution. Do not write the "
+                "experiment plan directly without convening the debate first.\n"
+            )
+        # Stage 6 (Auto Experiment) dispatches the Stage 5 assignments table
+        # row by row. Remote-execution rows go through the autoresearch
+        # runbook (real HTTP submit to the lab infra); other rows are
+        # deferred to their named assignees.
+        elif stage["id"] == 6:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("experiment-execution-runbook") '
+                "and follow it. The runbook tells you how to read "
+                "stage5_assignments.md and route each row by its `skill` "
+                "column. For rows tagged `experiment_runner`, you also have "
+                'load_skill("autoresearch") available — that gives you the '
+                "fast_*.sh scripts to submit real runs to the remote infra, "
+                "poll status, and capture log_tail + metrics. Do not "
+                "fabricate or simulate results — if a remote submit is "
+                "required but credentials are missing, report the failure.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
@@ -293,8 +339,54 @@ class PipelineEngine:
             f"2. A PASS or REJECT decision\n"
             f"3. Specific reasoning\n\n"
             f"If REJECT, explain exactly what needs to be improved.\n\n"
-            f"--- Producer Output ---\n{producer_result}\n"
         )
+        # Stage 4 (Methodology Design) is graded against a CCF-A quality
+        # checklist. Load the runbook first so the critic applies the same
+        # bar an ICML/NeurIPS reviewer would.
+        if stage["id"] == 4:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("methodology-quality-critic") and follow that '
+                "runbook to grade the methodology against CCF-A criteria "
+                "(formalism, algorithmic detail, statistical rigor, "
+                "reproducibility, threats-to-validity depth, citation of the "
+                "debate transcript). Reject confidently when any required "
+                "section is shallow or missing.\n\n"
+            )
+        elif stage["id"] == 5:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("experiment-quality-critic") and follow that '
+                "runbook to grade the experiment plan and coordination "
+                "assignments against CCF-A criteria (operational procedure, "
+                "sample-size/power math, pre-registration spec, failure-mode "
+                "mitigations, reproducibility, debate citation, and a fully "
+                "populated assignments table). Reject confidently when any "
+                "required section is shallow or missing.\n\n"
+            )
+        # Stage 6 critic checks that the Auto Experiment report is grounded
+        # in real run_ids (not fabricated), that every assignments-table row
+        # is accounted for (executed or explicitly deferred), and that any
+        # remote runs report status + cost + a log_tail excerpt.
+        elif stage["id"] == 6:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                "Grade the Stage 6 report by asking:\n"
+                "  - Is every row of stage5_assignments.md addressed?\n"
+                "  - For rows tagged `experiment_runner`, is there a real "
+                "run_id, a terminal status, an actual_cost, and a log_tail "
+                "excerpt? Fabricated/simulated results when a runner was "
+                "available are an auto-REJECT.\n"
+                "  - For rows deferred to non-runner assignees, is the "
+                "deferral explicit (not silent)?\n"
+                "  - Does the aggregate summary tally total tasks, "
+                "successes, failures, and total cost?\n"
+                "Reject when the report claims success without a verifiable "
+                "run_id.\n\n"
+            )
+        desc += f"--- Producer Output ---\n{producer_result}\n"
 
         self.state["phase"] = "critic"
         self._save()

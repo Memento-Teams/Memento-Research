@@ -354,6 +354,11 @@ def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_p
     assert 'load_skill("methodology-debate-convener")' in desc, (
         "Stage 4 task description must instruct the producer to load the convener skill"
     )
+    # Preamble must describe the draft → debate → revise flow, not the
+    # pre-#19 "synthesise transcript into methodology document" wording.
+    assert "draft" in desc.lower() and "revise" in desc.lower(), (
+        "Stage 4 trigger preamble must mention the draft → debate → revise flow"
+    )
 
 
 def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, monkeypatch):
@@ -377,3 +382,238 @@ def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, mon
     assert "methodology-debate-convener" not in desc, (
         "Non-Stage-4 stages must not carry the debate convener trigger"
     )
+
+
+def test_dispatch_critic_stage4_injects_methodology_quality_critic_skill(tmp_path, monkeypatch):
+    """Stage 4 critic dispatch must instruct the reviewer to load the
+    methodology-quality-critic skill, which enforces CCF-A grade criteria.
+    Other stages' critic dispatches must not get this directive."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine._dispatch_critic("draft methodology document")
+
+    assert dispatched, "critic must be dispatched"
+    desc = dispatched[0][1]
+    assert 'load_skill("methodology-quality-critic")' in desc, (
+        "Stage 4 critic description must instruct the reviewer to load the quality-critic skill"
+    )
+
+
+def test_dispatch_critic_non_stage4_does_not_inject_quality_critic(tmp_path, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5  # Experiment Design
+    engine._dispatch_critic("experiment plan output")
+
+    assert dispatched, "critic must be dispatched"
+    desc = dispatched[0][1]
+    assert "methodology-quality-critic" not in desc, (
+        "Non-Stage-4 critic dispatch must not carry the methodology critic skill trigger"
+    )
+
+
+def test_dispatch_producer_stage5_injects_experiment_debate_skill_trigger(tmp_path, monkeypatch):
+    """Stage 5 (Experiment Design) task description must instruct the
+    producer to load the experiment-debate-convener skill before designing."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-exp" if skill == "experiment_designer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine._dispatch_producer()
+
+    assert dispatched, "producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("experiment-debate-convener")' in desc, (
+        "Stage 5 task description must instruct the producer to load the experiment convener skill"
+    )
+
+
+def test_dispatch_critic_stage5_injects_experiment_quality_critic_skill(tmp_path, monkeypatch):
+    """Stage 5 critic dispatch must instruct the reviewer to load the
+    experiment-quality-critic skill."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine._dispatch_critic("draft experiment plan")
+
+    assert dispatched, "critic must be dispatched"
+    desc = dispatched[0][1]
+    assert 'load_skill("experiment-quality-critic")' in desc, (
+        "Stage 5 critic description must instruct the reviewer to load the experiment quality-critic skill"
+    )
+
+
+def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monkeypatch):
+    """Triggers should be stage-id-scoped — Stage 5 trigger must not appear
+    in Stage 4 producer (which has its own methodology trigger) or Stage 1."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: f"emp-{skill}" if skill else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    for stage_id in (1, 4):
+        dispatched.clear()
+        engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
+        engine.state["current_stage"] = stage_id
+        engine._dispatch_producer()
+        if dispatched:
+            assert "experiment-debate-convener" not in dispatched[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 (Auto Experiment) — runner preference + autoresearch trigger
+# ---------------------------------------------------------------------------
+
+def test_find_employee_for_stage_6_prefers_runner_over_experimentalist(monkeypatch):
+    """When both an experiment_runner and an experimentalist are on the
+    roster, Stage 6 must route to the runner — they hold the autoresearch
+    runbook and can actually fire remote infra."""
+    by_skill = {
+        "experiment_runner": "emp-runner-007",
+        "experimentalist": "emp-sim-001",
+    }
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-runner-007"
+
+
+def test_find_employee_for_stage_6_falls_back_to_experimentalist(monkeypatch):
+    """No experiment_runner on roster — Stage 6 falls back to the existing
+    experimentalist so the pipeline still runs (degraded, simulation only)."""
+    by_skill = {"experimentalist": "emp-sim-001"}
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-sim-001"
+
+
+def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
+    """Runner fallback is Stage 6 only — Stage 5 must keep using the
+    primary skill (experiment_designer) so we don't accidentally swap
+    who writes the experiment plan."""
+    by_skill = {
+        "experiment_runner": "emp-runner-007",
+        "experiment_designer": "emp-designer-006",
+    }
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    assert pe._find_employee_for_stage(5, "experiment_designer") == "emp-designer-006"
+
+
+def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 6 producer task description must instruct the agent to load
+    the experiment-execution-runbook skill (which itself names autoresearch)."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-runner-007" if skill == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 6 producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("experiment-execution-runbook")' in desc, (
+        "Stage 6 task description must instruct the producer to load the execution runbook"
+    )
+    assert "autoresearch" in desc, (
+        "Stage 6 task description must mention the autoresearch runbook so the "
+        "agent knows the fast_*.sh scripts are available for remote rows"
+    )
+
+
+def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path, monkeypatch):
+    """Stage 6 dispatch resolution must reach the experiment_runner
+    employee (not whoever owns the 'experimentalist' skill) when a runner
+    is on the roster."""
+    dispatched = []
+    monkeypatch.setattr(
+        pe, "_find_employee_by_skill",
+        lambda skill: {"experiment_runner": "emp-runner",
+                       "experimentalist": "emp-sim"}.get(skill),
+    )
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, emp_id, *rest: dispatched.append(emp_id))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer()
+
+    assert dispatched == ["emp-runner"], (
+        f"Expected dispatch to experiment_runner employee, got {dispatched}"
+    )
+
+
+def test_dispatch_critic_stage6_injects_evidence_grading(tmp_path, monkeypatch):
+    """Stage 6 critic dispatch must instruct the reviewer to verify real
+    run_ids + cost + log_tail — fabricated results are auto-REJECT."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_critic("Stage 6 producer report")
+
+    assert dispatched, "Stage 6 critic must be dispatched"
+    desc = dispatched[0][1]
+    assert "run_id" in desc, (
+        "Stage 6 critic prompt must require evidence — a real run_id"
+    )
+    assert "auto-REJECT" in desc or "fabricat" in desc.lower(), (
+        "Stage 6 critic prompt must explicitly call out fabricated results"
+    )
+
+
+def test_stage6_trigger_not_in_stage4_or_stage5(tmp_path, monkeypatch):
+    """Stage 6 triggers (execution-runbook + run_id grading) must be
+    stage-scoped — earlier stages must not carry them."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: f"emp-{skill}" if skill else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    for stage_id in (4, 5):
+        dispatched.clear()
+        engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
+        engine.state["current_stage"] = stage_id
+        engine._dispatch_producer()
+        if dispatched:
+            assert "experiment-execution-runbook" not in dispatched[0][1]
