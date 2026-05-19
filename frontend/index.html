@@ -379,6 +379,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .ws-file-icon.ft-py{background:#EDE8F5;color:#6B4FA0}
 .ws-file-icon.ft-json{background:var(--gold-subtle);color:#8B7332}
 .ws-file-icon.ft-txt{background:var(--bg);color:var(--text3)}
+.ws-file-icon.ft-pdf{background:var(--coral-subtle);color:var(--coral)}
+.ws-file-icon.ft-tex{background:#E8F0FA;color:#3B6FA0}
 .ws-file-icon.ft-other{background:var(--bg);color:var(--text4)}
 .ws-file-info{flex:1;min-width:0}
 .ws-file-name{font-size:.82rem;font-weight:550;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -927,6 +929,8 @@ function _fileIcon(name) {
   if (ext === 'py') return ['PY', 'ft-py'];
   if (ext === 'json' || ext === 'yaml' || ext === 'yml') return ['{}', 'ft-json'];
   if (ext === 'txt' || ext === 'csv') return ['TXT', 'ft-txt'];
+  if (ext === 'pdf') return ['PDF', 'ft-pdf'];
+  if (ext === 'tex') return ['TEX', 'ft-tex'];
   return [ext.toUpperCase().slice(0, 3) || 'F', 'ft-other'];
 }
 
@@ -1030,8 +1034,20 @@ function _renderMd(src) {
 
 function _previewFile(name, info) {
   document.getElementById('wsPreview')?.remove();
-  const content = info.content || '';
   const ext = name.split('.').pop().toLowerCase();
+
+  // Binary formats (PDF) — open in a new tab via the project files
+  // endpoint instead of showing garbage in the raw text view.
+  if (ext === 'pdf') {
+    const pid = (window._currentProjectId || '').split('/')[0];
+    const path = info.path || info.file_path || name;
+    if (pid && path) {
+      window.open(`/api/projects/${encodeURIComponent(pid)}/files/${path.split('/').map(encodeURIComponent).join('/')}`, '_blank');
+    }
+    return;
+  }
+
+  const content = info.content || '';
   const isMd = (ext === 'md');
 
   const overlay = document.createElement('div');

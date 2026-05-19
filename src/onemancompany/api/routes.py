@@ -949,23 +949,36 @@ async def pipeline_status(project_id: str):
     ws_files = []
     if pdir:
         from pathlib import Path as _P
+        # Text deliverables are read inline so the frontend can preview them
+        # without a second round-trip. Binary deliverables (pdf) are listed
+        # with empty content; the preview UI fetches them lazily via
+        # /api/projects/{pid}/files/{path} when the user opens them.
+        _TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv", ".tex"}
+        _BINARY_SUFFIXES = {".pdf"}
         for f in sorted(_P(pdir).rglob("*")):
-            if f.is_file() and f.suffix in (".md", ".txt", ".json", ".yaml", ".yml", ".py", ".csv"):
-                rel = str(f.relative_to(pdir))
-                if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
-                    continue
+            if not f.is_file():
+                continue
+            suffix = f.suffix.lower()
+            if suffix not in _TEXT_SUFFIXES and suffix not in _BINARY_SUFFIXES:
+                continue
+            rel = str(f.relative_to(pdir))
+            if rel.startswith("nodes/") or rel == "pipeline_state.yaml" or rel == "task_tree.yaml":
+                continue
+            if suffix in _TEXT_SUFFIXES:
                 try:
                     content = f.read_text(encoding="utf-8")
                 except Exception:
                     content = ""
-                ws_files.append({
-                    "file_name": f.name,
-                    "file_path": rel,
-                    "full_path": str(f),
-                    "size": f.stat().st_size,
-                    "content": content,
-                    "type": "create",
-                })
+            else:
+                content = ""  # binary — lazy-load via files endpoint
+            ws_files.append({
+                "file_name": f.name,
+                "file_path": rel,
+                "full_path": str(f),
+                "size": f.stat().st_size,
+                "content": content,
+                "type": "create",
+            })
 
     return {
         "current_stage": engine.current_stage,
