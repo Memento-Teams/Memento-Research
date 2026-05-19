@@ -800,3 +800,149 @@ def test_revert_to_stage_validates_stage_bounds(tmp_path, monkeypatch):
         engine.revert_to_stage(stage=0, instructions="x")
     with pytest.raises(ValueError):
         engine.revert_to_stage(stage=10, instructions="x")
+
+
+def test_revert_to_stage_refuses_when_no_employee_with_skill(tmp_path, monkeypatch):
+    """Pre-flight check: if there's no agent that can run the producer
+    for the target stage, refuse BEFORE touching git. Otherwise the
+    user ends up on a new branch with corrupt state and no in-flight
+    task — non-recoverable from the UI."""
+    checkout_calls = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: None)
+
+    from onemancompany.core import project_repo
+    monkeypatch.setattr(
+        project_repo, "checkout_branch_from_stage",
+        lambda *a, **k: checkout_calls.append(a) or "feat-stage3-xxxxxx",
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "gate"
+    engine.state["end_stage"] = 9
+    engine._save()
+
+    with pytest.raises(pe.RevertNotAllowedError):
+        engine.revert_to_stage(stage=3, instructions="redo with X")
+
+    assert not checkout_calls, "git checkout must not run when no agent can handle the stage"
+
+
+def test_revert_to_stage_raises_when_checkout_loses_state_file(tmp_path, monkeypatch):
+    """Critical defence: if for any reason the snapshot we checked out
+    has no ``pipeline_state.yaml``, ``_load_state`` returns ``{}``. The
+    OLD code silently kept the abandoned branch's state — corrupting
+    the new branch. The fix raises explicitly instead."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp")
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda *a, **k: None)
+
+    from onemancompany.core import project_repo
+    def fake_checkout(repo_dir, iteration, stage, branch_name=None):
+        # Simulate a checkout that did NOT restore pipeline_state.yaml
+        # (e.g. the file was somehow gitignored, or the snapshot
+        # predates the engine writing it).
+        from pathlib import Path
+        path = Path(repo_dir) / pe.STATE_FILENAME
+        if path.exists():
+            path.unlink()
+        return "feat-stage3-xxxxxx"
+    monkeypatch.setattr(project_repo, "checkout_branch_from_stage", fake_checkout)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine.state["phase"] = "gate"
+    engine.state["end_stage"] = 9
+    engine._save()
+
+    with pytest.raises(pe.RevertNotAllowedError, match="pipeline_state.yaml"):
+        engine.revert_to_stage(stage=3, instructions="x")
+
+
+@pytest.mark.parametrize("dirname,expected_prefix", [
+    ("iter_001", "iter_001"),
+    ("iter_042", "iter_042"),
+    ("workspace", "iter_"),       # legacy/non-standard → synthetic
+    ("p7506fc954142", "iter_"),
+    ("", "iter_"),
+])
+def test_iteration_id_normalisation(tmp_path, dirname, expected_prefix):
+    """Tag namespaces must not collide across projects with the same
+    legacy basename. Standard ``iter_NNN`` dirs use the literal name;
+    anything else gets a hashed synthetic id derived from the full path."""
+    if dirname:
+        proj_dir = tmp_path / dirname
+        proj_dir.mkdir()
+    else:
+        proj_dir = tmp_path  # tmp_path basename is opaque hash → non-standard
+    engine = pe.PipelineEngine("p1", str(proj_dir), "topic")
+    iid = engine._iteration_id()
+    assert iid.startswith(expected_prefix)
+    if expected_prefix == "iter_":
+        # Hashed: not the standard form, but stable for a given path.
+        assert engine._iteration_id() == iid
+
+
+# ---------------------------------------------------------------------------
+# End-to-end with real git subprocess — defends against mocks-only blind spot
+# ---------------------------------------------------------------------------
+
+
+def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path, monkeypatch):
+    """Smoke test: no mocks on ``project_repo``. Verifies that:
+      1. ``ensure_initialized`` actually creates a git repo.
+      2. ``commit_stage`` actually commits + tags after a passed stage.
+      3. ``revert_to_stage`` actually checks out a feat branch rooted at
+         the previous stage's tag, restoring the workspace files.
+      4. The reloaded state contains only ``stage_results`` from before
+         the revert point.
+    """
+    iter_dir = tmp_path / "iter_001"
+    iter_dir.mkdir()
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-x")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(iter_dir), "topic")
+    engine.state["end_stage"] = 9
+    engine._save()
+
+    # Manually walk through two passed stages, emulating what
+    # vessel.py + the producer/critic loop would do.
+    (iter_dir / "stage1.md").write_text("v1 stage 1 output\n")
+    engine.state["current_stage"] = 1
+    engine.state["stage_results"] = {"1": "stage 1 result"}
+    engine._save()
+    # ensure_initialized + first commit happen on first _on_critic_pass.
+    from onemancompany.core import project_repo
+    project_repo.ensure_initialized(str(iter_dir), iteration="iter_001")
+    engine._on_critic_pass("stage 1 result")
+
+    (iter_dir / "stage2.md").write_text("v1 stage 2 output\n")
+    engine.state["current_stage"] = 2
+    engine.state["stage_results"] = {"1": "stage 1 result", "2": "stage 2 result"}
+    engine._save()
+    engine._on_critic_pass("stage 2 result")
+
+    # Sanity: both files present on the main branch.
+    assert (iter_dir / "stage1.md").exists()
+    assert (iter_dir / "stage2.md").exists()
+
+    # Now revert to stage 2. Expected: branch from iter_001/stage-1's
+    # commit, so stage2.md disappears from the workspace.
+    branch = engine.revert_to_stage(stage=2, instructions="please rewrite stage 2 to use approach Y")
+
+    assert branch.startswith("feat-stage2-"), branch
+    assert (iter_dir / "stage1.md").exists(), "stage 1's output must survive the revert"
+    assert not (iter_dir / "stage2.md").exists(), "stage 2's output must be checked-out away"
+
+    # Reloaded state has only stage_results from BEFORE the revert.
+    assert "1" in engine.state["stage_results"]
+    assert "2" not in engine.state["stage_results"]
+    assert engine.state["current_stage"] == 2
+    assert engine.state["phase"] == "producer"
+    assert engine.state["retries"] == 0

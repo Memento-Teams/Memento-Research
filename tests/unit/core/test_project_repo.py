@@ -213,6 +213,72 @@ def test_checkout_branch_from_stage_unknown_stage(tmp_path):
         pr.checkout_branch_from_stage(str(tmp_path), iteration="iter001", stage=5)
 
 
+@pytest.mark.parametrize("malicious_name", [
+    "--orphan",          # leading dash → would be parsed as a git flag
+    "-q",
+    "..",                # refname rule violation
+    "foo..bar",          # also refname violation
+    "foo/",              # trailing slash
+    "foo.lock",          # reserved suffix
+    "foo bar",           # space
+    "foo;rm",            # shell-ish injection
+    "/leading-slash",
+    # Empty string is intentionally NOT in this list — the function
+    # treats ``branch_name=""`` as "use default" (``or _gen_branch_name``),
+    # which is a UX nicety distinct from "user supplied an unsafe value".
+])
+def test_checkout_branch_from_stage_rejects_unsafe_branch_names(tmp_path, malicious_name):
+    """Critical defence: branch names flow unvalidated from the HTTP body
+    to ``git checkout -b <name>``. Names starting with ``-`` or containing
+    refname-rule violations must be rejected before git sees them."""
+    pr.ensure_initialized(str(tmp_path), iteration="iter001")
+    iter_dir = tmp_path / "iterations" / "iter_001"
+    iter_dir.mkdir(parents=True)
+    (iter_dir / "stage1.md").write_text("v1\n")
+    pr.commit_stage(str(tmp_path), iteration="iter001", stage=1, stage_name="Stage 1")
+
+    with pytest.raises(pr.InvalidBranchNameError):
+        pr.checkout_branch_from_stage(
+            str(tmp_path), iteration="iter001", stage=1, branch_name=malicious_name,
+        )
+
+
+def test_ensure_initialized_writes_gitignore(tmp_path):
+    """The wide ``git add -A`` in commit_stage would otherwise capture
+    ``.DS_Store``, swap files, ``__pycache__``, etc. The default
+    .gitignore prevents that."""
+    pr.ensure_initialized(str(tmp_path), iteration="iter001")
+    gi = tmp_path / ".gitignore"
+    assert gi.exists()
+    content = gi.read_text()
+    assert ".DS_Store" in content
+    assert "__pycache__" in content
+
+
+def test_ensure_initialized_works_when_initial_branch_flag_unsupported(tmp_path, monkeypatch):
+    """git < 2.28 rejects ``--initial-branch=main``. The fallback runs
+    plain ``git init`` then ``symbolic-ref HEAD refs/heads/main`` so the
+    repo still ends up on ``main``."""
+    real_run = pr._run
+    seen = []
+
+    def fake_run(repo_dir, *args, check=True):
+        # Simulate "old git" rejecting --initial-branch.
+        if args[:2] == ("init", "--quiet") and "--initial-branch=main" in args:
+            seen.append("rejected")
+            cp = subprocess.CompletedProcess(args=args, returncode=128, stdout="", stderr="unknown option")
+            return cp
+        return real_run(repo_dir, *args, check=check)
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    pr.ensure_initialized(str(tmp_path), iteration="iter001")
+    assert "rejected" in seen, "test setup must have triggered the fallback path"
+    # Repo still works.
+    assert (tmp_path / ".git").is_dir()
+    tags = _git(tmp_path, "tag", "--list").splitlines()
+    assert "iter001/init" in tags
+
+
 # ---------------------------------------------------------------------------
 # Introspection
 # ---------------------------------------------------------------------------

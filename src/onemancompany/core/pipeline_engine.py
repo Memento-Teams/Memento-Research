@@ -11,6 +11,7 @@ task tree for node management, and WebSocket events for frontend updates.
 
 from __future__ import annotations
 
+import re
 import yaml
 from pathlib import Path
 from loguru import logger
@@ -228,11 +229,29 @@ class PipelineEngine:
     # ------------------------------------------------------------------
 
     def _iteration_id(self) -> str:
-        """Identifier used in git tag names. Derived from the workspace's
-        directory basename (typically ``iter_001``) so multi-iteration
-        projects keep their tag namespaces separate."""
+        """Identifier used in git tag names. Standard layout is
+        ``.../iterations/iter_NNN``; we use the basename directly so
+        multi-iteration projects keep their tag namespaces separate.
+
+        For legacy / non-standard layouts where the basename doesn't
+        match ``iter_\\d+``, we hash the full project_dir into a stable
+        synthetic id to avoid cross-iteration tag collisions (which
+        would silently overwrite each other under ``tag -f``).
+        """
         name = Path(self.project_dir).name
-        return name or _DEFAULT_ITERATION
+        if name and re.match(r"^iter_\d+$", name):
+            return name
+        if not name:
+            return _DEFAULT_ITERATION
+        # Non-standard dir name. Derive a stable synthetic id from the
+        # path so different projects with the same basename don't collide.
+        import hashlib
+        digest = hashlib.sha1(self.project_dir.encode("utf-8")).hexdigest()[:8]
+        logger.debug(
+            "[PIPELINE] Non-standard project dir basename {!r}; using synthetic iteration id iter_{}",
+            name, digest,
+        )
+        return f"iter_{digest}"
 
     def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
         """Begin the pipeline from the given stage."""
@@ -524,6 +543,22 @@ class PipelineEngine:
 
         instructions = (instructions or "").strip()
 
+        # Validate dispatchability BEFORE touching git. The whole revert
+        # operation should be either fully successful or fully a no-op;
+        # otherwise we leave the user on a new branch with corrupt state
+        # and no in-flight task. ``stage_assignments`` honours user
+        # overrides; otherwise the engine resolves by skill from
+        # ``employee_configs``.
+        stage_def = STAGES[stage - 1]
+        assignments = self.state.get("stage_assignments", {})
+        assigned = assignments.get(str(stage_def["id"]))
+        employee_id = assigned if assigned else _find_employee_by_skill(stage_def["skill"])
+        if not employee_id:
+            raise RevertNotAllowedError(
+                f"Cannot revert to stage {stage}: no employee with skill "
+                f"'{stage_def['skill']}' is available to run the producer."
+            )
+
         from onemancompany.core import project_repo
         new_branch = project_repo.checkout_branch_from_stage(
             self.project_dir,
@@ -533,9 +568,18 @@ class PipelineEngine:
         )
 
         # The checkout flipped pipeline_state.yaml back to its previous
-        # snapshot. Reload before mutating, otherwise the in-memory state
-        # would overwrite the just-restored disk state on the next _save.
-        self.state = _load_state(self.project_dir) or self.state
+        # snapshot. Reload from disk; refuse to proceed if the snapshot
+        # somehow lacks a state file (would silently retain the abandoned
+        # branch's state otherwise — corrupting the new branch on the
+        # next ``_save``).
+        loaded = _load_state(self.project_dir)
+        if not loaded:
+            raise RevertNotAllowedError(
+                f"Reverted to branch '{new_branch}' but the checkout did "
+                f"not restore a pipeline_state.yaml. Workspace may be "
+                f"corrupt — investigate before retrying."
+            )
+        self.state = loaded
         self.state["current_stage"] = stage
         self.state["phase"] = "producer"
         self.state["retries"] = 0

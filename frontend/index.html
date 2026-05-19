@@ -1288,7 +1288,11 @@ function openRevertDialog(cardId) {
   const m = /^stage(\d+)$/.exec(cardId);
   if (!m) { window.postNotice?.('Cannot resolve stage from card ID', 'error'); return; }
   const stageNum = parseInt(m[1], 10);
+  // Capture pid + active-project at modal-open, NOT at submit. If the
+  // user switches projects via the sidebar while the modal is open, the
+  // revert must still hit the project they originally clicked on.
   const pid = (window._currentProjectId || '').split('/')[0];
+  const sessionAtOpen = window._activeProjectId || pid;
   if (!pid) { window.postNotice?.('No active project', 'error'); return; }
 
   document.getElementById('revertDialog')?.remove();
@@ -1353,9 +1357,11 @@ function openRevertDialog(cardId) {
       );
       // The engine emits stage events as it re-dispatches; the existing
       // event adapter will repaint the cards. Re-fetch status so the
-      // sidebar / pipeline bar catch up immediately too.
+      // sidebar / pipeline bar catch up immediately too. Use the session
+      // ID captured at modal-open so a mid-modal project switch doesn't
+      // mis-route the refresh.
       if (typeof window.restoreProjectView === 'function') {
-        window.restoreProjectView(window._activeProjectId || pid);
+        window.restoreProjectView(sessionAtOpen);
       }
       close();
     } catch (err) {

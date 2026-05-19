@@ -997,17 +997,27 @@ async def revert_pipeline_to_stage(project_id: str, body: dict):
 async def list_pipeline_branches(project_id: str):
     """Enumerate the project's git branches for the sidebar's
     "you are on branch X" indicator. Returns ``[]`` when the repo
-    hasn't been initialised yet (legacy projects)."""
+    hasn't been initialised yet (legacy projects) or when git ops
+    fail (corrupt .git). A 200 with empty data is preferable to a
+    500 here — the sidebar treats absent branch info as "no fork
+    available yet" rather than as an error condition."""
     from onemancompany.core.project_archive import get_project_dir
     from onemancompany.core import project_repo
 
     pdir = str(get_project_dir(project_id))
     if not pdir:
         raise HTTPException(status_code=404, detail="Project directory not found")
-    return {
-        "current": project_repo.current_branch(pdir),
-        "branches": project_repo.list_branches(pdir),
-    }
+    try:
+        return {
+            "current": project_repo.current_branch(pdir),
+            "branches": project_repo.list_branches(pdir),
+        }
+    except Exception as exc:
+        logger.warning(
+            "[branches] git introspection failed for project {}: {}",
+            project_id, exc,
+        )
+        return {"current": None, "branches": []}
 
 
 @router.get("/api/pipeline/{project_id}/status")
