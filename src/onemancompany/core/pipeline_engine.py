@@ -378,11 +378,26 @@ class PipelineEngine:
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
 
+    # Keywords that trigger a *full re-dispatch* of the current stage from
+    # scratch (retries=0). Kept narrow on purpose: every CEO chat at the
+    # gate flows through this matcher (since task_followup now routes
+    # gate-phase feedback here), so any false positive silently undoes the
+    # stage and confuses the user. Single-character triggers like "再" or
+    # ambiguous edits like "修改" are excluded — they appear in legitimate
+    # advance-with-comment chats ("再补充一点", "可以修改一下措辞") that
+    # should NOT trigger a redo.
+    _REVISION_KEYWORDS = (
+        "REVISION", "REVISE", "RE-RUN", "REDO",
+        "重新",  # "重新跑", "重新写", "重新做"
+        "重做", "重写", "重跑",
+        "再来一遍", "再做一遍", "再写一遍", "再跑一遍",
+    )
+
     def on_ceo_approve(self, feedback: str = ""):
         """CEO approved the current stage. Advance or re-run."""
         stage = self._stage_def()
 
-        if feedback and any(kw in feedback.upper() for kw in ["REVISION", "REVISE", "RE-RUN", "重新", "修改", "再"]):
+        if feedback and any(kw in feedback.upper() for kw in self._REVISION_KEYWORDS):
             # CEO wants revision
             logger.info("[PIPELINE] CEO requested revision for stage {}", stage["id"])
             self.state["retries"] = 0

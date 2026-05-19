@@ -654,6 +654,42 @@ async def ceo_submit_task(
     }
 
 
+def _record_ceo_followup_audit(
+    project_dir: str, project_id: str, instructions: str, stage: int,
+) -> None:
+    """Append an audit-only CEO_FOLLOWUP node to the project task tree.
+
+    The node has no executable child — it exists purely so the task panel
+    and tree history can show "the CEO said X while pipeline was at stage Y".
+    The pipeline state machine remains the sole dispatcher; nothing schedules
+    against this node.
+    """
+    from pathlib import Path
+
+    from onemancompany.core.task_tree import TaskTree, get_tree
+    from onemancompany.core.vessel import _save_project_tree
+
+    tree_path = Path(project_dir) / TASK_TREE_FILENAME
+    tree = get_tree(tree_path, project_id=project_id) if tree_path.exists() else TaskTree(project_id=project_id)
+
+    if not tree.root_id:
+        # No CEO root yet (rare for a project being driven by pipeline_engine).
+        # Skip the audit node rather than mint a synthetic root that would
+        # confuse downstream consumers.
+        return
+
+    audit_node = tree.add_child(
+        parent_id=tree.root_id,
+        employee_id=CEO_ID,
+        description=instructions,
+        acceptance_criteria=[],
+    )
+    audit_node.node_type = NodeType.CEO_FOLLOWUP
+    audit_node.status = TaskPhase.ACCEPTED.value
+    audit_node.title = f"CEO followup (stage {stage})"
+    _save_project_tree(project_dir, tree)
+
+
 @router.post("/api/task/{project_id}/followup")
 async def task_followup(project_id: str, body: dict) -> dict:
     """CEO adds follow-up instructions to an existing project.
@@ -694,10 +730,20 @@ async def task_followup(project_id: str, body: dict) -> dict:
 
     # ------------------------------------------------------------------
     # 1 & 2. Active pipeline owns the orchestration — route there.
+    #
+    # "done" and "failed" are terminal: feedback into them would grow the
+    # queue with no producer to drain it, so we fall through to the no-
+    # orchestrator path (which 400s) instead. Recovery from "failed" goes
+    # through the explicit /api/pipeline/resume endpoint.
     # ------------------------------------------------------------------
+    PIPELINE_TERMINAL_PHASES = ("done", "failed")
     engine = get_or_load_pipeline(project_id, pdir)
-    if engine and engine.phase != "done":
+    if engine and engine.phase not in PIPELINE_TERMINAL_PHASES:
         append_action(project_id, "ceo", "follow-up instructions", instructions[:200])
+        # Audit-only CEO_FOLLOWUP node so the task panel keeps a record of
+        # what the CEO said at each stage. No executable child — the pipeline
+        # state machine remains the sole dispatcher.
+        _record_ceo_followup_audit(pdir, project_id, instructions, engine.current_stage)
         if engine.phase == "gate":
             logger.info(
                 "[FOLLOWUP] Pipeline gate open at stage {}, routing to on_ceo_approve",

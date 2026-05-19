@@ -292,10 +292,14 @@ async def test_task_followup_queues_feedback_when_pipeline_mid_flight(tmp_path):
     assert result["stage"] == 4
 
 
+@pytest.mark.parametrize("terminal_phase", ["done", "failed"])
 @pytest.mark.asyncio
-async def test_task_followup_skips_pipeline_when_phase_done(tmp_path):
-    """A pipeline that has phase='done' is not an active orchestrator — followup
-    should fall through to the product-owner path (or error if no owner)."""
+async def test_task_followup_skips_pipeline_when_phase_terminal(tmp_path, terminal_phase):
+    """A pipeline that has phase in ('done','failed') is not an active
+    orchestrator — feedback cannot reach a producer. Followup must fall
+    through to the product-owner path (or 400 if no owner). 'failed' is
+    explicitly covered so feedback into a dead pipeline can't silently
+    accumulate in pending_user_feedback."""
     from onemancompany.api.routes import task_followup
 
     pdir = tmp_path / PROJECT_ID
@@ -305,8 +309,8 @@ async def test_task_followup_skips_pipeline_when_phase_done(tmp_path):
     project_doc = _make_project_doc(product_id="")  # no product either
 
     mock_engine = MagicMock()
-    mock_engine.phase = "done"
-    mock_engine.current_stage = 9
+    mock_engine.phase = terminal_phase
+    mock_engine.current_stage = 4 if terminal_phase == "failed" else 9
     mock_engine.on_ceo_approve = MagicMock()
     mock_engine.queue_pending_feedback = MagicMock()
 
@@ -321,3 +325,49 @@ async def test_task_followup_skips_pipeline_when_phase_done(tmp_path):
     assert exc_info.value.status_code == 400
     mock_engine.on_ceo_approve.assert_not_called()
     mock_engine.queue_pending_feedback.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Integration-flavored test — uses a real PipelineEngine + state file so the
+# routing checks against the actual ``phase`` property / state-file persistence
+# rather than a ``MagicMock``. This catches regressions where the mock-based
+# tests pass but the real engine behaves differently (e.g. property vs attr).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_task_followup_with_real_engine_persists_pending_feedback(tmp_path):
+    """End-to-end with a real PipelineEngine: queue path persists the
+    feedback into state['pending_user_feedback'] on the YAML state file."""
+    from onemancompany.api.routes import task_followup
+    from onemancompany.core import pipeline_engine as pe
+
+    pdir = tmp_path / PROJECT_ID
+    pdir.mkdir()
+    (pdir / TASK_TREE_FILENAME).write_text("{}")
+
+    project_doc = _make_project_doc(product_id="")
+
+    # Build a real engine, seed its state to "mid-flight retry", persist.
+    engine = pe.PipelineEngine(PROJECT_ID, str(pdir), "topic")
+    engine.state["current_stage"] = 4
+    engine.state["phase"] = "producer"
+    engine.state["retries"] = 1
+    engine._save()
+
+    with patch("onemancompany.core.project_archive.get_project_dir", return_value=str(pdir)), \
+         patch("onemancompany.core.project_archive._resolve_and_load", return_value=("v1", project_doc, "key1")), \
+         patch("onemancompany.core.project_archive.append_action"), \
+         patch("onemancompany.core.pipeline_engine.get_or_load_pipeline", return_value=engine), \
+         patch("onemancompany.api.routes.event_bus", AsyncMock()):
+
+        result = await task_followup(PROJECT_ID, {"instructions": "按意见整改"})
+
+    # Routed via the queue path (mid-flight).
+    assert result["routed_to"] == "pipeline_queue"
+    # Real engine state mutated AND persisted.
+    assert engine.state["pending_user_feedback"] == "按意见整改"
+    reloaded = pe._load_state(str(pdir))
+    assert reloaded["pending_user_feedback"] == "按意见整改"
+    # Cleanup the registry so it doesn't leak into other tests.
+    pe._active_pipelines.pop(PROJECT_ID, None)

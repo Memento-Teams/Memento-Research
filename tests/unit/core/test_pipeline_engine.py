@@ -319,6 +319,47 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     assert completed == ["p1"]
 
 
+@pytest.mark.parametrize("feedback,expect_revise", [
+    # advance-with-comment chats that must NOT trigger a redo
+    ("再补充一点细节", False),
+    ("再讨论一下这个点", False),
+    ("可以修改一下措辞", False),
+    ("再加一个 baseline", False),
+    # explicit redo triggers
+    ("重新写 stage 4", True),
+    ("重做这部分", True),
+    ("please REVISE the methodology", True),
+    ("Let's redo this stage", True),
+    ("再写一遍 introduction", True),
+])
+def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedback, expect_revise):
+    """Narrow keyword matcher: single-char '再' / ambiguous '修改' must not
+    trigger a redo on otherwise benign CEO chat. Explicit multi-char redo
+    triggers should fire."""
+    redispatched = []
+    advanced = []
+
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append((self.current_stage, feedback)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 2
+    engine.state["end_stage"] = 9
+    initial_stage = engine.current_stage
+
+    engine.on_ceo_approve(feedback)
+
+    if expect_revise:
+        # revise path: same stage, _dispatch_producer called with feedback
+        assert redispatched and redispatched[-1][0] == initial_stage
+        assert engine.state["retries"] == 0
+    else:
+        # advance path: stage advanced, no producer redispatch with feedback
+        assert engine.current_stage == initial_stage + 1
+        # _dispatch_producer is called on advance too (for the new stage) — feedback should be empty
+        assert all(fb == "" for _, fb in redispatched), f"unexpected redispatch with feedback: {redispatched}"
+
+
 def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_critic_pass("reject: weak evidence") is False
     assert pe.PipelineEngine._parse_critic_pass("pass: strong enough") is True
