@@ -255,10 +255,24 @@ class PipelineEngine:
             desc += (
                 "\n## REQUIRED FIRST STEP\n"
                 'Before doing anything else, call load_skill("methodology-debate-convener") '
-                "and follow the runbook exactly. It walks you through convening a debate "
-                "with diverse colleagues, running run_debate(), and synthesising the "
-                "transcript into the methodology document. Do not write the methodology "
-                "directly without convening the debate first.\n"
+                "and follow the runbook exactly. It walks you through the full "
+                "draft → debate → revise flow: assemble a diverse team, write a v1 "
+                "methodology draft, convene a debate that critiques the draft, save "
+                "the transcript, and revise v1 into a CCF-A-grade final methodology "
+                "(8 sections, English only). Do not skip any phase.\n"
+            )
+        # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
+        # → revise → coordination (assignments table). The experiment convener
+        # skill is the runbook.
+        elif stage["id"] == 5:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("experiment-debate-convener") '
+                "and follow the runbook exactly. It walks you through reading the Stage 4 "
+                "methodology, drafting an initial experiment plan, debating it with the "
+                "team, revising it into a CCF-A-grade experiment plan, and producing a "
+                "coordination assignments table for Stage 6 execution. Do not write the "
+                "experiment plan directly without convening the debate first.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
@@ -293,8 +307,34 @@ class PipelineEngine:
             f"2. A PASS or REJECT decision\n"
             f"3. Specific reasoning\n\n"
             f"If REJECT, explain exactly what needs to be improved.\n\n"
-            f"--- Producer Output ---\n{producer_result}\n"
         )
+        # Stage 4 (Methodology Design) is graded against a CCF-A quality
+        # checklist. Load the runbook first so the critic applies the same
+        # bar an ICML/NeurIPS reviewer would.
+        if stage["id"] == 4:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("methodology-quality-critic") and follow that '
+                "runbook to grade the methodology against CCF-A criteria "
+                "(formalism, algorithmic detail, statistical rigor, "
+                "reproducibility, threats-to-validity depth, citation of the "
+                "debate transcript). Reject confidently when any required "
+                "section is shallow or missing.\n\n"
+            )
+        elif stage["id"] == 5:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("experiment-quality-critic") and follow that '
+                "runbook to grade the experiment plan and coordination "
+                "assignments against CCF-A criteria (operational procedure, "
+                "sample-size/power math, pre-registration spec, failure-mode "
+                "mitigations, reproducibility, debate citation, and a fully "
+                "populated assignments table). Reject confidently when any "
+                "required section is shallow or missing.\n\n"
+            )
+        desc += f"--- Producer Output ---\n{producer_result}\n"
 
         self.state["phase"] = "critic"
         self._save()
