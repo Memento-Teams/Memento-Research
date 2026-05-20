@@ -204,6 +204,19 @@ class PipelineEngine:
         self.state["active_employee_id"] = employee_id
         self._save()
 
+        # Start each pipeline stage with a FRESH Claude conversation. The
+        # daemon otherwise resumes one session per (employee, project) and
+        # accumulates history across every stage it touches — the critic
+        # reviews all 9 stages, so its resumed history blows past the model
+        # context window (observed: 623K tokens > 262K limit, Stage 6 critic
+        # failed → empty deliverable). Pipeline tasks pass full context in
+        # the prompt, so resumed history is pure overhead.
+        try:
+            from onemancompany.core.claude_session import reset_session
+            reset_session(employee_id, self.project_id)
+        except Exception as _e:  # best-effort; never block dispatch
+            logger.debug("[PIPELINE] reset_session skipped for {}: {}", employee_id, _e)
+
         employee_manager.schedule_node(employee_id, node.id, tree_path)
         employee_manager._schedule_next(employee_id)
 
