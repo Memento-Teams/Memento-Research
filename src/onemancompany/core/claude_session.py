@@ -152,6 +152,31 @@ def _clear_running_pid(employee_id: str, project_id: str) -> None:
         _save_sessions(employee_id, sessions)
 
 
+def reset_session(employee_id: str, project_id: str) -> None:
+    """Drop the cached session + live daemon for (employee, project) so the
+    NEXT task starts a fresh Claude conversation with no resumed history.
+
+    The persistent-daemon design reuses one CLI process per (employee,
+    project) and resumes its session via ``--resume``, so conversation
+    history accumulates across tasks. For an employee that runs many tasks
+    in one project (notably the pipeline critic, which reviews every stage),
+    that history grows without bound and eventually exceeds the model's
+    context window. Pipeline-managed tasks pass their full context
+    explicitly in the prompt, so they never need resumed history — calling
+    this before dispatch keeps each stage's conversation bounded.
+
+    Sync + best-effort: removes the daemon from the registry (a later
+    get_daemon will spawn a fresh process) and clears the stored session_id.
+    A still-running old daemon process is left to exit on its own.
+    """
+    key = f"{employee_id}:{project_id}"
+    _daemons.pop(key, None)
+    sessions = _load_sessions(employee_id)
+    if project_id in sessions:
+        del sessions[project_id]
+        _save_sessions(employee_id, sessions)
+
+
 # ---------------------------------------------------------------------------
 # ClaudeDaemon — persistent Claude CLI process per employee
 # ---------------------------------------------------------------------------
