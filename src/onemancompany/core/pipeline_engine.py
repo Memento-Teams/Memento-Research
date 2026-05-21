@@ -255,13 +255,25 @@ class PipelineEngine:
         )
 
     def _build_context(self) -> str:
-        """Build cumulative context from prior context + all previous stage results."""
+        """Build cumulative context from prior context + all previous stage results.
+
+        Stage result keys can be either plain stage numbers ("4", "5") or
+        sub-phase keys for Stage 6 ("6_impl", "6_exec"). Sort by the
+        numeric prefix and resolve the stage definition off that prefix
+        so sub-phase keys don't crash ``int()``.
+        """
         parts = [f"Research topic: {self.topic}\n"]
         prior = self.state.get("prior_context", "")
         if prior:
             parts.append(f"--- Prior Context (uploaded files) ---\n{prior}\n")
-        for sid in sorted(self.state.get("stage_results", {}).keys(), key=int):
-            stage_def = self._stage_def(int(sid))
+
+        def _base_sid(key: str) -> int:
+            # "6" → 6; "6_impl" → 6; "6_exec" → 6
+            return int(str(key).split("_", 1)[0])
+
+        for sid in sorted(self.state.get("stage_results", {}).keys(),
+                          key=lambda k: (_base_sid(k), str(k))):
+            stage_def = self._stage_def(_base_sid(sid))
             result = self.state["stage_results"][sid]
             parts.append(f"--- Stage {sid}: {stage_def.get('name', '')} ---\n{result}\n")
         return "\n".join(parts)
@@ -1073,8 +1085,11 @@ class PipelineEngine:
         # belong to the abandoned branch and would mislead the producer's
         # context-building.
         sr = self.state.get("stage_results", {})
+        # Keys can be plain stage numbers ("4", "5") or Stage 6 sub-phase
+        # keys ("6_impl", "6_exec"). Use the numeric prefix for the cutoff.
         self.state["stage_results"] = {
-            sid: result for sid, result in sr.items() if int(sid) < stage
+            sid: result for sid, result in sr.items()
+            if int(str(sid).split("_", 1)[0]) < stage
         }
         # Queue the user's instructions; _dispatch_producer consumes them
         # via _consume_pending_feedback and prepends them to the prompt.
