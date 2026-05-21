@@ -22,6 +22,15 @@ function _setStatus(text) {
   if (el) el.textContent = text;
 }
 
+// Reveal the logout button only when the optional login gate is enabled
+// (/auth/status exists only then; otherwise this 404s and the button stays hidden).
+fetch('/auth/status').then(r => r.ok ? r.json() : null).then(s => {
+  if (s && s.enabled) {
+    const b = document.getElementById('logoutBtn');
+    if (b) b.style.display = '';
+  }
+}).catch(() => {});
+
 async function init() {
   client = new OmcClient(OMC_URL);
   adapter = new EventAdapter();

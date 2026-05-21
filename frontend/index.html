@@ -477,6 +477,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
       <div class="brand">
         <div class="brand-icon"><svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
         <span class="brand-name">AutoResearch</span>
+        <button id="logoutBtn" title="退出登录" style="display:none;margin-left:auto;background:none;border:1px solid var(--border);color:var(--text3);border-radius:8px;padding:4px 10px;font-size:.72rem;cursor:pointer" onclick="if(confirm('确定退出登录？'))location.href='/auth/logout'">退出</button>
       </div>
       <div class="conn-status" id="connStatus"><span class="conn-dot"></span><span class="conn-label">Offline</span></div>
     </div>
