@@ -368,6 +368,78 @@ def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_confidence("no score") is None
 
 
+def test_parse_critic_pass_ignores_rubric_mentions_of_reject():
+    """Regression: critic verdicts often include rubric vocabulary like
+    "Auto-REJECT Trigger Check" or "**Decision: PASS** ... three
+    auto-REJECT triggers" even when the actual verdict is PASS. The
+    parser must look at the explicit Decision line first, not just
+    substring-match on the word REJECT.
+
+    This bug caused Stage 4 to silently retry 3 times and Stage 6a
+    to falsely REJECT a verdict the critic had clearly stated as
+    PASS — wasting ~10 min and ~10K tokens per run.
+    """
+    pass_with_reject_in_rubric = """**Gate Review Complete — Stage 6a**
+
+**Decision: PASS**
+**Confidence: 0.92**
+
+### Auto-REJECT Trigger Check
+- (a) Mock data: NOT TRIGGERED
+- (b) New IVs/DVs: NOT TRIGGERED
+- (c) Non-English: NOT TRIGGERED
+
+All 10 dimensions passed. The three auto-REJECT triggers did not fire.
+"""
+    assert pe.PipelineEngine._parse_critic_pass(pass_with_reject_in_rubric) is True, (
+        "Critic explicitly said 'Decision: PASS' but parser was tricked by "
+        "rubric mentions of 'auto-REJECT'."
+    )
+
+
+def test_parse_critic_pass_finds_explicit_reject_decision():
+    """A real REJECT decision must still be detected, even when the
+    word PASS appears elsewhere (e.g. listing dimensions that did
+    pass within an overall-REJECT verdict)."""
+    reject_with_pass_in_rubric = """**Gate Review Complete — Stage 5**
+
+**Decision: REJECT**
+**Confidence: 0.83**
+
+Per-dimension scoring:
+  D1 Hypothesis: PASS
+  D2 Variables: PASS
+  D3 Procedure: FAIL — power analysis missing
+  D4 Metrics: PASS
+"""
+    assert pe.PipelineEngine._parse_critic_pass(reject_with_pass_in_rubric) is False, (
+        "Critic explicitly said 'Decision: REJECT' but parser took the "
+        "first PASS substring from the dimension table."
+    )
+
+
+def test_parse_critic_pass_handles_markdown_variants():
+    """The Decision line shows up in many markdown flavours — bare,
+    bold (**), italic (*), backtick — the regex should accept all."""
+    for prefix, suffix in [("", ""), ("**", "**"), ("*", "*"), ("_", "_"), ("`", "`")]:
+        text = f"Hello\n{prefix}Decision{suffix}: PASS\nmore text\n"
+        assert pe.PipelineEngine._parse_critic_pass(text) is True, f"failed for {prefix!r}"
+        text_r = f"Hello\n{prefix}Decision{suffix}: REJECT\nmore text\n"
+        assert pe.PipelineEngine._parse_critic_pass(text_r) is False, f"failed for {prefix!r}"
+
+
+def test_parse_critic_pass_falls_back_when_no_decision_line():
+    """When there's no explicit Decision: line (older critic prompt
+    or freeform response), fall back to substring heuristic with
+    PASS taking precedence over REJECT."""
+    no_decision_pass = "looks good, PASS"
+    no_decision_reject = "this needs work, REJECT"
+    no_decision_ambiguous = "neutral remark with no verdict words"
+    assert pe.PipelineEngine._parse_critic_pass(no_decision_pass) is True
+    assert pe.PipelineEngine._parse_critic_pass(no_decision_reject) is False
+    assert pe.PipelineEngine._parse_critic_pass(no_decision_ambiguous) is True  # ambiguous → default pass
+
+
 def test_parse_confidence_handles_unparseable_match(monkeypatch):
     class BadMatch:
         def group(self, index):

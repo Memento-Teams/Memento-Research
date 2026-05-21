@@ -1137,12 +1137,42 @@ class PipelineEngine:
 
     @staticmethod
     def _parse_critic_pass(result: str) -> bool:
+        """Determine whether the critic's decision is PASS.
+
+        The critic's text typically includes references to "auto-REJECT"
+        rules in its rubric explanation (e.g. "Auto-REJECT Trigger
+        Check"), so a naive `"REJECT" in text` substring scan fires
+        false positives even when the actual decision is PASS. This
+        used to silently waste 3 retries × ~50s each on every Stage 4
+        and Stage 6 run.
+
+        Strategy: look for an explicit ``Decision: PASS|REJECT|FAIL``
+        line first (with optional markdown bold/italic markers and
+        case-insensitive matching). Only if no explicit decision line
+        is found do we fall back to the legacy substring heuristic.
+        """
+        import re
+        # Match: optional **/*/_ markup around "Decision", then : or :,
+        # then optional markup, then PASS / REJECT / FAIL. First match wins.
+        decision_match = re.search(
+            r'(?:\*\*|\*|_|`)*\s*Decision\s*(?:\*\*|\*|_|`)*\s*[:：]\s*'
+            r'(?:\*\*|\*|_|`)*\s*(PASS|REJECT|FAIL)\s*(?:\*\*|\*|_|`)*',
+            result,
+            re.IGNORECASE,
+        )
+        if decision_match:
+            return decision_match.group(1).upper() == "PASS"
+
+        # Fallback for critics that omit a Decision: line. Prefer PASS
+        # when both keywords appear, since "REJECT" usually surfaces as
+        # rubric vocabulary (e.g. "auto-REJECT trigger") rather than a
+        # verdict.
         upper = result.upper()
-        if "REJECT" in upper:
-            return False
         if "PASS" in upper:
             return True
-        # Default to pass if ambiguous
+        if "REJECT" in upper or "FAIL" in upper:
+            return False
+        # Default to pass if neither keyword present (ambiguous).
         return True
 
     @staticmethod
