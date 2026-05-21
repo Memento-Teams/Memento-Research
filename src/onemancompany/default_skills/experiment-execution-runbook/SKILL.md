@@ -43,25 +43,37 @@ For each `experiment_runner` row:
    check. If it errors with missing env vars, STOP — the report must say
    "blocked: INFRA_SERVER_URL / INFRA_SESSION_KEY not set". Do not invent
    credentials.
-2. **(Optional) survey remote state.** `fast_query_working_dir.sh` to see
-   what's already present; `fast_query_server_info.sh` for conda/HF cache
-   roots. Skip when the row's Task already names a concrete path.
-3. **(Optional) push code.** If the Task references a script that lives
-   only locally (e.g. `python my_train.py`), use `fast_push_code.sh` to
-   upload it. Prefer absolute paths.
-4. **Submit.** Use `fast_submit.sh`:
-   - `--yaml <path>` when the Task names a YAML in
-     `default_skills/experiment-infra/assets/` or describes one
-   - `-c "<command>"` for one-off shell commands
+2. **Read `stage6_implementation_receipt.md` first.** Stage 6a Code
+   Implementer should have pushed code under
+   `omc/<project_id>/<iter_id>/` and written this receipt listing the
+   exact files + runnable entrypoint. If the receipt is missing,
+   Stage 6a didn't finish — STOP with "blocked: Stage 6a impl not
+   complete, no implementation receipt on disk" and do not improvise.
+3. **Locate the per-project remote subdir.** Extract `<project_id>`
+   from your workspace path (`.../projects/<project_id>/iterations/<iter>`).
+   Your remote code lives at `omc/<project_id>/<iter>/`, NOT at the flat
+   working dir root. Do NOT use any pre-existing code at the flat root
+   (e.g. someone else's `stage6_experiment/`) — that is not yours and
+   would mix data across projects.
+4. **(Optional) survey remote state.** `fast_query_working_dir.sh` to
+   confirm Stage 6a's files are in `omc/<project_id>/<iter>/`;
+   `fast_query_server_info.sh` for conda/HF cache roots.
+6. **Submit.** Use `fast_submit.sh` with a command that `cd`s into the
+   per-project subdir first:
+   - `-c "cd omc/<project_id>/<iter>/ && python experiment.py <args>"`
+     for the typical case where Stage 6a's `experiment.py` is the
+     entrypoint listed in the receipt.
+   - `--yaml <path>` only when the Task explicitly names a YAML in
+     `default_skills/experiment-infra/assets/`.
    - `--config` defaults to `base.conf.json` (run_local:true). Use
      `skypilot_container.conf.json` only when the Task explicitly asks
      for SkyPilot.
-5. **Record the run_id immediately** — every subsequent call needs it.
-6. **Poll status** with `fast_query_exp_status.sh <RUN_ID> --summary` at
+7. **Record the run_id immediately** — every subsequent call needs it.
+8. **Poll status** with `fast_query_exp_status.sh <RUN_ID> --summary` at
    the cadence the task suggests (1–5 min for short runs, longer for
    training jobs). Stop polling when status is terminal:
    `succeeded` / `failed` / `rejected`.
-7. **Capture evidence.** When terminal, drop `--summary` to grab the
+9. **Capture evidence.** When terminal, drop `--summary` to grab the
    full `log_tail` (capped at ~32KB). Pull the final `metrics`,
    `actual_cost`, `started_at`, `finished_at`.
 

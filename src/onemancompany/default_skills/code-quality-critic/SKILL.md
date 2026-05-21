@@ -70,12 +70,21 @@ table) and Stage 5 §3 (factorial structure):
 For every file in the receipt's file map:
 
 - ✅ The receipt's "Push status" column shows ✅ confirmed.
-- ✅ Optional but recommended: re-run `fast_query_working_dir.sh`
-  and confirm the file appears at the claimed remote path.
+- ✅ Re-run `fast_query_working_dir.sh --max-depth 4` yourself and
+  confirm the file appears at the claimed remote path. **Do not trust
+  the receipt; verify against the actual remote tree.**
+- ✅ The remote path uses the **per-project prefix**
+  `omc/<project_id>/<iter_id>/` (extract project_id from the
+  workspace path in your dispatch task). Files pushed to the flat
+  working dir collide with other researchers' code → FAIL.
 - ❌ Any file marked as ✅ pushed but absent from a fresh
   `fast_query_working_dir.sh` listing → FAIL.
 - ❌ Receipt claims push without invoking `fast_push_code.sh` in
   the trace → FAIL.
+- ❌ Receipt missing entirely (no `stage6_implementation_receipt.md`
+  in the project workspace) → FAIL. The implementer must finish the
+  receipt step; "wrote code locally but didn't ship" is the same as
+  "did nothing" from the runner's perspective.
 
 ### D5 — Syntax & Runnability
 For each `.py` file referenced in the receipt:

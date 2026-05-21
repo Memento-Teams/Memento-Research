@@ -72,7 +72,11 @@ For each implementation task:
    - PAL/sandbox utility: `sandbox.py`
 
 2. **Implement the code locally** using `write()` to
-   `/tmp/stage6_impl/<filename>`.
+   `/tmp/stage6_impl/<project_id>/<filename>` where `<project_id>` is
+   the project id from your task workspace path (extract it from
+   `[Project workspace: .../projects/<project_id>/iterations/...]`
+   in your dispatch description). Per-project namespacing prevents
+   files from one project clobbering another's local staging dir.
 
 3. **Strict spec compliance rules** —
    - Real benchmarks: use `datasets.load_dataset(...)` for HuggingFace
@@ -96,37 +100,73 @@ For each implementation task:
      `=== RESULT_JSON: {...} ===` block summarising aggregate
      metrics, so the runner's `log_tail` capture sees it.
 
-## Phase 4 — Push to the remote working dir
+## Phase 4 — Push to the remote working dir (MANDATORY)
 
-Load the experiment-infra credentials:
+**Writing code locally is not enough.** If you stop here, the
+Stage 6b runner has no code to execute, and the Stage 6a critic
+will REJECT for failed push verification (D4). Every file in
+`/tmp/stage6_impl/<project_id>/` MUST end up on the remote.
+
+### Step 4.1 — Choose the **per-project remote subdir**
+
+Each project gets its own remote subdir to prevent collisions with:
+- Previous Stage 6a runs (from this or other projects)
+- Other researchers' code in the shared working dir (e.g. Alice's
+  `stage6_experiment/` from an earlier study)
+
+Convention: push to `omc/<project_id>/iter_<iteration_id>/` relative
+to the assigned remote working dir. Example: if your project_id is
+`2628bae4a2b6` and iteration is `iter_001`, the remote target prefix
+is `omc/2628bae4a2b6/iter_001/`.
+
+Extract `<project_id>` and `<iteration_id>` from the
+`[Project workspace: ... /projects/<project_id>/iterations/<iter_id>]`
+line in your dispatch task description.
+
+### Step 4.2 — Load the experiment-infra credentials
 
 ```bash
-load_skill("experiment-infra")    # gives you fast_*.sh and the credentials path
+load_skill("experiment-infra")    # gives you fast_*.sh and credentials path
 ```
 
-Then push each file:
+### Step 4.3 — Push every file with the per-project prefix
 
 ```bash
-# $SKILL_DIR is your skill's directory; resolve it from load_skill response
-export INFRA_SERVER_URL="$(python3 -c 'import json; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/experiment_infra_credentials.json")"
-export INFRA_SESSION_KEY="$(python3 -c 'import json; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/experiment_infra_credentials.json")"
+PROJECT_ID="<extracted_id>"          # from dispatch task description
+ITER_ID="<extracted_iter>"           # e.g. iter_001
+REMOTE_PREFIX="omc/${PROJECT_ID}/${ITER_ID}"
 
-bash "$SKILL_DIR/scripts/fast_push_code.sh" /tmp/stage6_impl/experiment.py experiment.py
-bash "$SKILL_DIR/scripts/fast_push_code.sh" /tmp/stage6_impl/benchmarks.py benchmarks.py
+export INFRA_SERVER_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_url"])' "$SKILL_DIR/experiment_infra_credentials.json")"
+export INFRA_SESSION_KEY="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_key"])' "$SKILL_DIR/experiment_infra_credentials.json")"
+
+# Every file goes under the per-project prefix.
+bash "$SKILL_DIR/scripts/fast_push_code.sh" \
+    "/tmp/stage6_impl/${PROJECT_ID}/experiment.py" \
+    "${REMOTE_PREFIX}/experiment.py"
+
+bash "$SKILL_DIR/scripts/fast_push_code.sh" \
+    "/tmp/stage6_impl/${PROJECT_ID}/benchmarks.py" \
+    "${REMOTE_PREFIX}/benchmarks.py"
 # ...one per file
 ```
 
-The remote target paths should be relative to the assigned working
-dir (e.g. just `experiment.py`, not an absolute path).
-
-**Verify the push succeeded** by listing the remote tree:
+### Step 4.4 — Verify push succeeded
 
 ```bash
-bash "$SKILL_DIR/scripts/fast_query_working_dir.sh" --max-depth 2
+bash "$SKILL_DIR/scripts/fast_query_working_dir.sh" --max-depth 4 \
+    | grep -A 20 "${PROJECT_ID}"
 ```
 
-Confirm every file you pushed appears in the tree. **A failed push
-must be reported, not silently swallowed.**
+Every file you pushed in Step 4.3 must appear under
+`${REMOTE_PREFIX}`. **A pushed-but-not-verified file is the same as
+a not-pushed file. A failed push must be reported, not silently
+swallowed.**
+
+If a push fails (returncode != 0, or the file does not appear in
+fast_query_working_dir), DO NOT proceed to submit_result. Document
+the failure in the receipt's "Push status" column as `❌ <error>`
+and STOP — the critic will mark D4 as FAIL and trigger retry. Better
+to fail loud here than to ship a missing file.
 
 ## Phase 5 — Write the implementation receipt
 
@@ -161,8 +201,9 @@ file + function implements it. Anything in the contract not in a
 row here is a spec gap.
 
 ## 4. Runnable entrypoint
-The command the runner (Stage 6b) should invoke:
-  python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
+The command the runner (Stage 6b) should invoke, with the
+per-project remote subdir prefix:
+  cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
 
 ## 5. Limitations / explicit non-coverage
 Anything from Stage 5 that you could NOT implement (e.g. PAL
@@ -178,6 +219,16 @@ submit_result(summary="Stage 6a Implementation: <N> files pushed to remote (X li
 
 ## What NOT to do
 
+- **Don't stop after writing code locally.** Writing to
+  `/tmp/stage6_impl/` is step ONE. If you don't push to the remote
+  AND don't write the receipt, the runner has nothing to execute and
+  the critic will REJECT for missing push + missing receipt. This
+  failure mode has happened before — be the implementer who finishes
+  the job.
+- **Don't push to the flat working dir.** The remote working dir is
+  shared across projects and across other researchers. Always push
+  under the `omc/<project_id>/<iter_id>/` prefix so your files don't
+  clobber (or get clobbered by) anyone else's leftover code.
 - **Don't embed mock / synthetic data when Stage 5 specified real
   benchmarks.** This is the worst possible failure mode — it makes
   the entire experiment meaningless. The Stage 6a critic
