@@ -20,7 +20,7 @@ EXP_CRITIC = SKILLS_ROOT / "experiment-quality-critic" / "SKILL.md"
 
 class TestExperimentInfraLayout:
     def test_skill_folder_exists(self):
-        assert AUTORESEARCH.exists(), "experiment-infra skill folder must ship under default_skills/"
+        assert EXPERIMENT_INFRA.exists(), "experiment-infra skill folder must ship under default_skills/"
 
     def test_skill_md_frontmatter(self):
         text = (EXPERIMENT_INFRA / "SKILL.md").read_text(encoding="utf-8")
@@ -67,7 +67,7 @@ class TestExperimentInfraLayout:
         assert (EXPERIMENT_INFRA / "receipt" / "qwen_inference.md").exists()
 
     def test_no_pycache_or_dsstore_leaked(self):
-        for root, dirs, files in os.walk(AUTORESEARCH):
+        for root, dirs, files in os.walk(EXPERIMENT_INFRA):
             assert "__pycache__" not in dirs, f"__pycache__ leaked under {root}"
             assert ".DS_Store" not in files, f".DS_Store leaked under {root}"
 
@@ -125,7 +125,7 @@ class TestExperimentInfraCredentialSafety:
 
 
 class TestStage5WiringToExperimentInfra:
-    """Stage 5 SKILL.md files must mention the runner/experiment-infra path
+    """Stage 5 SKILL.md files must mention the runner / experiment-infra path
     so the producer + critic know remote-execution tasks need a runner."""
 
     def test_convener_mentions_experiment_runner_in_team_assembly(self):
