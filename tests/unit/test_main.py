@@ -161,7 +161,7 @@ async def _run_watcher_and_capture(request_reload_return=None, request_reload_si
     from watchdog.observers import Observer
 
     if config_path is None:
-        config_path = Path("/fake/config.yaml")
+        config_path = Path("/fake/.env")
 
     captured_handlers = []
     reload_kwargs = {}
@@ -278,7 +278,7 @@ class TestReloadHandlerInner:
 
         captured = capsys.readouterr()
         assert "Reloaded from disk" in captured.out
-        assert "config.yaml reloaded" in captured.out
+        assert ".env reloaded" in captured.out
         assert reload_handler._pending is None
 
     @pytest.mark.asyncio
@@ -311,8 +311,8 @@ class TestConfigReloadHandler:
 
     @pytest.mark.asyncio
     async def test_config_handler_triggers_on_config_change(self):
-        """Config handler triggers reload when config.yaml changes and hot_reload is on."""
-        config_path = Path("/fake/config.yaml")
+        """Config handler triggers reload when .env changes and hot_reload is on."""
+        config_path = Path("/fake/.env")
         captured_handlers = await _run_watcher_and_capture(
             hot_reload_enabled=True, config_path=config_path
         )
@@ -336,7 +336,7 @@ class TestConfigReloadHandler:
     @pytest.mark.asyncio
     async def test_config_handler_noop_when_hot_reload_off(self):
         """Config handler does nothing when hot_reload is disabled."""
-        config_path = Path("/fake/config.yaml")
+        config_path = Path("/fake/.env")
 
         from watchdog.observers import Observer
 
@@ -458,7 +458,7 @@ class TestLifespan:
             mock_start_sandbox.assert_called_once()
             mock_start_tm.assert_awaited_once()
             mock_start_all.assert_awaited_once()
-            assert mock_register_founding.call_count == 4  # HR, COO, EA, CSO
+            assert mock_register_founding.call_count == 2  # HR, Research Director
 
         # Verify shutdown was called
         mock_stop_all.assert_awaited_once()
@@ -527,8 +527,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # 4 founding via register_founding_employee, 1 non-founding via register_agent
-        assert mock_register_founding.call_count == 4
+        # 2 founding via register_founding_employee, 1 non-founding via register_agent
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 1
 
     @pytest.mark.asyncio
@@ -647,8 +647,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only the 4 founding registrations (HR, COO, EA, CSO), not the extra one
-        assert mock_register_founding.call_count == 4
+        # Only the 2 founding registrations (HR, Research Director), not the extra one
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -705,8 +705,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only 4 founding, not 5
-        assert mock_register_founding.call_count == 4
+        # Only 2 founding, not 3
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -763,8 +763,8 @@ class TestLifespan:
         async with main_mod.lifespan(mock_app):
             pass
 
-        # Only 4 founding
-        assert mock_register_founding.call_count == 4
+        # Only 2 founding
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 0
 
     @pytest.mark.asyncio
@@ -824,8 +824,8 @@ class TestLifespan:
             pass
 
         # _cfg is None for non-founding, goes to register_agent
-        # 4 founding via register_founding_employee, 1 non-founding via register_agent
-        assert mock_register_founding.call_count == 4
+        # 2 founding via register_founding_employee, 1 non-founding via register_agent
+        assert mock_register_founding.call_count == 2
         assert mock_register_agent.call_count == 1
         mock_register_self_hosted.assert_not_called()
 
