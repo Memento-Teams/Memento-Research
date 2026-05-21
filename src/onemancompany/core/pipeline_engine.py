@@ -1167,10 +1167,11 @@ class PipelineEngine:
         is found do we fall back to the legacy substring heuristic.
         """
         import re
-        # Match: optional **/*/_ markup around "Decision", then : or :,
-        # then optional markup, then PASS / REJECT / FAIL. First match wins.
+        # Match: optional **/*/_ markup around the verdict-label
+        # (Decision / Verdict / Result), then : or :, then optional
+        # markup, then PASS / REJECT / FAIL. First match wins.
         decision_match = re.search(
-            r'(?:\*\*|\*|_|`)*\s*Decision\s*(?:\*\*|\*|_|`)*\s*[:：]\s*'
+            r'(?:\*\*|\*|_|`)*\s*(?:Decision|Verdict|Result)\s*(?:\*\*|\*|_|`)*\s*[:：]\s*'
             r'(?:\*\*|\*|_|`)*\s*(PASS|REJECT|FAIL)\s*(?:\*\*|\*|_|`)*',
             result,
             re.IGNORECASE,
@@ -1178,14 +1179,21 @@ class PipelineEngine:
         if decision_match:
             return decision_match.group(1).upper() == "PASS"
 
-        # Fallback for critics that omit a Decision: line. Prefer PASS
-        # when both keywords appear, since "REJECT" usually surfaces as
-        # rubric vocabulary (e.g. "auto-REJECT trigger") rather than a
-        # verdict.
+        # Fallback for critics that omit an explicit verdict line.
+        # Heuristic: count occurrences of unambiguous verdict-context
+        # phrases ("PASS overall", "overall PASS", "result: PASS" etc.).
+        # If still ambiguous and BOTH keywords appear, prefer REJECT to
+        # be safe — a real REJECT is too damaging to silently coerce
+        # into PASS, while a false REJECT just costs one retry.
         upper = result.upper()
-        if "PASS" in upper:
+        has_reject = "REJECT" in upper or "FAIL" in upper
+        has_pass = "PASS" in upper
+        if has_reject and has_pass:
+            # Ambiguous — be safe and reject
+            return False
+        if has_pass:
             return True
-        if "REJECT" in upper or "FAIL" in upper:
+        if has_reject:
             return False
         # Default to pass if neither keyword present (ambiguous).
         return True

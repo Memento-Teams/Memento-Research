@@ -428,6 +428,45 @@ def test_parse_critic_pass_handles_markdown_variants():
         assert pe.PipelineEngine._parse_critic_pass(text_r) is False, f"failed for {prefix!r}"
 
 
+def test_parse_critic_pass_accepts_verdict_and_result_labels():
+    """Real critics (e.g. Stage 6b code-quality-critic) write
+    'Verdict: REJECT' instead of 'Decision: REJECT'. Also 'Result:'.
+    Parser must recognise all three labels."""
+    for label in ["Decision", "Verdict", "Result"]:
+        text_pass = f"...\n**{label}:** **PASS**\nConfidence: 0.92\n"
+        text_reject = f"...\n**{label}:** **REJECT**\nConfidence: 1.00\nThis was rejected because mock data, fabrication, etc.\n"
+        assert pe.PipelineEngine._parse_critic_pass(text_pass) is True, f"{label} PASS not detected"
+        assert pe.PipelineEngine._parse_critic_pass(text_reject) is False, f"{label} REJECT not detected"
+
+
+def test_parse_critic_pass_real_world_exec_critic_reject():
+    """Regression: actual Stage 6b critic output that was misclassified
+    as PASS. The critic writes 'Verdict: REJECT' AND also mentions
+    'PASS' in describing per-task statuses ('PASS overall' for Stage 6a
+    code tasks, 'N/A — code task') — neither were a verdict for
+    Stage 6b but the substring fallback was returning PASS."""
+    real_reject = """**Gate Review Complete — Stage 6b (Auto Experiment Execution)**
+
+**Verdict:** **REJECT**
+**Confidence:** 1.00
+
+| Task | Status in Report | Verdict |
+|------|------------------|---------|
+| T1 | Implemented (Stage 6a) | PASS — code task |
+| T2 | Implemented (Stage 6a) | PASS — code task |
+| T7 — Pilot | NO RUN_ID | REJECT |
+| T8 — Full experiment | NO RUN_ID | REJECT |
+
+The experiment_runner is available and has the experiment_runner skill.
+Fabricated results when a runner was available are an auto-REJECT.
+"""
+    assert pe.PipelineEngine._parse_critic_pass(real_reject) is False, (
+        "real Stage 6b REJECT critic was misclassified as PASS — engine "
+        "wrongly let an empty exec_producer ('Executed: bash') advance "
+        "to the gate."
+    )
+
+
 def test_parse_critic_pass_falls_back_when_no_decision_line():
     """When there's no explicit Decision: line (older critic prompt
     or freeform response), fall back to substring heuristic with
