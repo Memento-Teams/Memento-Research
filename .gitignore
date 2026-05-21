@@ -276,6 +276,13 @@ skills/
 !src/onemancompany/default_skills/
 !src/onemancompany/default_skills/**
 
+# Re-ignore real credentials inside default_skills (the negation above
+# would otherwise re-include them). The .example.json files stay tracked;
+# only the real credentials files are gitignored.
+src/onemancompany/default_skills/experiment-infra/experiment_infra_credentials.json
+src/onemancompany/default_skills/*/credentials.json
+src/onemancompany/default_skills/*/*_credentials.json
+
 # Internal dev docs (local only, not in release)
 docs/superpowers/
 docs/role-prompt-*.md

@@ -80,11 +80,15 @@ _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
     "methodology_designer": ["methodology-debate-convener"],
     "experiment_designer": ["experiment-debate-convener"],
     "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
+    # The code_implementer needs experiment-infra so it can call
+    # fast_push_code.sh to ship the implementation to the remote working dir.
+    "code_implementer": ["code-implementation-runbook", "experiment-infra"],
     "result_analyst": ["result-analysis-runbook"],
     "adversarial_review": [
         "methodology-quality-critic",
         "experiment-quality-critic",
         "result-quality-critic",
+        "code-quality-critic",
     ],
 }
 

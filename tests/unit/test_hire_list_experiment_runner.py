@@ -52,3 +52,46 @@ def test_experiment_runner_entry_has_required_cv_fields():
     entry = next(e for e in entries if e.get("talent_id") == "experiment-runner")
     assert entry.get("name"), "name is required by hire-from-cv"
     assert entry.get("role"), "role is required by hire-from-cv"
+
+
+# ---------------------------------------------------------------------------
+# experiment-code-writer (Stage 6a / code_implementer)
+# ---------------------------------------------------------------------------
+
+
+def test_experiment_code_writer_in_hire_list():
+    """Without this entry the code-writer won't auto-hire on `start.sh`, and
+    Stage 6 will fail at the impl_producer dispatch with no code_implementer
+    on roster (Stage 6a has no fallback)."""
+    entries = _load()
+    matches = [e for e in entries if e.get("talent_id") == "experiment-code-writer"]
+    assert matches, "experiment-code-writer must be in company/hire_list.json"
+    assert len(matches) == 1, "experiment-code-writer must appear exactly once"
+
+
+def test_experiment_code_writer_entry_carries_code_implementer_skill():
+    """The skill string is the trigger — onboarding._SKILL_REQUIRED_RUNBOOKS
+    keys off `code_implementer` to inject the code-implementation-runbook +
+    experiment-infra. If this string drifts, the runbooks won't auto-inject
+    and Stage 6a will run without its tools."""
+    entries = _load()
+    entry = next(e for e in entries if e.get("talent_id") == "experiment-code-writer")
+    assert "code_implementer" in entry.get("skills", [])
+
+
+def test_experiment_code_writer_entry_uses_local_hosting():
+    """The talent lives in the repo (talents/experiment-code-writer/), not on
+    the cloud Talent Market. Hosting must be `company` so hire-from-cv
+    resolves it against the local talent dir."""
+    entries = _load()
+    entry = next(e for e in entries if e.get("talent_id") == "experiment-code-writer")
+    assert entry.get("hosting") == "company"
+
+
+def test_experiment_code_writer_entry_has_required_cv_fields():
+    """hire_from_cv requires `name` and `role`. Without them the auto-hire
+    on startup fails with `CV missing required field`."""
+    entries = _load()
+    entry = next(e for e in entries if e.get("talent_id") == "experiment-code-writer")
+    assert entry.get("name"), "name is required by hire-from-cv"
+    assert entry.get("role"), "role is required by hire-from-cv"

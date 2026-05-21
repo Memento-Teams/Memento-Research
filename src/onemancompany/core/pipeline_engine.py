@@ -103,6 +103,26 @@ def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
     return _find_employee_by_skill(primary_skill)
 
 
+def _find_employee_for_stage6_subphase(subphase: str) -> str | None:
+    """Stage 6 has two sub-phases with different skill requirements.
+
+    - ``impl_producer``: hand to the ``code_implementer`` who can write
+      runnable Python from the Stage 5 prose plan and push it remote.
+      No fallback — if the roster has no code_implementer, fail loudly
+      so the operator notices the missing hire.
+    - ``exec_producer``: hand to ``experiment_runner`` (preferred — owns
+      the remote-infra scripts) or fall back to ``experimentalist``.
+    """
+    if subphase == "impl_producer":
+        return _find_employee_by_skill("code_implementer")
+    if subphase == "exec_producer":
+        runner = _find_employee_by_skill("experiment_runner")
+        if runner:
+            return runner
+        return _find_employee_by_skill("experimentalist")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # In-memory registry of active pipelines
 # ---------------------------------------------------------------------------
@@ -153,7 +173,14 @@ class PipelineEngine:
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
             "phase": "producer",  # producer | critic | gate | done | failed
+                                   # Stage 6 additionally uses sub-phases:
+                                   # impl_producer | impl_critic | exec_producer | exec_critic
             "retries": 0,
+            # Stage 6 keeps separate retry counters for the implementation
+            # and execution sub-phases so a flaky runner doesn't burn the
+            # impl retries (and vice versa).
+            "impl_retries": 0,
+            "exec_retries": 0,
             "stage_results": {},
             "critic_result": None,
             "active_node_id": None,  # current task node being executed
@@ -277,6 +304,8 @@ class PipelineEngine:
         self.state["stage_assignments"] = stage_assignments or {}
         self.state["phase"] = "producer"
         self.state["retries"] = 0
+        self.state["impl_retries"] = 0
+        self.state["exec_retries"] = 0
         self._save()
         # Auto-init the workspace as a git repo so per-stage commits and
         # later revert-to-here ops have somewhere to land. Idempotent —
@@ -317,14 +346,48 @@ class PipelineEngine:
         return text
 
     def _dispatch_producer(self, feedback: str = ""):
-        """Dispatch the current stage's producer. Uses user assignment if set."""
+        """Dispatch the current stage's producer. Uses user assignment if set.
+
+        Stage 6 is split into two sub-phases dispatched through this same
+        method:
+          - ``impl_producer``: code_implementer writes runnable Python and
+            pushes it to the remote working dir.
+          - ``exec_producer``: experiment_runner (or fallback) executes the
+            code on the remote infra and captures run_id + metrics.
+        Fresh entry into Stage 6 (current phase is the generic ``producer``)
+        always starts with the implementation sub-phase.
+        """
         stage = self._stage_def()
+
+        # Stage 6 sub-phase resolution. The producer is dispatched either
+        # because we just entered Stage 6 (phase=="producer") or because
+        # impl_critic just PASSed and we're now kicking off execution
+        # (phase=="exec_producer", already set by on_task_complete).
+        stage6_subphase: str | None = None
+        if stage["id"] == 6:
+            if self.phase == "exec_producer":
+                stage6_subphase = "exec_producer"
+            else:
+                stage6_subphase = "impl_producer"
+
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage["id"]))
-        employee_id = assigned if assigned else _find_employee_for_stage(stage["id"], stage["skill"])
+        if assigned:
+            employee_id = assigned
+        elif stage6_subphase is not None:
+            employee_id = _find_employee_for_stage6_subphase(stage6_subphase)
+        else:
+            employee_id = _find_employee_for_stage(stage["id"], stage["skill"])
         if not employee_id:
-            logger.error("[PIPELINE] No employee with skill '{}' for stage {}", stage["skill"], stage["id"])
+            missing = (
+                "code_implementer" if stage6_subphase == "impl_producer"
+                else stage["skill"]
+            )
+            logger.error(
+                "[PIPELINE] No employee with skill '{}' for stage {} (sub-phase={})",
+                missing, stage["id"], stage6_subphase,
+            )
             self.state["phase"] = "failed"
             self._save()
             return
@@ -364,20 +427,39 @@ class PipelineEngine:
                 "coordination assignments table for Stage 6 execution. Do not write the "
                 "experiment plan directly without convening the debate first.\n"
             )
-        # Stage 6 (Auto Experiment) dispatches the Stage 5 assignments table
-        # row by row. Remote-execution rows go through the experiment-infra
-        # runbook (real HTTP submit to the lab infra); other rows are
-        # deferred to their named assignees.
-        elif stage["id"] == 6:
+        # Stage 6 (Auto Experiment) is split into two sub-phases. The
+        # implementation sub-phase translates Stage 5's prose plan into
+        # runnable code and pushes it to the remote working dir. The
+        # execution sub-phase then runs the pushed code on the remote
+        # infra. We send a different REQUIRED FIRST STEP block depending
+        # on which sub-phase we're in.
+        elif stage["id"] == 6 and stage6_subphase == "impl_producer":
             desc += (
-                "\n## REQUIRED FIRST STEP\n"
+                "\n## REQUIRED FIRST STEP — Stage 6a (Implementation)\n"
+                'Before doing anything else, call load_skill("code-implementation-runbook") '
+                "and follow it exactly. Your job is translation, not "
+                "redesign: read the Stage 5 experiment plan and produce "
+                "Python code that implements it bit-for-bit, then push the "
+                "code to the remote working dir via experiment-infra's "
+                "fast_push_code.sh. Hard rules: never substitute mock data "
+                "for real benchmarks (e.g. GSM8K means the real dataset, "
+                "not a hardcoded sample list); never introduce IVs or DVs "
+                "not present in Stage 4/5; write all output in English. "
+                "Document any spec ambiguities in your receipt instead of "
+                "improvising.\n"
+            )
+        elif stage["id"] == 6 and stage6_subphase == "exec_producer":
+            desc += (
+                "\n## REQUIRED FIRST STEP — Stage 6b (Execution)\n"
                 'Before doing anything else, call load_skill("experiment-execution-runbook") '
                 "and follow it. The runbook tells you how to read "
                 "stage5_assignments.md and route each row by its `skill` "
                 "column. For rows tagged `experiment_runner`, you also have "
                 'load_skill("experiment-infra") available — that gives you the '
                 "fast_*.sh scripts to submit real runs to the remote infra, "
-                "poll status, and capture log_tail + metrics. Do not "
+                "poll status, and capture log_tail + metrics. Stage 6a has "
+                "already pushed code to the remote working dir, so your job "
+                "is to submit and monitor — not to rewrite the code. Do not "
                 "fabricate or simulate results — if a remote submit is "
                 "required but credentials are missing, report the failure.\n"
             )
@@ -405,7 +487,13 @@ class PipelineEngine:
             f"Then call submit_result() with a summary."
         )
 
-        self.state["phase"] = "producer"
+        # Set the phase. Stage 6 uses sub-phase labels so on_task_complete
+        # can route correctly when the task returns; other stages keep
+        # the generic "producer".
+        if stage6_subphase is not None:
+            self.state["phase"] = stage6_subphase
+        else:
+            self.state["phase"] = "producer"
         self._save()
         self._dispatch_to_employee(employee_id, desc, f"Stage {stage['id']}: {stage['name']}")
         # Resolve employee name for frontend display
@@ -416,8 +504,27 @@ class PipelineEngine:
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
     def _dispatch_critic(self, producer_result: str):
-        """Dispatch the adversarial critic to review the producer's output."""
+        """Dispatch the adversarial critic to review the producer's output.
+
+        For Stage 6 we route to one of two sub-critics depending on which
+        sub-phase just finished:
+          - impl_producer just finished → dispatch impl_critic
+            (code-quality-critic runbook).
+          - exec_producer just finished → dispatch exec_critic
+            (the existing run_id / fabrication check).
+        """
         stage = self._stage_def()
+
+        # Decide Stage 6 sub-critic from the current phase. on_task_complete
+        # calls _dispatch_critic immediately after storing the producer
+        # result, so self.phase still reflects which sub-producer just ran.
+        stage6_subphase: str | None = None
+        if stage["id"] == 6:
+            if self.phase == "impl_producer":
+                stage6_subphase = "impl_critic"
+            elif self.phase == "exec_producer":
+                stage6_subphase = "exec_critic"
+
         critic_id = _find_employee_by_skill(CRITIC_SKILL)
         if not critic_id:
             logger.warning("[PIPELINE] No critic employee found, auto-passing stage {}", stage["id"])
@@ -458,14 +565,33 @@ class PipelineEngine:
                 "populated assignments table). Reject confidently when any "
                 "required section is shallow or missing.\n\n"
             )
-        # Stage 6 critic checks that the Auto Experiment report is grounded
-        # in real run_ids (not fabricated), that every assignments-table row
-        # is accounted for (executed or explicitly deferred), and that any
-        # remote runs report status + cost + a log_tail excerpt.
+        # Stage 6a (Implementation) critic: grade the pushed code against
+        # the Stage 5 prose plan. Three auto-REJECT triggers spelled out
+        # explicitly so the critic doesn't have to discover them.
+        elif stage["id"] == 6 and stage6_subphase == "impl_critic":
+            desc += (
+                "## REQUIRED FIRST STEP — Stage 6a Implementation Review\n"
+                'Before reading the producer output, call '
+                'load_skill("code-quality-critic") and follow that runbook. '
+                "Grade the implementation against the Stage 5 plan: does "
+                "the pushed code match the spec exactly, was it pushed via "
+                "fast_push_code.sh, and is the receipt complete?\n"
+                "Three auto-REJECT triggers (no second chances):\n"
+                "  (a) Mock/hardcoded data used where the spec called for "
+                "a real benchmark (e.g. GSM8K reduced to a hand-typed list "
+                "of questions).\n"
+                "  (b) New IVs or DVs introduced that weren't in Stage 4/5.\n"
+                "  (c) Non-English code, comments, or receipt.\n"
+                "Reject confidently when any of these are present.\n\n"
+            )
+        # Stage 6b (Execution) critic: the original Stage 6 critic — checks
+        # that the report is grounded in real run_ids (not fabricated), that
+        # every assignments-table row is accounted for, and that remote
+        # runs report status + cost + log_tail.
         elif stage["id"] == 6:
             desc += (
-                "## REQUIRED FIRST STEP\n"
-                "Grade the Stage 6 report by asking:\n"
+                "## REQUIRED FIRST STEP — Stage 6b Execution Review\n"
+                "Grade the Stage 6 execution report by asking:\n"
                 "  - Is every row of stage5_assignments.md addressed?\n"
                 "  - For rows tagged `experiment_runner`, is there a real "
                 "run_id, a terminal status, an actual_cost, and a log_tail "
@@ -496,15 +622,143 @@ class PipelineEngine:
             )
         desc += f"--- Producer Output ---\n{producer_result}\n"
 
-        self.state["phase"] = "critic"
+        # For Stage 6, use the sub-critic phase label; otherwise use the
+        # generic "critic" phase that other stages rely on.
+        if stage6_subphase is not None:
+            self.state["phase"] = stage6_subphase
+        else:
+            self.state["phase"] = "critic"
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
-        """Called by vessel when a pipeline-managed task completes."""
+        """Called by vessel when a pipeline-managed task completes.
+
+        Stage 6 has four extra phases — impl_producer, impl_critic,
+        exec_producer, exec_critic — handled separately so the engine can
+        run the implementation/review/execution/review chain under a
+        single stage_id.
+        """
+        stage = self._stage_def()
+
+        # ------------------------------------------------------------------
+        # Stage 6 sub-phase handling
+        # ------------------------------------------------------------------
+        if stage["id"] == 6 and self.phase in (
+            "impl_producer", "impl_critic", "exec_producer", "exec_critic",
+        ):
+            if self.phase == "impl_producer":
+                # Code implementer finished → store the implementation
+                # receipt and hand it to the code-quality critic.
+                self.state.setdefault("stage_results", {})["6_impl"] = result
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage 6a (impl) producer complete — dispatching impl_critic",
+                )
+                self._emit_stage_event("stage_reviewing", 6)
+                self._dispatch_critic(result)
+                return
+
+            if self.phase == "impl_critic":
+                # Code-quality critic finished → parse PASS/REJECT.
+                self.state["critic_result"] = result
+                self._save()
+                is_pass = self._parse_critic_pass(result)
+                confidence = self._parse_confidence(result)
+                self._emit_critic_result(6, result, is_pass, confidence)
+
+                if is_pass:
+                    logger.info(
+                        "[PIPELINE] Stage 6a (impl) PASSED — transitioning to exec_producer "
+                        "(confidence={})", confidence,
+                    )
+                    # Hand off to the execution sub-phase. Reset exec_retries
+                    # so a runner-side retry budget is fresh.
+                    self.state["phase"] = "exec_producer"
+                    self.state["exec_retries"] = 0
+                    self._save()
+                    self._dispatch_producer()
+                else:
+                    impl_retries = self.state.get("impl_retries", 0)
+                    if impl_retries < MAX_RETRIES:
+                        self.state["impl_retries"] = impl_retries + 1
+                        self._save()
+                        logger.info(
+                            "[PIPELINE] Stage 6a (impl) REJECTED (retry {}/{}) — re-dispatching code_implementer",
+                            impl_retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", 6, confidence=confidence)
+                        # Re-enter impl_producer (set explicitly so the
+                        # producer-dispatch path routes back to the
+                        # code_implementer, not the runner).
+                        self.state["phase"] = "impl_producer"
+                        self._save()
+                        self._dispatch_producer(feedback=result)
+                    else:
+                        logger.warning(
+                            "[PIPELINE] Stage 6a (impl) exhausted retries — holding for CEO",
+                        )
+                        self.state["phase"] = "gate"
+                        self._save()
+                        self._emit_gate_event(6, confidence, exhausted=True)
+                return
+
+            if self.phase == "exec_producer":
+                # Experiment runner finished → store under the canonical
+                # Stage 6 key so downstream stages see the execution
+                # report, then dispatch the exec_critic.
+                self.state.setdefault("stage_results", {})[str(6)] = result
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage 6b (exec) producer complete — dispatching exec_critic",
+                )
+                self._emit_stage_event("stage_reviewing", 6)
+                self._dispatch_critic(result)
+                return
+
+            if self.phase == "exec_critic":
+                # Run-id / fabrication critic finished.
+                self.state["critic_result"] = result
+                self._save()
+                is_pass = self._parse_critic_pass(result)
+                confidence = self._parse_confidence(result)
+                self._emit_critic_result(6, result, is_pass, confidence)
+
+                if is_pass:
+                    logger.info(
+                        "[PIPELINE] Stage 6b (exec) PASSED — opening CEO gate (confidence={})",
+                        confidence,
+                    )
+                    self._on_critic_pass(
+                        self.state["stage_results"].get(str(6), ""), confidence,
+                    )
+                else:
+                    exec_retries = self.state.get("exec_retries", 0)
+                    if exec_retries < MAX_RETRIES:
+                        self.state["exec_retries"] = exec_retries + 1
+                        self.state["phase"] = "exec_producer"
+                        self._save()
+                        logger.info(
+                            "[PIPELINE] Stage 6b (exec) REJECTED (retry {}/{}) — re-dispatching runner",
+                            exec_retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", 6, confidence=confidence)
+                        self._dispatch_producer(feedback=result)
+                    else:
+                        logger.warning(
+                            "[PIPELINE] Stage 6b (exec) exhausted retries — holding for CEO",
+                        )
+                        self.state["phase"] = "gate"
+                        self._save()
+                        self._emit_gate_event(6, confidence, exhausted=True)
+                return
+
+        # ------------------------------------------------------------------
+        # Stages 1-5, 7-9 (and Stage 6 fresh-entry where phase is still
+        # the generic "producer") use the original flow.
+        # ------------------------------------------------------------------
         if self.phase == "producer":
             # Producer finished → store result, dispatch critic
-            stage = self._stage_def()
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
@@ -517,8 +771,6 @@ class PipelineEngine:
             self._save()
             is_pass = self._parse_critic_pass(result)
             confidence = self._parse_confidence(result)
-
-            stage = self._stage_def()
 
             # Emit critic result to frontend so it shows in the stage card
             self._emit_critic_result(stage["id"], result, is_pass, confidence)
@@ -564,16 +816,31 @@ class PipelineEngine:
         stage = self._stage_def()
         current_phase = self.phase
 
-        if current_phase == "critic":
-            stored = self.state.get("stage_results", {}).get(str(stage["id"]), "")
+        # Treat Stage 6 sub-critic phases like the generic "critic" path:
+        # the producer output is already stored, so auto-pass on it rather
+        # than burning a retry on a critic-side glitch.
+        if current_phase in ("critic", "impl_critic", "exec_critic"):
+            # For impl_critic the stored producer output lives under
+            # "6_impl"; for exec_critic and the generic critic it lives
+            # under the stage id.
+            key = "6_impl" if current_phase == "impl_critic" else str(stage["id"])
+            stored = self.state.get("stage_results", {}).get(key, "")
             logger.warning(
-                "[PIPELINE] Stage {} critic FAILED — auto-passing on stored producer output (len={})",
-                stage["id"], len(stored),
+                "[PIPELINE] Stage {} critic FAILED (phase={}) — auto-passing on stored producer output (len={})",
+                stage["id"], current_phase, len(stored),
             )
-            self._on_critic_pass(stored, confidence=None)
+            if current_phase == "impl_critic":
+                # Mirror the impl_critic PASS branch: hand off to execution
+                # rather than opening the CEO gate yet.
+                self.state["phase"] = "exec_producer"
+                self.state["exec_retries"] = 0
+                self._save()
+                self._dispatch_producer()
+            else:
+                self._on_critic_pass(stored, confidence=None)
             return
 
-        if current_phase != "producer":
+        if current_phase not in ("producer", "impl_producer", "exec_producer"):
             # Should not happen — gate/done/failed phases mean no task is in flight.
             logger.warning(
                 "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
@@ -586,21 +853,33 @@ class PipelineEngine:
             f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
             f"Failure context:\n{truncated}"
         )
-        retries = self.state.get("retries", 0)
+        # Choose the retry counter keyed off which sub-phase failed; the
+        # generic "producer" path keeps the legacy "retries" counter so
+        # Stages 1-5 and 7-9 are unaffected.
+        if current_phase == "impl_producer":
+            counter_key = "impl_retries"
+            restore_phase = "impl_producer"
+        elif current_phase == "exec_producer":
+            counter_key = "exec_retries"
+            restore_phase = "exec_producer"
+        else:
+            counter_key = "retries"
+            restore_phase = "producer"
+        retries = self.state.get(counter_key, 0)
         if retries < MAX_RETRIES:
-            self.state["retries"] = retries + 1
-            self.state["phase"] = "producer"
+            self.state[counter_key] = retries + 1
+            self.state["phase"] = restore_phase
             self._save()
             logger.warning(
-                "[PIPELINE] Stage {} producer FAILED (retry {}/{}) — re-dispatching",
-                stage["id"], retries + 1, MAX_RETRIES,
+                "[PIPELINE] Stage {} producer FAILED (phase={}, retry {}/{}) — re-dispatching",
+                stage["id"], current_phase, retries + 1, MAX_RETRIES,
             )
             self._emit_stage_event("stage_failed", stage["id"])
             self._dispatch_producer(feedback=failure_feedback)
         else:
             logger.error(
-                "[PIPELINE] Stage {} exhausted retries after producer failure — holding for CEO",
-                stage["id"],
+                "[PIPELINE] Stage {} exhausted retries after producer failure (phase={}) — holding for CEO",
+                stage["id"], current_phase,
             )
             self.state["phase"] = "gate"
             self._save()
@@ -747,7 +1026,10 @@ class PipelineEngine:
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        was_mid_flight = self.phase in ("producer", "critic")
+        was_mid_flight = self.phase in (
+            "producer", "critic",
+            "impl_producer", "impl_critic", "exec_producer", "exec_critic",
+        )
         if was_mid_flight:
             await self._cancel_active_task_and_wait()
 

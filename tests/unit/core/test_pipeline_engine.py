@@ -614,8 +614,10 @@ def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
 
 
 def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
-    """Stage 6 producer task description must instruct the agent to load
-    the experiment-execution-runbook skill (which itself names experiment-infra)."""
+    """Stage 6 exec_producer sub-phase task description must instruct
+    the agent to load the experiment-execution-runbook skill (which
+    itself names experiment-infra). After the impl→exec sub-phase
+    split, the runner trigger lives on exec_producer specifically."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: "emp-runner-007" if skill == "experiment_runner" else None)
@@ -627,23 +629,25 @@ def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, mo
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 6
+    engine.state["phase"] = "exec_producer"  # post-impl-PASS state
     engine._dispatch_producer()
 
-    assert dispatched, "Stage 6 producer must dispatch"
+    assert dispatched, "Stage 6 exec_producer must dispatch"
     desc = dispatched[0][1]
     assert 'load_skill("experiment-execution-runbook")' in desc, (
-        "Stage 6 task description must instruct the producer to load the execution runbook"
+        "Stage 6 exec_producer description must instruct the producer to load the execution runbook"
     )
     assert "experiment-infra" in desc, (
-        "Stage 6 task description must mention the experiment-infra runbook so the "
+        "Stage 6 exec_producer description must mention the experiment-infra runbook so the "
         "agent knows the fast_*.sh scripts are available for remote rows"
     )
 
 
-def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path, monkeypatch):
-    """Stage 6 dispatch resolution must reach the experiment_runner
+def test_dispatch_producer_stage6_exec_phase_routes_to_experiment_runner_employee(tmp_path, monkeypatch):
+    """Stage 6 exec_producer sub-phase must reach the experiment_runner
     employee (not whoever owns the 'experimentalist' skill) when a runner
-    is on the roster."""
+    is on the roster. impl_producer routes to code_implementer instead —
+    see test_stage6_enters_in_impl_producer_phase for that path."""
     dispatched = []
     monkeypatch.setattr(
         pe, "_find_employee_by_skill",
@@ -658,6 +662,7 @@ def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path,
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 6
+    engine.state["phase"] = "exec_producer"  # post-impl-PASS state
     engine._dispatch_producer()
 
     assert dispatched == ["emp-runner"], (
@@ -1399,3 +1404,204 @@ def test_dispatch_critic_stage7_not_in_other_stages(tmp_path, monkeypatch):
                 f"Stage {stage_id} critic must not carry the Stage 7 "
                 f"result-quality-critic trigger"
             )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6a/6b sub-phases — impl_producer / impl_critic / exec_producer / exec_critic
+# ---------------------------------------------------------------------------
+
+
+def test_stage6_enters_in_impl_producer_phase(tmp_path, monkeypatch):
+    """When the engine first enters Stage 6 (e.g. fresh dispatch after
+    Stage 5 gate-approve), it must dispatch impl_producer (code-writer
+    phase), not exec_producer."""
+    dispatched = []
+    by_skill = {"code_implementer": "emp-coder", "experiment_runner": "emp-runner"}
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, emp_id, desc, title: dispatched.append((emp_id, desc, title)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    # Coming fresh from Stage 5 gate-approve, the generic "producer" phase
+    # is what the engine sets up; dispatching must select impl_producer.
+    engine.state["phase"] = "producer"
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 6 fresh entry must dispatch a producer"
+    assert dispatched[0][0] == "emp-coder", (
+        f"Stage 6 fresh entry must route to code_implementer, got {dispatched[0][0]}"
+    )
+    assert engine.state["phase"] == "impl_producer", (
+        f"After fresh Stage 6 dispatch, phase must be impl_producer, "
+        f"got {engine.state['phase']}"
+    )
+
+
+def test_dispatch_producer_stage6_impl_phase_loads_code_implementation_runbook(tmp_path, monkeypatch):
+    """The impl_producer dispatch must carry the
+    load_skill("code-implementation-runbook") trigger so the code-writer
+    reads the spec contract before writing code."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda s: "emp-coder" if s == "code_implementer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "impl_producer"
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 6a impl_producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("code-implementation-runbook")' in desc, (
+        "Stage 6a impl_producer task description must instruct the "
+        "code-writer to load the code-implementation-runbook skill"
+    )
+
+
+def test_dispatch_critic_stage6_impl_phase_loads_code_quality_critic(tmp_path, monkeypatch):
+    """When transitioning from impl_producer to impl_critic, the
+    dispatched critic task must carry the
+    load_skill("code-quality-critic") trigger AND name the three
+    auto-REJECT triggers (mock data, new IVs/DVs, non-English)."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda s: "critic-1" if s == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "impl_producer"  # so _dispatch_critic routes to impl_critic
+    engine._dispatch_critic("Stage 6a implementation receipt")
+
+    assert dispatched, "Stage 6a impl_critic must be dispatched"
+    desc = dispatched[0][1]
+    assert 'load_skill("code-quality-critic")' in desc, (
+        "Stage 6a impl_critic prompt must instruct the reviewer to load "
+        "the code-quality-critic runbook"
+    )
+    assert ("mock" in desc.lower() or "synthetic" in desc.lower()), (
+        "Stage 6a impl_critic prompt must call out mock/synthetic data as a "
+        "failure mode"
+    )
+    assert "auto-REJECT" in desc or "REJECT" in desc, (
+        "Stage 6a impl_critic prompt must mention the auto-REJECT triggers"
+    )
+
+
+def test_stage6_impl_critic_pass_transitions_to_exec_producer(tmp_path, monkeypatch):
+    """When impl_critic PASSes, the engine transitions to exec_producer
+    (existing Stage 6 runner behavior from PR #32)."""
+    dispatched = []
+    by_skill = {
+        "code_implementer": "emp-coder",
+        "experiment_runner": "emp-runner",
+        pe.CRITIC_SKILL: "critic-1",
+    }
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, emp_id, desc, title: dispatched.append((emp_id, desc, title)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "impl_critic"
+    # NOTE: deliberately do NOT seed the "6_impl" key — the engine's
+    # _build_context iterates stage_results keys as ints, so a non-numeric
+    # key would crash the producer dispatch. The test only needs the phase
+    # transition to be observable.
+    engine.state["stage_results"] = {}
+
+    # Mirror the PASS pattern that Stage 6 tests use elsewhere — the
+    # critic result text contains "PASS" and a confidence.
+    engine.on_task_complete("critic-1", "node-x", "Decision: PASS\nConfidence: 0.92")
+
+    assert engine.state["phase"] == "exec_producer", (
+        f"After impl_critic PASS, phase must be exec_producer, "
+        f"got {engine.state['phase']}"
+    )
+    # The exec_producer dispatch should reach the experiment_runner
+    # employee, not the code_implementer.
+    assert dispatched, "PASS must trigger a fresh exec_producer dispatch"
+    assert dispatched[-1][0] == "emp-runner", (
+        f"exec_producer must route to experiment_runner, got {dispatched[-1][0]}"
+    )
+
+
+def test_stage6_exec_producer_still_loads_execution_runbook(tmp_path, monkeypatch):
+    """The exec_producer dispatch (post impl PASS) must still load
+    experiment-execution-runbook per PR #32 — this is a regression guard.
+    The sub-phase change must not remove the existing trigger."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda s: "emp-runner" if s == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "exec_producer"
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 6b exec_producer must dispatch"
+    desc = dispatched[0][1]
+    assert 'load_skill("experiment-execution-runbook")' in desc, (
+        "Stage 6b exec_producer dispatch must still load the "
+        "experiment-execution-runbook (regression guard for PR #32)"
+    )
+
+
+def test_stage6_impl_retries_separate_from_exec_retries(tmp_path, monkeypatch):
+    """Retry counters must be tracked separately for impl_producer and
+    exec_producer sub-phases. A failed impl shouldn't burn exec's retry
+    budget."""
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda s: {"code_implementer": "emp-coder",
+                                   pe.CRITIC_SKILL: "critic-1"}.get(s))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "impl_critic"
+    # NOTE: deliberately do NOT seed "6_impl" — _build_context iterates
+    # stage_results keys as ints and would crash on a non-numeric key.
+    engine.state["stage_results"] = {}
+    engine.state["impl_retries"] = 0
+    engine.state["exec_retries"] = 0
+
+    # REJECT result → expect impl_retries++ and exec_retries untouched.
+    engine.on_task_complete("critic-1", "node-x", "Decision: REJECT\nConfidence: 0.3")
+
+    assert engine.state["impl_retries"] == 1, (
+        f"impl_critic REJECT must bump impl_retries; got {engine.state['impl_retries']}"
+    )
+    assert engine.state["exec_retries"] == 0, (
+        f"impl_critic REJECT must NOT burn exec_retries; got "
+        f"{engine.state['exec_retries']}"
+    )

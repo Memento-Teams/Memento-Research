@@ -749,3 +749,100 @@ class TestResultAnalysisRunbook:
         assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
         # NEW: Stage 7 critic must also land
         assert (skills_dir / "result-quality-critic" / "SKILL.md").exists()
+
+
+class TestCodeImplementerRunbook:
+    """code_implementer must auto-receive the code-implementation-runbook
+    AND experiment-infra (since the producer pushes code via
+    fast_push_code.sh). adversarial_review must additionally receive the
+    code-quality-critic runbook so Stage 6a impl_critic dispatch resolves.
+    Mirrors TestExperimentInfraRunbook / TestResultAnalysisRunbook."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in (
+            "task_lifecycle",
+            "code-implementation-runbook",
+            "experiment-infra",
+        ):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_code_implementer_gets_runbook_and_infra(self, tmp_path, monkeypatch):
+        """A fresh hire with `code_implementer` skill must end up with both
+        code-implementation-runbook/ and experiment-infra/ in their skills/
+        directory after onboarding — the runbook gives the contract, the
+        infra runbook provides fast_push_code.sh + credentials."""
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00600"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- code_implementer\nname: CodeWriter\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00600")
+
+        assert (skills_dir / "code-implementation-runbook" / "SKILL.md").exists()
+        assert (skills_dir / "experiment-infra" / "SKILL.md").exists()
+
+    def test_non_code_implementer_does_not_get_runbook(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00601"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00601")
+
+        assert not (skills_dir / "code-implementation-runbook").exists(), (
+            "Only employees with code_implementer skill should receive "
+            "the code-implementation-runbook"
+        )
+        assert not (skills_dir / "experiment-infra").exists(), (
+            "experiment-infra must not leak to employees without an "
+            "infra-bearing skill"
+        )
+
+    def test_mapping_includes_code_implementer(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "code_implementer" in _SKILL_REQUIRED_RUNBOOKS
+        runbooks = _SKILL_REQUIRED_RUNBOOKS["code_implementer"]
+        assert "code-implementation-runbook" in runbooks
+        assert "experiment-infra" in runbooks
+
+    def test_adversarial_review_now_gets_code_quality_critic(self, tmp_path, monkeypatch):
+        """The Stage 6a critic-side runbook (code-quality-critic) must be
+        injected alongside the existing methodology + experiment + result
+        critics whenever a hire has adversarial_review."""
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in (
+            "task_lifecycle",
+            "methodology-quality-critic",
+            "experiment-quality-critic",
+            "result-quality-critic",
+            "code-quality-critic",
+        ):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+
+        emp_dir = tmp_path / "00602"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- adversarial_review\nname: Critic\n"
+        )
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00602")
+
+        # Existing critics must still be present (no regression)
+        assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
+        assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
+        assert (skills_dir / "result-quality-critic" / "SKILL.md").exists()
+        # NEW: Stage 6a critic must also land
+        assert (skills_dir / "code-quality-critic" / "SKILL.md").exists()

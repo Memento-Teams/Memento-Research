@@ -1,0 +1,56 @@
+{
+  "id": "experiment-code-writer",
+  "name": "Experiment Code Writer",
+  "version": "1.0.0",
+  "role": "Engineer",
+  "hosting": "company",
+  "settings": {
+    "sections": [
+      {
+        "id": "remote_target",
+        "title": "Remote Push Target",
+        "fields": [
+          {
+            "key": "infra_server_url",
+            "type": "text",
+            "label": "INFRA_SERVER_URL",
+            "default": "",
+            "placeholder": "http://your-infra-host:port"
+          },
+          {
+            "key": "infra_session_key",
+            "type": "secret",
+            "label": "INFRA_SESSION_KEY",
+            "placeholder": "vk_..."
+          }
+        ]
+      },
+      {
+        "id": "implementation",
+        "title": "Implementation Behavior",
+        "fields": [
+          {
+            "key": "local_workdir",
+            "type": "text",
+            "label": "Local workdir for staging code before push",
+            "default": "/tmp/stage6_impl"
+          },
+          {
+            "key": "verify_push_after_each_file",
+            "type": "boolean",
+            "label": "Run fast_query_working_dir after each push",
+            "default": true
+          }
+        ]
+      }
+    ]
+  },
+  "prompts": {
+    "skills": ["skills/*/SKILL.md"]
+  },
+  "tools": {
+    "builtin": [],
+    "custom": []
+  },
+  "platform_capabilities": []
+}
