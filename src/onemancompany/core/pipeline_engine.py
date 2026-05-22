@@ -53,6 +53,40 @@ class RevertNotAllowedError(Exception):
 # Tag for pipeline-managed nodes so vessel can identify them
 PIPELINE_NODE_TAG = "pipeline_managed"
 
+
+def _is_stub_producer_result(result: str) -> bool:
+    """True if the producer's submitted result looks like a placeholder
+    inserted by the executor when an agent terminated without calling
+    ``submit_result``.
+
+    Background: the LangChain executor wraps the agent's final state. When
+    the agent runs out of thoughts and ends naturally, the executor often
+    captures the description of the LAST tool call (e.g. ``"Executed: bash"``,
+    ``"Executed: write"``) as the result string. That string is then stored
+    by the engine as the stage's official output. The critic then either:
+      (a) reads the stub and correctly REJECTs (good path), or
+      (b) reads the stub and itself produces a stub (verdict-keyword-free
+          critic result) which the engine's fallback parser misroutes.
+
+    Letting (b) happen costs ~1 minute per round and wastes one of the
+    bounded retry slots. Cheaper to short-circuit here: if the result
+    looks like a stub, force REJECT + retry directly, attaching a
+    feedback string that names the specific failure mode so the LLM's
+    next attempt knows what it skipped.
+    """
+    if not isinstance(result, str):
+        return True
+    s = result.strip()
+    if len(s) < 100:
+        return True
+    # Common literal placeholders the executor produces. Lowercased
+    # contains-check so capitalisation variants still trip.
+    low = s.lower()
+    return (
+        low.startswith("executed:")
+        or low in {"task completed", "done.", "ok", "no more actions"}
+    )
+
 # ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
@@ -474,6 +508,23 @@ class PipelineEngine:
                 "is to submit and monitor — not to rewrite the code. Do not "
                 "fabricate or simulate results — if a remote submit is "
                 "required but credentials are missing, report the failure.\n"
+                "\n## COMPLETION CRITERIA — NOT OPTIONAL\n"
+                "The task is considered complete only when BOTH of these are "
+                "true:\n"
+                "  1. You have called write() with file_path ending in "
+                "`stage6_experimentalist.md` and content ≥1500 bytes "
+                "(use the runbook's template; fill TBD where you lack data).\n"
+                "  2. You have called submit_result() with a `summary` "
+                "string ≥100 characters that references "
+                "`stage6_experimentalist.md` AND lists at least one run_id "
+                "from your fast_submit calls.\n"
+                "If you terminate the task without doing both, the engine "
+                "auto-REJECTs you, redispatches you with this exact warning "
+                "attached, and the GPU time you already burned is wasted. "
+                "The most common LLM failure mode here is feeling 'done' "
+                "after the run_id is captured — that is NOT done. Step 1 "
+                "(write) and step 2 (submit_result) come AFTER you have a "
+                "run_id, not before.\n"
             )
         # Stage 7 (Result Analysis) reads the Stage 4 methodology, the
         # Stage 5 experiment plan + assignments, and the Stage 6
@@ -721,6 +772,50 @@ class PipelineEngine:
                 # report, then dispatch the exec_critic.
                 self.state.setdefault("stage_results", {})[str(6)] = result
                 self._save()
+                # Short-circuit on stub producer output (agent terminated
+                # without calling submit_result; the executor captured a
+                # placeholder like "Executed: bash"). Going through the
+                # critic burns ~1 min and the critic almost always
+                # mis-parses the stub. Force REJECT + retry directly.
+                if _is_stub_producer_result(result):
+                    exec_retries = self.state.get("exec_retries", 0)
+                    if exec_retries < MAX_RETRIES:
+                        self.state["exec_retries"] = exec_retries + 1
+                        self._save()
+                        logger.warning(
+                            "[PIPELINE] Stage 6b producer returned stub result "
+                            "({} chars: {!r}) — skipping critic, redispatching "
+                            "runner (retry {}/{})",
+                            len(result), result[:50],
+                            exec_retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", 6)
+                        self._dispatch_producer(
+                            feedback=(
+                                f"Your previous attempt terminated without writing "
+                                f"`stage6_experimentalist.md` or calling `submit_result()` "
+                                f"with a real summary. The engine captured the "
+                                f"placeholder string {result!r} as your output, which "
+                                f"the engine auto-REJECTs. Re-read the "
+                                f"experiment-execution-runbook (specifically Step 3 — "
+                                f"write file is MANDATORY — and Step 4 — submit_result "
+                                f"summary must be ≥100 chars). Do NOT terminate the task "
+                                f"until both steps are done, even if the experiment is "
+                                f"still running on remote infra. A partial report with "
+                                f"`status: still_running` is the correct output for a "
+                                f"long experiment."
+                            )
+                        )
+                        return
+                    # Otherwise fall through to gate-exhausted below.
+                    logger.warning(
+                        "[PIPELINE] Stage 6b producer stub but retries exhausted "
+                        "— holding for CEO",
+                    )
+                    self.state["phase"] = "gate"
+                    self._save()
+                    self._emit_gate_event(6, confidence=None, exhausted=True)
+                    return
                 logger.info(
                     "[PIPELINE] Stage 6b (exec) producer complete — dispatching exec_critic",
                 )
@@ -1195,8 +1290,14 @@ class PipelineEngine:
             return True
         if has_reject:
             return False
-        # Default to pass if neither keyword present (ambiguous).
-        return True
+        # Default to REJECT when neither keyword is present. The most common
+        # cause of a verdict-keyword-free result is a critic agent whose
+        # submit_result was never called and the engine captured a stub
+        # like ``"Executed: write"`` — coercing those to PASS lets a
+        # REJECTing critic's verdict (typically saved to ``stage*_gate_review*.md``)
+        # silently leak past the gate. False REJECTs cost one retry; false
+        # PASSes corrupt the pipeline state forever.
+        return False
 
     @staticmethod
     def _parse_confidence(result: str) -> float | None:
