@@ -510,6 +510,7 @@ async def get_state() -> dict:
 
 @router.post("/api/ceo/task")
 async def ceo_submit_task(
+    request: Request,
     task: str = Form(""),
     project_id: str = Form(""),
     project_name: str = Form(""),
@@ -549,6 +550,15 @@ async def ceo_submit_task(
         pid, iter_id = await async_create_project_from_task(task, "pending", product_id=product_id)
 
     pdir = get_project_dir(pid)
+
+    # Per-user LLM dispatch: attribute this project to the logged-in user (if any)
+    # so its agents run on the user's own LLM key. No-op when login is disabled.
+    try:
+        from onemancompany.api.auth_gate import current_user_id
+        from onemancompany.core.user_llm import set_project_owner
+        set_project_owner(pid, current_user_id(request))
+    except Exception as exc:
+        logger.debug("Could not record project owner for per-user LLM: {}", exc)
 
     # Save uploaded files to project attachments directory
     attachments: list[dict] = []
