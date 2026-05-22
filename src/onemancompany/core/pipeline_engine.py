@@ -1421,10 +1421,15 @@ class PipelineEngine:
         """
         import re
         # Match: optional **/*/_ markup around the verdict-label
-        # (Decision / Verdict / Result), then : or :, then optional
-        # markup, then PASS / REJECT / FAIL. First match wins.
+        # (Decision / Verdict / Result), then either a colon (``:``/``：``)
+        # OR a markdown table cell separator (``|``), then optional markup,
+        # then PASS / REJECT / FAIL. The pipe variant catches critics that
+        # render the verdict in a table like
+        #   | **Decision** | **PASS** |
+        # which is a real-world pattern observed in Stage 4 reviews.
+        # First match wins.
         decision_match = re.search(
-            r'(?:\*\*|\*|_|`)*\s*(?:Decision|Verdict|Result)\s*(?:\*\*|\*|_|`)*\s*[:：]\s*'
+            r'(?:\*\*|\*|_|`)*\s*(?:Decision|Verdict|Result)\s*(?:\*\*|\*|_|`)*\s*[:：|]\s*'
             r'(?:\*\*|\*|_|`)*\s*(PASS|REJECT|FAIL)\s*(?:\*\*|\*|_|`)*',
             result,
             re.IGNORECASE,

@@ -602,6 +602,37 @@ Per-dimension scoring:
     )
 
 
+def test_parse_critic_pass_handles_table_format():
+    """Some critics render the verdict in a markdown table where the
+    separator between label and value is ``|`` (pipe), not ``:``. The
+    parser must recognise the table form so we don't fall through to
+    the lossy substring heuristic, which over-triggers REJECT on
+    incidental words like "rejection" in debate-alternative summaries.
+
+    Real example from a Stage 4 review that previously caused 3
+    false-REJECTs in a row:
+    ``| **Decision** | **PASS** |``
+    inside a 1.6 KB verdict that mentioned "named participant arguments
+    for rejection" in dimension D6.
+    """
+    table_pass = (
+        "## Gate Review Complete\n\n"
+        "### Verdict\n"
+        "| Metric | Value |\n"
+        "|--------|-------|\n"
+        "| **Confidence** | 0.92 |\n"
+        "| **Decision** | **PASS** |\n\n"
+        "- **D6 Alternatives Considered** — Three alternatives with "
+        "named participant arguments for rejection.\n"
+    )
+    assert pe.PipelineEngine._parse_critic_pass(table_pass) is True, (
+        "table-format verdict with PASS should not be false-REJECTed by "
+        "incidental REJECT-substrings (e.g. 'rejection' in D6 text)."
+    )
+    table_reject = table_pass.replace("**PASS**", "**REJECT**")
+    assert pe.PipelineEngine._parse_critic_pass(table_reject) is False
+
+
 def test_parse_critic_pass_handles_markdown_variants():
     """The Decision line shows up in many markdown flavours — bare,
     bold (**), italic (*), backtick — the regex should accept all."""
