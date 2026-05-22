@@ -374,6 +374,100 @@ def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_confidence("no score") is None
 
 
+def test_exec_producer_stub_short_circuits_to_retry(tmp_path, monkeypatch):
+    """A 14-char stub from the runner (e.g. ``"Executed: bash"``) must NOT
+    advance to the critic; the engine should bump exec_retries and
+    redispatch the runner directly with a feedback string naming the
+    write+submit_result skip."""
+    dispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": dispatched.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic",
+                        lambda self, result: dispatched.append(("CRITIC", result)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "exec_producer"
+    engine.on_task_complete("00012", "n1", "Executed: bash")
+
+    # Stub triggers retry, NOT a critic dispatch
+    assert engine.state["exec_retries"] == 1
+    assert len(dispatched) == 1
+    assert not isinstance(dispatched[0], tuple), "stub should bypass critic"
+    assert "did not" in dispatched[0].lower() or "terminated without" in dispatched[0].lower()
+
+
+def test_exec_producer_smoke_failure_routes_to_impl(tmp_path, monkeypatch):
+    """When the Stage 6b runner reports SMOKE_FAIL / blocked_smoke_failure,
+    the engine must redispatch to impl_producer (the Code Writer) with the
+    runner report as feedback — retrying the runner can't fix a code bug."""
+    dispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": dispatched.append((self.phase, feedback)))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic",
+                        lambda self, result: dispatched.append(("CRITIC", result)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "exec_producer"
+    # A real-shape runner report long enough to bypass the stub check.
+    report = (
+        "Stage 6 Execution Report. Smoke run submitted: run_8a08x.\n"
+        "Status reached `failed`. The smoke test failed with UnboundLocalError "
+        "at line 338. Full run not submitted per safety protocol. "
+        "stage6_experimentalist.md written with status=blocked_smoke_failure.\n"
+    )
+    engine.on_task_complete("00012", "n1", report)
+
+    # Routed back to impl_producer, NOT the critic
+    assert engine.state["phase"] == "impl_producer"
+    assert engine.state["impl_retries"] == 1
+    assert engine.state["exec_retries"] == 0, "exec retry budget reset for next runner round"
+    assert len(dispatched) == 1
+    phase_when_dispatched, feedback = dispatched[0]
+    assert phase_when_dispatched == "impl_producer"
+    assert "smoke" in feedback.lower()
+    assert "bug" in feedback.lower() or "fix" in feedback.lower()
+
+
+def test_impl_critic_stub_falls_back_to_gate_review_file(tmp_path, monkeypatch):
+    """If impl_critic submit_result is a stub but the real verdict is in
+    stage6_gate_review*.md, the engine must recover PASS from the file."""
+    (tmp_path / "stage6_gate_review.md").write_text(
+        "# Gate Review\n\n**Decision: PASS**\n**Confidence: 0.92**\n",
+        encoding="utf-8",
+    )
+    next_phases = []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": next_phases.append(("producer", self.phase)))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic",
+                        lambda self, result: next_phases.append(("critic", self.phase)))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result",
+                        lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "impl_critic"
+    engine.on_task_complete("00017", "n2", "Executed: write")
+
+    # Recovered PASS → next phase is exec_producer
+    assert engine.state["phase"] == "exec_producer"
+    # critic_result persisted is the recovered file contents, not the stub
+    assert "Decision: PASS" in engine.state["critic_result"]
+
+
 def test_detect_smoke_failure():
     """The engine should recognise when the Stage 6b runner reported a
     smoke-test failure and route back to impl_producer (the code writer)
