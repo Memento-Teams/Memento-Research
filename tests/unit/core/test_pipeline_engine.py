@@ -374,6 +374,39 @@ def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_confidence("no score") is None
 
 
+def test_recover_verdict_from_gate_review(tmp_path):
+    """If a critic submit_result is a stub, the engine should fall back to
+    reading the stage{N}_gate_review*.md file to recover the real verdict."""
+    # No file present → returns None
+    assert pe._recover_verdict_from_gate_review(str(tmp_path), 6) is None
+
+    # Single file with a PASS verdict — recovered verbatim
+    (tmp_path / "stage6_gate_review.md").write_text(
+        "# Gate Review\n\n**Decision: PASS**\n**Confidence: 0.91**\n",
+        encoding="utf-8",
+    )
+    recovered = pe._recover_verdict_from_gate_review(str(tmp_path), 6)
+    assert recovered is not None
+    assert "Decision: PASS" in recovered
+
+    # Multiple versions — pick the most recently modified
+    import time
+    older = tmp_path / "stage6_gate_review_v3.md"
+    newer = tmp_path / "stage6_gate_review_v6.md"
+    older.write_text("**Decision: REJECT** (v3 — old)\n", encoding="utf-8")
+    time.sleep(0.01)
+    newer.write_text("**Decision: PASS** (v6 — newest)\n", encoding="utf-8")
+    # Refresh stage6_gate_review.md to be the oldest so the v6 file wins.
+    import os
+    os.utime(str(tmp_path / "stage6_gate_review.md"), (1, 1))
+    recovered = pe._recover_verdict_from_gate_review(str(tmp_path), 6)
+    assert recovered is not None
+    assert "newest" in recovered, f"expected most-recent file's content, got: {recovered[:80]!r}"
+
+    # A different stage id should not pull stage6 files
+    assert pe._recover_verdict_from_gate_review(str(tmp_path), 7) is None
+
+
 def test_is_stub_producer_result():
     """Detect placeholder strings the LangChain executor captures when an
     agent terminates naturally without ever calling submit_result."""

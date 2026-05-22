@@ -54,6 +54,35 @@ class RevertNotAllowedError(Exception):
 PIPELINE_NODE_TAG = "pipeline_managed"
 
 
+def _recover_verdict_from_gate_review(project_dir: str, stage_id: int) -> str | None:
+    """When a critic's submit_result is a stub placeholder (the executor's
+    "Executed: write" capture), recover the real verdict from the
+    ``stage{N}_gate_review*.md`` file the critic actually wrote.
+
+    Most critic skills `write()` their full verdict to a versioned
+    review file and only echo a short summary via `submit_result()`.
+    If the agent loop terminates before the summary is submitted, the
+    engine captures the stub — but the verdict is intact on disk. This
+    helper recovers it so a real PASS isn't auto-REJECTed.
+
+    Returns the file's contents (str) on hit, or None if no review file
+    was found. Picks the most recently modified file when multiple
+    versions exist (e.g. ``stage6_gate_review_v3.md``).
+    """
+    try:
+        candidates = list(Path(project_dir).glob(f"stage{stage_id}*gate_review*.md"))
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    try:
+        return candidates[0].read_text(encoding="utf-8")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("[PIPELINE] failed to read recovered gate review {}: {}", candidates[0], exc)
+        return None
+
+
 def _is_stub_producer_result(result: str) -> bool:
     """True if the producer's submitted result looks like a placeholder
     inserted by the executor when an agent terminated without calling
@@ -724,11 +753,12 @@ class PipelineEngine:
 
             if self.phase == "impl_critic":
                 # Code-quality critic finished → parse PASS/REJECT.
-                self.state["critic_result"] = result
+                is_pass, confidence, effective = self._parse_critic_with_fallback(result)
+                # Persist the EFFECTIVE text (file-recovered if the submit_result
+                # was a stub) so downstream stages and the UI see the real verdict.
+                self.state["critic_result"] = effective
                 self._save()
-                is_pass = self._parse_critic_pass(result)
-                confidence = self._parse_confidence(result)
-                self._emit_critic_result(6, result, is_pass, confidence)
+                self._emit_critic_result(6, effective, is_pass, confidence)
 
                 if is_pass:
                     logger.info(
@@ -825,11 +855,10 @@ class PipelineEngine:
 
             if self.phase == "exec_critic":
                 # Run-id / fabrication critic finished.
-                self.state["critic_result"] = result
+                is_pass, confidence, effective = self._parse_critic_with_fallback(result)
+                self.state["critic_result"] = effective
                 self._save()
-                is_pass = self._parse_critic_pass(result)
-                confidence = self._parse_confidence(result)
-                self._emit_critic_result(6, result, is_pass, confidence)
+                self._emit_critic_result(6, effective, is_pass, confidence)
 
                 if is_pass:
                     logger.info(
@@ -874,13 +903,14 @@ class PipelineEngine:
 
         elif self.phase == "critic":
             # Critic finished → parse decision
-            self.state["critic_result"] = result
+            is_pass, confidence, effective = self._parse_critic_with_fallback(result)
+            # Persist the EFFECTIVE text (file-recovered if stub) so the UI and
+            # downstream stages see the real verdict, not the executor placeholder.
+            self.state["critic_result"] = effective
             self._save()
-            is_pass = self._parse_critic_pass(result)
-            confidence = self._parse_confidence(result)
 
             # Emit critic result to frontend so it shows in the stage card
-            self._emit_critic_result(stage["id"], result, is_pass, confidence)
+            self._emit_critic_result(stage["id"], effective, is_pass, confidence)
 
             if is_pass:
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
@@ -1244,6 +1274,43 @@ class PipelineEngine:
     # ------------------------------------------------------------------
     # Critic result parsing
     # ------------------------------------------------------------------
+
+    def _parse_critic_with_fallback(self, result: str) -> tuple[bool, float | None, str]:
+        """Parse the critic's PASS/REJECT verdict AND its confidence,
+        falling back to the on-disk ``stage{N}_gate_review*.md`` file
+        when the critic's submit_result is a stub placeholder (e.g.
+        ``"Executed: write"``).
+
+        Returns ``(is_pass, confidence, effective_text)`` — callers
+        should persist the effective text as the canonical critic
+        result so downstream stages see the real verdict, not the
+        executor stub.
+        """
+        if _is_stub_producer_result(result):
+            recovered = _recover_verdict_from_gate_review(
+                self.project_dir, self._stage_def()["id"],
+            )
+            if recovered:
+                logger.info(
+                    "[PIPELINE] critic submit_result was a stub ({} chars: {!r}); "
+                    "recovered verdict from gate_review file ({} chars)",
+                    len(result), result[:40], len(recovered),
+                )
+                return (
+                    self._parse_critic_pass(recovered),
+                    self._parse_confidence(recovered),
+                    recovered,
+                )
+            logger.warning(
+                "[PIPELINE] critic submit_result is a stub and no "
+                "stage{}_gate_review*.md file found on disk — "
+                "falling back to safe-REJECT", self._stage_def()["id"],
+            )
+        return (
+            self._parse_critic_pass(result),
+            self._parse_confidence(result),
+            result,
+        )
 
     @staticmethod
     def _parse_critic_pass(result: str) -> bool:
