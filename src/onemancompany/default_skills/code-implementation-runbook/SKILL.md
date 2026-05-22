@@ -100,6 +100,45 @@ For each implementation task:
      `=== RESULT_JSON: {...} ===` block summarising aggregate
      metrics, so the runner's `log_tail` capture sees it.
 
+5. **MANDATORY: a `--smoke` mode** —
+   The driver script MUST support a `--smoke` flag (or equivalent CLI
+   switch) that runs a radically shrunken version of the full
+   experiment. This is non-negotiable. It exists so the Stage 6b runner
+   can prove the pipeline actually works before committing to the full
+   run, catching any architectural bug (wrong worker pool config,
+   broken data loader, hung dependency, missing remote asset, OOM at
+   small scale, etc.) in ≤5 min instead of after hours of wasted GPU
+   time.
+
+   Three hard rules for `--smoke`:
+
+   - **Same code path.** `--smoke` MUST exercise the same functions,
+     same imports, same I/O paths, same worker setup as the full run.
+     A separate `smoke.py` that bypasses the real code is forbidden —
+     it would defeat the purpose. Use a config-level switch (e.g. an
+     `N_PROBLEMS` constant or `--n-problems` flag) that the existing
+     loop respects.
+
+   - **Same output schema.** `--smoke` writes the same JSONL fields
+     and prints the same `=== RESULT_JSON: ... ===` block, just with
+     a tiny sample size. The runner / critic should not need to know
+     a row came from smoke vs full to parse it.
+
+   - **Tight budget: ≤5 min wall-clock, end-to-end.** Pick the
+     smallest sample that touches every stage of the pipeline:
+       - LLM inference: 5 problems (or 1 problem × 5 conditions)
+       - Training: ~100 steps (enough to verify gradient flow)
+       - Hyperparameter sweep: 1 cell (cheapest config)
+       - Simulation: 5 trajectories
+       - Statistical sampling: N = 5
+     If your experiment can't smoke-test in 5 min, redesign it; the
+     full run will be too brittle to debug.
+
+   Implementation hint: add `argparse` flag `--smoke` (store_true).
+   Inside the script, set `n_problems = 5 if args.smoke else FULL_N`,
+   and use that constant in the existing loop. One-line change to the
+   loop; no duplicate code path.
+
 ## Phase 4 — Push to the remote working dir (MANDATORY)
 
 **Writing code locally is not enough.** If you stop here, the
@@ -203,7 +242,16 @@ row here is a spec gap.
 ## 4. Runnable entrypoint
 The command the runner (Stage 6b) should invoke, with the
 per-project remote subdir prefix:
-  cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
+
+  ### Smoke (runner runs this FIRST, ≤5 min)
+    cd omc/<project_id>/<iter_id> && python experiment.py --smoke --benchmark gsm8k --seed 42
+
+  ### Full (runner runs this only if smoke succeeded)
+    cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
+
+State explicitly what `--smoke` shrinks (e.g. "5 problems instead of
+1319, otherwise identical code path, identical schema, expected
+wall-clock ≤5 min").
 
 ## 5. Limitations / explicit non-coverage
 Anything from Stage 5 that you could NOT implement (e.g. PAL

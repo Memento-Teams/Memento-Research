@@ -124,6 +124,44 @@ For each `.py` file referenced in the receipt:
 - ✅ Receipt in English. Code in English (comments, identifiers).
 - ❌ Non-English receipt → auto-REJECT.
 
+### D11 — Smoke Mode (Hard Gate)
+The driver script MUST expose a `--smoke` flag (or equivalent CLI
+switch) that runs a radically shrunken version of the experiment
+through the SAME code path as the full run. Without it, Stage 6b
+cannot prove the pipeline works before burning hours of GPU on a
+full run that hangs.
+
+Static checks you can run:
+
+- ✅ `grep -n "\\-\\-smoke\\|--smoke\\|smoke" experiment.py` returns
+  at least one match in the argparse / main block.
+- ✅ The code path under `--smoke` does NOT branch into a separate
+  function that bypasses real loaders. Look for a config-level switch
+  (e.g. `n_problems = 5 if args.smoke else N_FULL`) feeding the same
+  loop the full run uses.
+- ✅ The receipt's "Runnable entrypoint" section lists BOTH a smoke
+  command and a full command, and names what `--smoke` shrinks (e.g.
+  "5 problems instead of 1319") with an expected ≤5 min wall-clock.
+
+Reject patterns (any one of these is FAIL):
+
+- ❌ No `--smoke` flag anywhere in the driver.
+- ❌ A second `smoke.py` / `mini_experiment.py` that uses different
+  imports or different output schema (defeats the purpose — the
+  smoke run wouldn't exercise the real code).
+- ❌ `--smoke` exists but the receipt does not promise ≤5 min, or
+  promises an N-problem subset that's too large to finish in 5 min
+  on the target hardware.
+- ❌ The receipt's runnable-entrypoint section only shows the full
+  command, not the smoke command.
+
+Why D11 exists: in a prior run, an implementation wrote 31 KB of
+otherwise-correct code that — because of a bad `mp.Pool` config —
+re-loaded the 14 GB model on every batch. The full run hung in the
+worker pool for hours with no progress signal. A 5-minute smoke
+would have caught this in minutes, before the runner committed to
+the full run. This dimension is the architectural safety net.
+
 ## How to Run the Review
 
 1. Read all four artifacts (Stage 4, 5, 5-assignments, 6a receipt).
@@ -134,8 +172,10 @@ For each `.py` file referenced in the receipt:
    and verify pushed files actually exist on remote.
 5. For D5: run `python3 -c "import ast; ast.parse(...)"` on each
    `.py` file.
-6. Walk D1-D10. Each gets a one-sentence justification.
-7. Decide PASS / REJECT.
+6. For D11: grep the driver for `--smoke`, then verify the receipt
+   has both smoke and full entrypoints.
+7. Walk D1-D11. Each gets a one-sentence justification.
+8. Decide PASS / REJECT.
 
 ## Output Format
 
@@ -156,6 +196,7 @@ Per-dimension scoring:
   D8  Documentation          : PASS / FAIL — <one sentence>
   D9  Spec-Gap Honesty       : PASS / FAIL — <one sentence>
   D10 Language & Style       : PASS / FAIL — <one sentence>
+  D11 Smoke Mode             : PASS / FAIL — <one sentence>
 
 Rationale: <2-4 sentences summarising the verdict and pointing the
 implementer at any failing dimension>
@@ -163,7 +204,7 @@ implementer at any failing dimension>
 
 ## Decision Rule
 
-ALL of D1, D2, D3, D4, D5 must PASS for an overall PASS. D6-D10
+ALL of D1, D2, D3, D4, D5, D11 must PASS for an overall PASS. D6-D10
 failures alone pull confidence below 0.85 but do not auto-reject.
 
 **Three auto-REJECT triggers regardless of dimensions**:

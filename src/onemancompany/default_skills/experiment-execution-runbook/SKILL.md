@@ -1,167 +1,195 @@
 ---
 name: experiment-execution-runbook
-description: Stage 6 (Auto Experiment) runbook. Reads stage5_assignments.md row by row and dispatches each task — using the experiment-infra API for remote-execution rows and explicitly deferring non-runner rows. Writes a consolidated, evidence-bearing report to stage6_experimentalist.md.
+description: Stage 6b runbook. One simple flow per runner task: submit → poll-loop in a single bash → write evidence report → submit_result. No phases, no branches, no early-exit.
 allowed-tools: Bash, Read, Write
 ---
 
-# Stage 6 — Auto Experiment Executor
+# Stage 6b — Auto Experiment Executor
 
-You are dispatching Stage 6 (Auto Experiment). Stage 5 finished and the
-debate-convener wrote two artifacts you must consume:
+You translate `stage5_assignments.md` rows into real remote runs.
+**You do exactly four steps**. They are not phases, they are a
+checklist. You go 1 → 2 → 3 → 4 and you MUST finish step 4 before
+terminating. If any step hits an error, you still finish 3 and 4 —
+recording the error is the output.
 
-- `stage5_experiment_designer.md` — methodology + experiment plan
-- `stage5_assignments.md` — coordination table (the dispatch input)
+Step 1 is itself a two-substep gate: **always submit a `--smoke` run
+first** and only proceed to the full run if smoke reaches
+`succeeded` in ≤5 min. This catches architectural bugs (hung
+workers, broken loaders) before any hour-long GPU burn. Stage 6a is
+required by `code-implementation-runbook` D11 to expose `--smoke`;
+trust it.
 
-Your job is **execution, not authoring**. Do not redesign the experiment.
-Do not invent missing details. If the plan is unclear or missing required
-inputs (commands, working dirs, success metrics), record this as a
-blocking issue and STOP — do not improvise.
+If you ever feel like ending early, you are wrong. **STEP 3 (write
+file) and STEP 4 (submit_result) are non-negotiable.** The historical
+failure mode is an LLM polling for 9 minutes, then quietly stopping
+without ever calling `write()` or `submit_result()`. Don't be that
+LLM.
 
-## Order of operations — DO ALL FOUR, IN ORDER
-
-You have a bounded agent budget. Burning it on polling/queries and never
-writing the report = WORST outcome (Stage 6b critic will REJECT, the
-whole run wastes the GPU time you already spent). Treat this list as
-a strict checklist:
-
-1. **Phase 1** — read `stage5_assignments.md` (1 call).
-2. **Phase 2** — for each runner row, submit + poll-to-terminal. **Cap
-   polling at 10 status calls per run_id**; if not terminal, capture
-   what you have and move on.
-3. **Phase 3** — write `stage6_experimentalist.md`. **This is
-   MANDATORY** — do it even if Phase 2 hit issues. Empty/14-char
-   `submit_result` summaries are an auto-REJECT.
-4. **Phase 4** — `submit_result(...)` with run_ids and a real summary
-   string (>= 100 chars).
-
-If you sense you're approaching agent loop limits (you've made many bash
-calls and feel pressure to do more), **stop submitting/polling
-immediately** and jump to Phase 3 to write the report with whatever
-evidence you have so far. A partial report >> no report.
-
-## Phase 1 — Read the assignments table
+## Step 0 — Boilerplate (one-shot setup)
 
 ```
 read("stage5_assignments.md")
-```
-
-The table columns are: `# | Task | Assignee | Skill | Due | Acceptance criterion`.
-Walk each row top-to-bottom and route by the **Skill** column.
-
-## Phase 2 — Route each row
-
-### Path A: Skill includes `experiment_runner` (remote execution)
-
-You have the experiment-infra runbook on hand. Load it once at the top of
-Phase 2:
-
-```
+read("stage6_implementation_receipt.md")
 load_skill("experiment-infra")
 ```
 
-For each `experiment_runner` row, do these in order and **track your
-budget** — every step is a bash call against your agent iteration limit:
+Extract `<project_id>` and `<iter_id>` from your workspace path
+(`.../projects/<project_id>/iterations/<iter_id>`). All your remote
+work lives at `omc/<project_id>/<iter_id>/`. The receipt's "Runnable
+entrypoint" tells you the exact command Stage 6a wants run.
 
-1. **One-shot setup** (do once, before any rows): run
-   `fast_query_budget.sh` for liveness; `read("stage6_implementation_receipt.md")`
-   to get the entrypoint Stage 6a chose; extract `<project_id>` and
-   `<iter_id>` from your workspace path (`.../projects/<project_id>/iterations/<iter>`).
-   - If `fast_query_budget.sh` errors with missing env vars: STOP —
-     report `blocked: INFRA_SERVER_URL / INFRA_SESSION_KEY not set` and
-     skip to Phase 3.
-   - If `stage6_implementation_receipt.md` is missing: STOP — report
-     `blocked: Stage 6a impl not complete, no implementation receipt on disk`
-     and skip to Phase 3.
-   - Your remote code lives at `omc/<project_id>/<iter_id>/`, NOT at
-     the flat working dir root. **Skip** `fast_query_working_dir.sh`
-     and `fast_query_server_info.sh` unless the receipt is missing
-     critical info — they cost calls and rarely add signal.
+If `stage6_implementation_receipt.md` is missing, jump straight to step 3
+and write a report with `status: blocked`, then step 4.
 
-2. **Submit.** Use `fast_submit.sh` with a command that `cd`s into the
-   per-project subdir first:
-   - `-c "cd omc/<project_id>/<iter_id>/ && python experiment.py <args>"`
-     for the typical case where Stage 6a's `experiment.py` is the
-     entrypoint listed in the receipt.
-   - `--yaml <path>` only when the Task explicitly names a YAML in
-     `default_skills/experiment-infra/assets/`.
-   - `--config` defaults to `base.conf.json` (run_local:true). Use
-     `skypilot_container.conf.json` only when the Task explicitly asks
-     for SkyPilot.
+## Step 1 — Submit (one `fast_submit.sh` per runner row)
 
-3. **Record the run_id immediately** in your working notes — every
-   subsequent call needs it.
+For each row whose Skill column contains `experiment_runner`, run ONE
+fast_submit and capture the run_id immediately into a shell variable.
+Non-runner rows (e.g. `causal-inference`, `paper_writer`) — note as
+deferred, no fast_submit.
 
-4. **Poll status — capped at 10 calls per run_id.** Use
-   `fast_query_exp_status.sh <RUN_ID> --summary`. Stop polling when
-   status is terminal (`succeeded` / `failed` / `rejected`) **OR** when
-   you've made 10 polls, whichever comes first. If still running after
-   10 polls, capture the partial summary and move on to Phase 3 — the
-   experiment will keep running on remote; the runner critic accepts
-   "still running after N polls, partial evidence below" if you say so
-   explicitly.
-   - Cadence: ~30s between polls for short runs, 2-5 min for long
-     training jobs. Do NOT bash-sleep between polls (wastes iteration
-     budget); just queue the next call.
+**Critical: submit the smoke run FIRST**, not the full run. The
+implementation MUST expose a `--smoke` flag that runs a tiny subset
+through the same code path (per `code-implementation-runbook`). The
+runner uses this as a 5-minute proof-of-pipeline before committing
+hours of GPU to a full run that may hang on an architectural bug
+(wrong worker pool config, broken loader, hung dependency).
 
-5. **Capture evidence on terminal status.** One final
-   `fast_query_exp_status.sh <RUN_ID>` (no `--summary`) to grab the
-   full `log_tail` (capped at ~32KB), `metrics`, `actual_cost`,
-   `started_at`, `finished_at`. This is the evidence you'll paste into
-   Phase 3.
+```bash
+# Step 1a — submit the smoke run first
+SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
+  --config "$SKILL_DIR/assets/base.conf.json" \
+  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py --smoke <other args>" \
+  2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
+echo "SMOKE_RID=$SMOKE_RID"
+```
 
-### Path B: Skill is a non-runner skill (e.g. `causal-inference`, `paper_writer`)
+Then poll it (use the same single-bash-with-sleep pattern from Step
+2). If smoke does not reach `succeeded` within 5 min (one 5-min
+bash batch), abort:
 
-Stage 6's job is the **execution layer**, not the analysis or writing
-layer. For each non-runner row:
+```bash
+# Step 1b — wait for smoke. 5 min cap; don't extend.
+RID="$SMOKE_RID"
+DEADLINE=$(( $(date +%s) + 300 ))   # 5 minutes
+while :; do
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    echo "SMOKE_TIMEOUT — implementation likely hung"
+    bash "$SKILL_DIR/scripts/fast_cancel.sh" "$RID" || true
+    break
+  fi
+  STATUS=$(bash "$SKILL_DIR/scripts/fast_query_exp_status.sh" "$RID" --summary 2>/dev/null \
+    | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("status",""))' 2>/dev/null)
+  case "$STATUS" in
+    succeeded) echo "SMOKE_OK"; break ;;
+    failed|rejected) echo "SMOKE_FAIL status=$STATUS"; break ;;
+  esac
+  sleep 15
+done
+```
 
-- Note it as **deferred** in the report.
-- Cite the named assignee and skill.
-- Do not attempt to run it yourself.
+- `SMOKE_OK` → proceed to submit the full run below.
+- `SMOKE_FAIL` or `SMOKE_TIMEOUT` → **DO NOT SUBMIT THE FULL RUN.**
+  Skip ahead to Step 3 (write report) with status `blocked_smoke_failure`,
+  attach the smoke run_id + log_tail. The Stage 6a Code Writer needs
+  to fix the implementation before any retry burns more GPU. This is
+  the safety net for hung-pipeline bugs.
 
-### Path C: Assignee is `<UNASSIGNED>` or skill is empty
+```bash
+# Step 1c — submit the full run, only if SMOKE_OK
+RUN_ID_T1=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
+  --config "$SKILL_DIR/assets/base.conf.json" \
+  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py <other args>" \
+  2>&1 | tee /tmp/submit_t1.log | grep -oE 'run_[a-f0-9]+' | head -1)
+echo "RUN_ID_T1=$RUN_ID_T1"
+```
 
-Flag explicitly in the report as a Stage 5 gap. Do not silently skip.
+You DO NOT need to do anything fancy with credentials, working_dir
+queries, or server_info queries. The experiment-infra runbook covers
+the credential exports. Skip every optional query — every extra call
+burns iteration budget.
 
-## Phase 3 — Consolidate into `stage6_experimentalist.md` (MANDATORY)
+## Step 2 — Poll to terminal in a SINGLE bash call (~9 min max)
 
-**This phase is non-skippable.** Even if Phase 2 ran into errors,
-credentials issues, or polling caps — you MUST write
-`stage6_experimentalist.md` before calling `submit_result`. Reports
-shorter than ~1 KB or missing the skeleton sections below will trip
-the Stage 6 critic.
+This is one bash invocation. Do not split it into many small polls —
+that's the failure pattern. Use a `while` loop with `sleep 30` inside
+ONE bash call. The LangChain bash tool caps at 600s, so do batches of
+9 minutes; if the experiment is still running after that, you simply
+re-issue the same loop for another batch.
 
-Write a single structured report using `write()`. Skeleton:
+```bash
+RID="$RUN_ID_T1"
+DEADLINE=$(( $(date +%s) + 540 ))   # 9 minutes
+while :; do
+  if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+    echo "BATCH_EXPIRED status=still_running"
+    break
+  fi
+  STATUS_JSON=$(bash "$SKILL_DIR/scripts/fast_query_exp_status.sh" "$RID" --summary 2>/dev/null)
+  STATUS=$(echo "$STATUS_JSON" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("status",""))' 2>/dev/null)
+  case "$STATUS" in
+    succeeded|failed|rejected)
+      echo "TERMINAL status=$STATUS"
+      break
+      ;;
+  esac
+  sleep 30
+done
+```
+
+After the bash returns, look at the last echo line:
+- `TERMINAL status=succeeded|failed|rejected` → go to step 3.
+- `BATCH_EXPIRED status=still_running` → you have a budget choice:
+  - If you have agent iterations to spare, re-run the same bash once
+    more (another 9-min batch). Up to **2 re-runs** total — so worst
+    case 27 min of wall-clock polling. **Do NOT re-run more than 2
+    times.** After 2 re-runs, go to step 3 with `status: still_running`.
+
+Capture final evidence (only when status is terminal) with **one** more
+bash call to get full `log_tail` / metrics:
+
+```bash
+bash "$SKILL_DIR/scripts/fast_query_exp_status.sh" "$RID" > /tmp/evidence_t1.json
+```
+
+## Step 3 — Write `stage6_experimentalist.md` (MANDATORY, ALWAYS)
+
+Even if step 1 failed. Even if step 2 hit `still_running`. Even if
+credentials were missing. **You write this file before submit_result.**
+It is a `write()` tool call. If you skip it, the critic auto-REJECTS
+and the entire Stage 6b retry cycle restarts.
+
+Template (copy verbatim, fill placeholders, save with `write()`):
 
 ```markdown
 # Stage 6 — Auto Experiment Results
 
-## Tasks executed (path A — remote runner)
+## Tasks executed (Path A — remote runner)
 
-### T1 — <verbatim task description from assignments table>
-- assignee skill: experiment_runner
-- run_id: run_xxxxxxxx
-- submitted_at: 2026-XX-XXTXX:XX:XX
-- finished_at: 2026-XX-XXTXX:XX:XX
-- status: succeeded | failed | rejected
-- estimated_cost: $X.XX
-- actual_cost: $X.XX
-- key metrics: {...}
-- log_tail excerpt (last 30 lines or relevant signal):
+### T<N> — <verbatim task description from stage5_assignments.md>
+- run_id: <RID>
+- submitted_at: <ISO timestamp from infra response>
+- finished_at: <ISO timestamp, or "still_running">
+- status: succeeded | failed | rejected | still_running | blocked
+- estimated_cost: $<X.XX>
+- actual_cost: $<Y.YY>
+- key metrics: <JSON snippet from response.metrics>
+- log_tail excerpt (last 40 lines):
   ```
-  <paste from fast_query_exp_status response>
+  <paste tail from /tmp/evidence_<rid>.json>
   ```
 
-## Tasks deferred (path B — non-runner skills)
+(repeat per runner row)
+
+## Tasks deferred (Path B — non-runner skills)
 
 | # | Task | Assignee | Skill | Reason |
 |---|------|----------|-------|--------|
-| T4 | Statistical analysis | 00101 Priya | causal-inference | Not in Stage 6 scope; awaiting Stage 7 |
+| T<N> | ... | ... | ... | Not in Stage 6 scope; awaiting Stage 7 |
 
-## Gaps flagged (path C)
+## Errors / blocks
 
-| # | Task | Issue |
-|---|------|-------|
-| Tn | ... | Assignee was `<UNASSIGNED>` in Stage 5 |
+(empty if none — else paste the literal error and which step it failed in)
 
 ## Aggregate summary
 
@@ -172,60 +200,44 @@ Write a single structured report using `write()`. Skeleton:
 - overall verdict: ALL_SUCCEEDED | PARTIAL | BLOCKED
 ```
 
-## Phase 4 — Submit
+If you don't have data for a field, write `unknown` or `N/A`. **Do not
+omit fields and do not skip the file.** A partial file with honest
+"unknown" values is fine; an empty file is auto-REJECT.
+
+## Step 4 — submit_result (MANDATORY, AFTER step 3)
 
 ```
-submit_result(summary="Stage 6: <N> remote runs (<succ/fail>), <M> deferred, total $<X.XX>. See stage6_experimentalist.md and run_ids: [...].")
+submit_result(summary="Stage 6: <N> remote runs (<succ>/<fail>/<still_running>), <M> deferred, total $<X.XX>. See stage6_experimentalist.md for run_ids and log_tails: <RID_T1>, <RID_T2>, ...")
 ```
 
-Include run_ids in the summary so the critic can spot-check them. The
-summary string **must be at least 100 characters** and contain at
-minimum: count of runs, status breakdown, total cost, run_ids list,
-and a pointer to `stage6_experimentalist.md`. A single-word summary
-like `"Executed: bash"` is the historical failure mode and an
-auto-REJECT signal — the critic will treat it as no work done.
+The summary string must be **at least 100 characters** and must reference
+`stage6_experimentalist.md`. Stub summaries like `"Executed: bash"` or
+`"Done."` are the historical auto-REJECT trigger — they signal to the
+critic that no work was performed.
 
-**Order is fixed**: write the report file FIRST, then submit_result.
-Do not call submit_result before the .md file is on disk.
+## Hard rules
 
-## What NOT to do
+- **Never terminate without step 3 AND step 4.** If you find yourself
+  thinking "I'm done, I'll just stop now" — you are not done, you have
+  to do step 3 (write file) and step 4 (submit_result) before stopping.
+- **Never fabricate run_ids or metrics.** If submit failed, write
+  `status: failed` and paste the error in `## Errors / blocks`.
+- **Never simulate when a runner is available.** If the skill is
+  `experiment_runner` and the infra is reachable, you MUST really submit
+  via `fast_submit.sh`. Describing what would happen is auto-REJECT.
+- **Never run experiments locally on the OMC host.** Remote execution
+  goes through experiment-infra.
+- **Never echo `INFRA_SESSION_KEY`.**
 
-- **Don't stop after `fast_submit.sh` returns a run_id.** Submitting
-  is step 2 of 5; the experiment is not "done" until you (a) polled to
-  terminal or hit the 10-poll cap, (b) wrote
-  `stage6_experimentalist.md`, and (c) called `submit_result` with a
-  real summary string. Stopping early leaves the critic with no
-  evidence — historical auto-REJECT.
-- **Don't infinite-poll.** Hard cap is 10 `fast_query_exp_status.sh`
-  calls per run_id. After that, write down what you have and finish
-  the phase. Burning iterations on polling and never writing the
-  report = worst possible outcome.
-- **Don't submit `submit_result` with a stub string** like
-  `"Executed: bash"` or `"Done."`. The historical failure mode is a
-  14-character summary with no run_ids, no costs, no pointer to the
-  report file — the Stage 6 critic treats this as no work performed.
-  Summary must be ≥100 chars and reference the .md file.
-- **Don't fabricate run_ids or metrics.** If a submit failed, report
-  `status: failed` and paste the error. Made-up results are an
-  auto-REJECT from the Stage 6 critic.
-- **Don't simulate when a runner is available.** If `experiment_runner`
-  is the assigned skill and the experiment-infra API is reachable, you must
-  actually submit — not describe what would happen.
-- **Don't run experiments locally on the OMC host.** Remote execution
-  goes through experiment-infra. Local-only work is deferred to its assignee.
-- **Don't echo `INFRA_SESSION_KEY`.** The experiment-infra runbook covers
-  this; the same rule applies in the consolidated report.
-- **Don't re-design the experiment.** The Stage 5 plan is the source of
-  truth. If it's wrong, file a blocking issue and STOP — do not patch it
-  in your report.
+## Degraded mode (no infra available)
 
-## Degraded mode (no `experiment_runner` employee on roster)
+If step 0's `fast_query_budget.sh` (or any step 1 fast_submit) fails
+with missing env vars / unreachable host:
 
-If you reach Phase 2A but realize you (the dispatcher) don't have the
-experiment-infra runbook (the platform routed this Stage 6 to an employee
-without `experiment_runner` skill — typically a fallback `experimentalist`):
+- Write the template in step 3 with status=`blocked` and the literal
+  error pasted in the Errors section.
+- Step 4 submit_result summary begins with `[BLOCKED]` and references
+  the report file as usual.
 
-- Mark every Path A row as **blocked — no runner skill available**.
-- Do not simulate.
-- Submit a report that surfaces the gap so the CEO can hire an
-  experiment_runner and re-run Stage 6.
+The critic will mark this as BLOCKED, not REJECTED — you did the right
+thing by surfacing the failure with evidence, instead of fabricating.
