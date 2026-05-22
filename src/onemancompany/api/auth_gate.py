@@ -71,6 +71,25 @@ def _forward(method: str, path: str, headers: dict, body: bytes | None) -> tuple
         return 502, json.dumps({"success": False, "message": f"auth proxy error: {e}"}).encode()
 
 
+def current_user_id(request) -> str:
+    """Best-effort decode of the logged-in user's id from the auth cookie.
+
+    Returns "" when there is no cookie / it cannot be decoded. Used to attribute
+    a launched pipeline to its owner for per-user LLM dispatch (see core.user_llm).
+    """
+    token = request.cookies.get(COOKIE, "")
+    if not token:
+        return ""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return str(claims.get("userId") or claims.get("uid") or claims.get("sub") or "")
+    except Exception as e:
+        logger.debug("[auth_gate] could not decode user id from cookie: {}", e)
+        return ""
+
+
 def _token_valid(token: str) -> bool:
     """Presence + expiry check on the JWT (no signature verification)."""
     try:
