@@ -374,6 +374,32 @@ def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_confidence("no score") is None
 
 
+def test_detect_smoke_failure():
+    """The engine should recognise when the Stage 6b runner reported a
+    smoke-test failure and route back to impl_producer (the code writer)
+    instead of treating the run as a normal REJECT."""
+    # Markers from our runbook template
+    assert pe._detect_smoke_failure("SMOKE_FAIL status=failed") == "smoke_fail"
+    assert pe._detect_smoke_failure("SMOKE_TIMEOUT — implementation likely hung") == "smoke_timeout"
+    assert pe._detect_smoke_failure("Status: blocked_smoke_failure") == "blocked_smoke_failure"
+    # Narrative phrasing (real Stage 6b producer report format)
+    assert pe._detect_smoke_failure(
+        "Submitted smoke run first. Status reached `failed` at 15:33:08. "
+        "The smoke test failed; pilot cannot proceed."
+    ) == "smoke_failed_narrative"
+    # A successful run should NOT trip the detector
+    assert pe._detect_smoke_failure(
+        "Smoke run succeeded. Full run run_xxx submitted; status=running."
+    ) is None
+    # A generic REJECT (no smoke mention) shouldn't trip either
+    assert pe._detect_smoke_failure(
+        "Run failed: OOMKilled during model load."
+    ) is None
+    # Empty / None
+    assert pe._detect_smoke_failure("") is None
+    assert pe._detect_smoke_failure(None) is None  # noqa: type-arg
+
+
 def test_recover_verdict_from_gate_review(tmp_path):
     """If a critic submit_result is a stub, the engine should fall back to
     reading the stage{N}_gate_review*.md file to recover the real verdict."""

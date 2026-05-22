@@ -83,6 +83,42 @@ def _recover_verdict_from_gate_review(project_dir: str, stage_id: int) -> str | 
         return None
 
 
+def _detect_smoke_failure(result: str) -> str | None:
+    """If the Stage 6b runner reports that the smoke run failed (a real
+    implementation bug surfaced before committing the full experiment),
+    return a short reason string. Otherwise None.
+
+    Triggered phrases (case-insensitive):
+      - ``SMOKE_FAIL``, ``SMOKE_TIMEOUT``         (literal markers our runbook emits)
+      - ``smoke (test|run) ... failed``
+      - ``blocked_smoke_failure``
+      - ``smoke test failed``
+      - ``smoke run ... status: failed``
+
+    Why this matters: when the smoke caught a bug, routing the runner back
+    to retry won't help — the bug is in the Stage 6a implementation. The
+    engine should redispatch impl_producer (the code writer) with the
+    smoke log_tail attached as feedback so the next code revision can
+    target the actual error.
+    """
+    if not isinstance(result, str) or not result:
+        return None
+    low = result.lower()
+    import re
+    # Explicit markers from the runbook template. Order matters: check
+    # longer / more specific markers first so the substring containment
+    # check returns the most precise label (otherwise the shorter
+    # "smoke_fail" would shadow the more specific "smoke_failure" /
+    # "blocked_smoke_failure" matches).
+    for marker in ("blocked_smoke_failure", "smoke_timeout", "smoke_fail"):
+        if marker in low:
+            return marker
+    # Narrative phrasing
+    if re.search(r"smoke\s+(?:test|run).{0,40}fail", low):
+        return "smoke_failed_narrative"
+    return None
+
+
 def _is_stub_producer_result(result: str) -> bool:
     """True if the producer's submitted result looks like a placeholder
     inserted by the executor when an agent terminated without calling
@@ -846,6 +882,61 @@ class PipelineEngine:
                     self._save()
                     self._emit_gate_event(6, confidence=None, exhausted=True)
                     return
+
+                # Smoke-failure short-circuit: the runner explicitly reported
+                # that the smoke run failed, which almost always means the
+                # Stage 6a implementation has a bug. The runner did the right
+                # thing by NOT submitting the full run, but retrying the runner
+                # won't help — the bug is in the code, not the runner. Route
+                # back to impl_producer with the smoke log as feedback so the
+                # code implementer can target the actual error.
+                smoke_marker = _detect_smoke_failure(result)
+                if smoke_marker:
+                    impl_retries = self.state.get("impl_retries", 0)
+                    if impl_retries < MAX_RETRIES:
+                        self.state["impl_retries"] = impl_retries + 1
+                        # Reset exec_retries — the next exec_producer attempt
+                        # is dispatching code, not running it, so the runner
+                        # retry budget should be fresh once impl resubmits.
+                        self.state["exec_retries"] = 0
+                        self.state["phase"] = "impl_producer"
+                        self._save()
+                        logger.warning(
+                            "[PIPELINE] Stage 6b runner reported smoke failure "
+                            "({}) — routing back to impl_producer for code fix "
+                            "(impl retry {}/{})",
+                            smoke_marker, impl_retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", 6)
+                        self._dispatch_producer(
+                            feedback=(
+                                f"The Stage 6b runner submitted the `--smoke` "
+                                f"test you exposed in `experiment.py`, and it "
+                                f"FAILED before completing. The runner correctly "
+                                f"halted instead of submitting the full run. The "
+                                f"bug is in your implementation — fix it.\n\n"
+                                f"Full runner report (read it for the run_id, "
+                                f"log_tail, and exact error message):\n"
+                                f"---\n{result[:4000]}\n---\n\n"
+                                f"Action required: identify the root cause "
+                                f"named in the log_tail (e.g. `UnboundLocalError`, "
+                                f"`KeyError`, missing-file, etc.), patch the "
+                                f"offending code locally, push the updated file "
+                                f"to the per-project remote subdir, and update "
+                                f"the implementation receipt accordingly. Then "
+                                f"the runner will re-run smoke."
+                            )
+                        )
+                        return
+                    logger.warning(
+                        "[PIPELINE] Stage 6b smoke kept failing across {} impl "
+                        "retries — holding for CEO", MAX_RETRIES,
+                    )
+                    self.state["phase"] = "gate"
+                    self._save()
+                    self._emit_gate_event(6, confidence=None, exhausted=True)
+                    return
+
                 logger.info(
                     "[PIPELINE] Stage 6b (exec) producer complete — dispatching exec_critic",
                 )
