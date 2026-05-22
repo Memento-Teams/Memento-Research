@@ -45,8 +45,10 @@ and write a report with `status: blocked`, then step 4.
 
 For each row whose Skill column contains `experiment_runner`, run ONE
 fast_submit and capture the run_id immediately into a shell variable.
-Non-runner rows (e.g. `causal-inference`, `paper_writer`) — note as
-deferred, no fast_submit.
+**Record the run_id at submit time** — every later step (polling,
+status query, cancel, evidence capture, the final report) needs it. If
+you lose it, you cannot recover the run state. Non-runner rows (e.g.
+`causal-inference`, `paper_writer`) — note as deferred, no fast_submit.
 
 **Critical: submit the smoke run FIRST**, not the full run. The
 implementation MUST expose a `--smoke` flag that runs a tiny subset
