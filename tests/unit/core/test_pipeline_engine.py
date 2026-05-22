@@ -363,9 +363,40 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
 def test_parse_critic_decision_and_confidence():
     assert pe.PipelineEngine._parse_critic_pass("reject: weak evidence") is False
     assert pe.PipelineEngine._parse_critic_pass("pass: strong enough") is True
-    assert pe.PipelineEngine._parse_critic_pass("looks fine") is True
+    # Keyword-free results (e.g. the executor's "Executed: bash" stub
+    # captured when an agent ends without calling submit_result) now
+    # default to REJECT, not PASS — they almost always mean the critic
+    # silently failed to render a verdict and we should retry.
+    assert pe.PipelineEngine._parse_critic_pass("looks fine") is False
+    assert pe.PipelineEngine._parse_critic_pass("Executed: bash") is False
+    assert pe.PipelineEngine._parse_critic_pass("Executed: write") is False
     assert pe.PipelineEngine._parse_confidence("Confidence: 1.0") == 1.0
     assert pe.PipelineEngine._parse_confidence("no score") is None
+
+
+def test_is_stub_producer_result():
+    """Detect placeholder strings the LangChain executor captures when an
+    agent terminates naturally without ever calling submit_result."""
+    # Literal placeholders we've observed in real Stage 6b producer runs
+    assert pe._is_stub_producer_result("Executed: bash") is True
+    assert pe._is_stub_producer_result("Executed: write") is True
+    assert pe._is_stub_producer_result("Executed: read") is True
+    assert pe._is_stub_producer_result("Task completed") is True
+    assert pe._is_stub_producer_result("Done.") is True
+    assert pe._is_stub_producer_result("") is True
+    assert pe._is_stub_producer_result(None) is True  # noqa: type-arg
+    # Short strings (<100 chars) — not enough to constitute a real report
+    assert pe._is_stub_producer_result("Stage 6b done with 2 runs") is True
+    # A real producer result — long, references the artifact file, lists
+    # run_ids. Must NOT be flagged as a stub.
+    real_summary = (
+        "Stage 6: 2 remote runs (1 succeeded, 1 still_running), 0 deferred, "
+        "total $0.42. See stage6_experimentalist.md for full evidence and "
+        "log_tail excerpts. run_ids: run_9e6f1a3cfda4 (running), "
+        "run_733077730d2d (succeeded preflight)."
+    )
+    assert pe._is_stub_producer_result(real_summary) is False
+    assert len(real_summary) > 100  # sanity check on the fixture
 
 
 def test_parse_critic_pass_ignores_rubric_mentions_of_reject():
@@ -469,14 +500,18 @@ Fabricated results when a runner was available are an auto-REJECT.
 
 def test_parse_critic_pass_falls_back_when_no_decision_line():
     """When there's no explicit Decision: line (older critic prompt
-    or freeform response), fall back to substring heuristic with
-    PASS taking precedence over REJECT."""
+    or freeform response), fall back to substring heuristic. Truly
+    ambiguous results (no verdict keyword at all) now default to
+    REJECT, because empirically the most common cause is the
+    LangChain executor's stub placeholder ("Executed: bash") which
+    means the critic agent silently failed to render a verdict at
+    all — coercing that to PASS lets garbage advance past the gate."""
     no_decision_pass = "looks good, PASS"
     no_decision_reject = "this needs work, REJECT"
     no_decision_ambiguous = "neutral remark with no verdict words"
     assert pe.PipelineEngine._parse_critic_pass(no_decision_pass) is True
     assert pe.PipelineEngine._parse_critic_pass(no_decision_reject) is False
-    assert pe.PipelineEngine._parse_critic_pass(no_decision_ambiguous) is True  # ambiguous → default pass
+    assert pe.PipelineEngine._parse_critic_pass(no_decision_ambiguous) is False  # ambiguous → default REJECT
 
 
 def test_parse_confidence_handles_unparseable_match(monkeypatch):
