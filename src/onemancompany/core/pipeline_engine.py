@@ -88,6 +88,21 @@ def _find_employee_by_skill(skill: str) -> str | None:
     return None
 
 
+def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
+    """Resolve the producer employee for a stage with stage-specific fallbacks.
+
+    Stage 6 (Auto Experiment) prefers an `experiment_runner` employee — they
+    carry the `experiment-infra` runbook and can actually drive remote infra.
+    If no runner is on the roster, fall back to `experimentalist` (the
+    default research talent), who can still produce a simulated report.
+    """
+    if stage_id == 6:
+        runner = _find_employee_by_skill("experiment_runner")
+        if runner:
+            return runner
+    return _find_employee_by_skill(primary_skill)
+
+
 # ---------------------------------------------------------------------------
 # In-memory registry of active pipelines
 # ---------------------------------------------------------------------------
@@ -320,7 +335,7 @@ class PipelineEngine:
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage["id"]))
-        employee_id = assigned if assigned else _find_employee_by_skill(stage["skill"])
+        employee_id = assigned if assigned else _find_employee_for_stage(stage["id"], stage["skill"])
         if not employee_id:
             logger.error("[PIPELINE] No employee with skill '{}' for stage {}", stage["skill"], stage["id"])
             self.state["phase"] = "failed"
@@ -361,6 +376,40 @@ class PipelineEngine:
                 "team, revising it into a CCF-A-grade experiment plan, and producing a "
                 "coordination assignments table for Stage 6 execution. Do not write the "
                 "experiment plan directly without convening the debate first.\n"
+            )
+        # Stage 6 (Auto Experiment) dispatches the Stage 5 assignments table
+        # row by row. Remote-execution rows go through the experiment-infra
+        # runbook (real HTTP submit to the lab infra); other rows are
+        # deferred to their named assignees.
+        elif stage["id"] == 6:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("experiment-execution-runbook") '
+                "and follow it. The runbook tells you how to read "
+                "stage5_assignments.md and route each row by its `skill` "
+                "column. For rows tagged `experiment_runner`, you also have "
+                'load_skill("experiment-infra") available — that gives you the '
+                "fast_*.sh scripts to submit real runs to the remote infra, "
+                "poll status, and capture log_tail + metrics. Do not "
+                "fabricate or simulate results — if a remote submit is "
+                "required but credentials are missing, report the failure.\n"
+            )
+        # Stage 7 (Result Analysis) reads the Stage 4 methodology, the
+        # Stage 5 experiment plan + assignments, and the Stage 6
+        # experimentalist report, then produces a confirmatory analysis
+        # that obeys the pre-registered tests and labels every claim as
+        # confirmatory or exploratory. HARKing is auto-REJECTED.
+        elif stage["id"] == 7:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before doing anything else, call load_skill("result-analysis-runbook") '
+                "and follow it. The runbook tells you how to reconstruct the "
+                "pre-registration contract from Stage 4/5, map Stage 6 evidence "
+                "onto each hypothesis, run only the pre-registered statistical "
+                "tests with effect sizes + 95% CIs, run the manipulation and "
+                "falsification checks, and cap the overall verdict at whatever "
+                "coverage Stage 6 actually delivered. Do not invent new tests, "
+                "do not substitute metrics, do not HARK.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
@@ -421,6 +470,42 @@ class PipelineEngine:
                 "mitigations, reproducibility, debate citation, and a fully "
                 "populated assignments table). Reject confidently when any "
                 "required section is shallow or missing.\n\n"
+            )
+        # Stage 6 critic checks that the Auto Experiment report is grounded
+        # in real run_ids (not fabricated), that every assignments-table row
+        # is accounted for (executed or explicitly deferred), and that any
+        # remote runs report status + cost + a log_tail excerpt.
+        elif stage["id"] == 6:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                "Grade the Stage 6 report by asking:\n"
+                "  - Is every row of stage5_assignments.md addressed?\n"
+                "  - For rows tagged `experiment_runner`, is there a real "
+                "run_id, a terminal status, an actual_cost, and a log_tail "
+                "excerpt? Fabricated/simulated results when a runner was "
+                "available are an auto-REJECT.\n"
+                "  - For rows deferred to non-runner assignees, is the "
+                "deferral explicit (not silent)?\n"
+                "  - Does the aggregate summary tally total tasks, "
+                "successes, failures, and total cost?\n"
+                "Reject when the report claims success without a verifiable "
+                "run_id.\n\n"
+            )
+        # Stage 7 critic enforces the pre-registration contract: every
+        # confirmatory claim in Stage 7 must trace back to a Stage 4/5
+        # pre-registered test and a real Stage 6 run_id. HARKing is an
+        # explicit auto-REJECT trigger.
+        elif stage["id"] == 7:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                'Before reading the producer output, call '
+                'load_skill("result-quality-critic") and follow that '
+                "runbook to grade Stage 7 against the immutable Stage 4/5 "
+                "pre-registration contract and the actual Stage 6 evidence. "
+                "Three auto-REJECT triggers: (a) any test in Stage 7 "
+                "confirmatory section not present verbatim in Stage 4/5 "
+                "(HARKing); (b) any confirmatory claim without a real "
+                "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
         desc += f"--- Producer Output ---\n{producer_result}\n"
 
