@@ -188,6 +188,19 @@ Reject patterns (any one of these is FAIL):
   on the target hardware.
 - ❌ The receipt's runnable-entrypoint section only shows the full
   command, not the smoke command.
+- ❌ **`skip_pilots = args.skip_pilots or args.smoke`** or any other
+  `if args.smoke: skip_X = True` shortcut that bypasses a pilot /
+  validation / inference path. Smoke must shrink N for each path,
+  not delete the path. Grep:
+  `grep -nE "if args\.smoke|or args\.smoke|args\.smoke and" driver.py`
+  — if any match is a "skip" or `return early` instead of an
+  `n_problems = SMOKE_N if args.smoke else FULL_N` assignment, FAIL.
+- ❌ Multiple inference functions where each calls its own
+  `model.generate(...)`. Forces "fix one, the other rots" failures.
+  Grep:
+  `grep -cn "model\.generate\(" driver.py`
+  — if count >= 2, there must be a single internal `generate_answer`
+  helper called by all paths. Otherwise FAIL.
 
 Why D11 exists: in a prior run, an implementation wrote 31 KB of
 otherwise-correct code that — because of a bad `mp.Pool` config —

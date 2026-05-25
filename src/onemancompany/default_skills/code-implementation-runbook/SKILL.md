@@ -139,12 +139,29 @@ For each implementation task:
 
    Three hard rules for `--smoke`:
 
-   - **Same code path.** `--smoke` MUST exercise the same functions,
-     same imports, same I/O paths, same worker setup as the full run.
-     A separate `smoke.py` that bypasses the real code is forbidden —
-     it would defeat the purpose. Use a config-level switch (e.g. an
-     `N_PROBLEMS` constant or `--n-problems` flag) that the existing
-     loop respects.
+   - **Same code path. ALL of them.** `--smoke` MUST exercise the same
+     functions, same imports, same I/O paths, same worker setup AS WELL
+     AS every inference / generation path the full run will use. A
+     separate `smoke.py` that bypasses the real code is forbidden — it
+     would defeat the purpose. **`if args.smoke: skip_pilots = True`
+     and similar "fast-path the smoke" shortcuts are also forbidden** —
+     they skip pilot inference functions whose bugs (e.g. a second
+     copy of `generate()` that forgot `apply_chat_template`) won't
+     surface until the full run is hours in.
+
+     Use a config-level switch (e.g. `N_PROBLEMS = 5 if args.smoke
+     else FULL_N`) that the existing loops respect, applied to EACH
+     path. If your full run does `determinism_pilot()` then
+     `extraction_pilot()` then `census()`, your smoke does
+     `determinism_pilot(n=2)` then `extraction_pilot(n=2)` then
+     `census(n=5)` — all three, just smaller. The Stage 6a critic
+     D11 grep auto-REJECTs `skip_pilots = ... args.smoke` patterns.
+
+     If you have multiple inference functions, they MUST call the same
+     internal `generate()` (DRY). One source of truth means smoke
+     validates the same `generate()` the full run uses. The single
+     biggest source of "smoke passed but full produced garbage" is
+     two copies of generate where only one was fixed.
 
    - **Same output schema.** `--smoke` writes the same JSONL fields
      and prints the same `=== RESULT_JSON: ... ===` block, just with
