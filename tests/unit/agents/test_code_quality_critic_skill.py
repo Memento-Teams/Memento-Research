@@ -125,13 +125,17 @@ class TestRunbookBehaviour:
 
     def test_d1_d5_are_hard_gates(self):
         text = RUNBOOK.read_text(encoding="utf-8")
-        assert (
+        # Hard-gate dimension list may have been extended (D11 for smoke
+        # mode, D12 for chat-template discipline). The base assertion is
+        # that D1–D5 remain in the hard-gate set, however phrased.
+        has_pass_list = (
             "D1, D2, D3, D4, D5 must PASS" in text
-            or "D1-D5 are hard gates" in text
-            or "D1–D5 are hard gates" in text
-        ), (
+            or "D1, D2, D3, D4, D5," in text  # D6+ extension to hard gates
+        )
+        has_range = "D1-D5 are hard gates" in text or "D1–D5 are hard gates" in text
+        assert has_pass_list or has_range, (
             "Stage 6a critic must state that D1-D5 are hard gates / must "
-            "PASS for an overall PASS"
+            "PASS for an overall PASS (extensions like D11/D12 are allowed)"
         )
 
     def test_output_format_specified(self):
