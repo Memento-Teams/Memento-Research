@@ -127,6 +127,48 @@ def _detect_smoke_failure(result: str) -> str | None:
     # Narrative phrasing
     if re.search(r"smoke\s+(?:test|run).{0,40}fail", low):
         return "smoke_failed_narrative"
+
+    # Server-side smoke quality validation (LLM-bypass-proof). Even if the
+    # runner agent decided to skip its own quality check and submit the
+    # full run anyway, the engine scans the producer report for embedded
+    # smoke RESULT_JSON evidence and rejects garbage scientifically:
+    #
+    #   - accuracy fields all zero (no condition got any right)
+    #   - truncated fields >= 50% of n_problems (model never stopped)
+    #
+    # Looks for patterns the runbook RESULT_JSON template emits:
+    #   "accuracy_direct": 0.0,
+    #   "accuracy_cot": 0.0,
+    #   "direct_truncated": 3,
+    #   "n_problems": 3,
+    accuracy_zero = re.search(
+        r'"accuracy_(?:direct|cot|a|b|control|treatment)"\s*:\s*0(?:\.0+)?[,\s}]',
+        result,
+    )
+    if accuracy_zero:
+        # Check for paired zero — only flag if BOTH conditions present and zero
+        zero_hits = re.findall(
+            r'"accuracy_\w+"\s*:\s*0(?:\.0+)?[,\s}]', result,
+        )
+        nonzero_hits = re.findall(
+            r'"accuracy_\w+"\s*:\s*(?:0?\.[0-9]*[1-9]|[1-9]\d*\.?\d*)[,\s}]',
+            result,
+        )
+        if len(zero_hits) >= 2 and len(nonzero_hits) == 0:
+            return "quality_fail_accuracy_zero"
+
+    # Truncation rate ≥ 50% of n_problems on both conditions = failure mode
+    trunc_match = re.search(
+        r'"(?:direct|a|control)_truncated"\s*:\s*(\d+).*?'
+        r'"(?:cot|b|treatment)_truncated"\s*:\s*(\d+).*?'
+        r'"n_problems"\s*:\s*(\d+)',
+        result, re.DOTALL,
+    )
+    if trunc_match:
+        t1, t2, n = (int(x) for x in trunc_match.groups())
+        if n > 0 and (t1 + t2) >= n:  # i.e. average ≥ 50% per condition
+            return "quality_fail_truncated"
+
     return None
 
 

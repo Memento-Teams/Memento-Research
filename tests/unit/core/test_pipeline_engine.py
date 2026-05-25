@@ -493,6 +493,31 @@ def test_detect_smoke_failure():
     assert pe._detect_smoke_failure(
         "Smoke run succeeded. Full run run_xxx submitted; status=running."
     ) is None
+
+    # Server-side validation: even if the runner skipped its own quality check
+    # and submitted a happy report, the engine catches embedded smoke garbage.
+    embedded_zero_accuracy = """
+    Stage 6 report. Smoke completed and full submitted.
+    Smoke RESULT_JSON: {"census": {"accuracy_direct": 0.0, "accuracy_cot": 0.0,
+                                  "delta": 0.0, "n_problems": 3}}
+    """
+    assert pe._detect_smoke_failure(embedded_zero_accuracy) == "quality_fail_accuracy_zero"
+
+    embedded_truncated = """
+    Stage 6 report.
+    Smoke RESULT_JSON: {"census": {"accuracy_direct": 0.05, "accuracy_cot": 0.1,
+                                  "direct_truncated": 5, "cot_truncated": 5,
+                                  "n_problems": 5}}
+    """
+    assert pe._detect_smoke_failure(embedded_truncated) == "quality_fail_truncated"
+
+    # A genuinely good smoke (some accuracy + low truncation) should pass
+    good_smoke = """
+    Smoke RESULT_JSON: {"census": {"accuracy_direct": 0.6, "accuracy_cot": 0.75,
+                                  "direct_truncated": 0, "cot_truncated": 1,
+                                  "n_problems": 5}}
+    """
+    assert pe._detect_smoke_failure(good_smoke) is None
     # A generic REJECT (no smoke mention) shouldn't trip either
     assert pe._detect_smoke_failure(
         "Run failed: OOMKilled during model load."
