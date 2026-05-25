@@ -518,6 +518,28 @@ def test_detect_smoke_failure():
                                   "n_problems": 5}}
     """
     assert pe._detect_smoke_failure(good_smoke) is None
+
+    # Alternative naming convention shipped by some implementations:
+    # ``direct_accuracy`` / ``cot_accuracy`` instead of ``accuracy_direct``,
+    # and ``direct_truncation_rate`` / ``cot_truncation_rate`` as floats
+    # instead of counts. Detector must handle both.
+    alt_good = """
+    === RESULT_JSON ===
+    {"n_total": 5, "direct_accuracy": 0.4, "cot_accuracy": 1.0,
+     "direct_truncation_rate": 0.0, "cot_truncation_rate": 0.0}
+    """
+    assert pe._detect_smoke_failure(alt_good) is None  # real good run from round-5
+
+    alt_zero = """
+    {"direct_accuracy": 0.0, "cot_accuracy": 0.0, "n_total": 5}
+    """
+    assert pe._detect_smoke_failure(alt_zero) == "quality_fail_accuracy_zero"
+
+    alt_truncated = """
+    {"direct_accuracy": 0.1, "cot_accuracy": 0.05,
+     "direct_truncation_rate": 1.0, "cot_truncation_rate": 1.0}
+    """
+    assert pe._detect_smoke_failure(alt_truncated) == "quality_fail_truncated"
     # A generic REJECT (no smoke mention) shouldn't trip either
     assert pe._detect_smoke_failure(
         "Run failed: OOMKilled during model load."

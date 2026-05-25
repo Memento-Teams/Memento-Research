@@ -134,39 +134,37 @@ def _detect_smoke_failure(result: str) -> str | None:
     # smoke RESULT_JSON evidence and rejects garbage scientifically:
     #
     #   - accuracy fields all zero (no condition got any right)
-    #   - truncated fields >= 50% of n_problems (model never stopped)
+    #   - truncation indicators ≥ 50% of n (model never stopped cleanly)
     #
-    # Looks for patterns the runbook RESULT_JSON template emits:
-    #   "accuracy_direct": 0.0,
-    #   "accuracy_cot": 0.0,
-    #   "direct_truncated": 3,
-    #   "n_problems": 3,
-    accuracy_zero = re.search(
-        r'"accuracy_(?:direct|cot|a|b|control|treatment)"\s*:\s*0(?:\.0+)?[,\s}]',
-        result,
-    )
-    if accuracy_zero:
-        # Check for paired zero — only flag if BOTH conditions present and zero
-        zero_hits = re.findall(
-            r'"accuracy_\w+"\s*:\s*0(?:\.0+)?[,\s}]', result,
-        )
-        nonzero_hits = re.findall(
-            r'"accuracy_\w+"\s*:\s*(?:0?\.[0-9]*[1-9]|[1-9]\d*\.?\d*)[,\s}]',
-            result,
-        )
-        if len(zero_hits) >= 2 and len(nonzero_hits) == 0:
-            return "quality_fail_accuracy_zero"
+    # We accept BOTH common naming conventions because implementations
+    # have shipped both forms:
+    #   "accuracy_direct": 0.0      and      "direct_accuracy": 0.0
+    #   "direct_truncated": 3, n=3  and      "direct_truncation_rate": 1.0
+    # Order: the field name may have the condition prefix OR suffix,
+    # and truncation may be a count or a rate.
+    accuracy_pat = r'"(?:accuracy_\w+|\w+_accuracy)"\s*:\s*([0-9]*\.?[0-9]+)[,\s}]'
+    acc_hits = [float(x) for x in re.findall(accuracy_pat, result)]
+    if acc_hits and len(acc_hits) >= 2 and all(v == 0.0 for v in acc_hits):
+        return "quality_fail_accuracy_zero"
 
-    # Truncation rate ≥ 50% of n_problems on both conditions = failure mode
-    trunc_match = re.search(
+    # Truncation: try integer-count form first, then rate form.
+    trunc_count = re.search(
         r'"(?:direct|a|control)_truncated"\s*:\s*(\d+).*?'
         r'"(?:cot|b|treatment)_truncated"\s*:\s*(\d+).*?'
         r'"n_problems"\s*:\s*(\d+)',
         result, re.DOTALL,
     )
-    if trunc_match:
-        t1, t2, n = (int(x) for x in trunc_match.groups())
-        if n > 0 and (t1 + t2) >= n:  # i.e. average ≥ 50% per condition
+    if trunc_count:
+        t1, t2, n = (int(x) for x in trunc_count.groups())
+        if n > 0 and (t1 + t2) >= n:  # ≥ 50% per condition
+            return "quality_fail_truncated"
+    trunc_rates = re.findall(
+        r'"(?:[a-z]+_truncation_rate|truncation_rate_\w+)"\s*:\s*([0-9]*\.?[0-9]+)',
+        result,
+    )
+    if trunc_rates and len(trunc_rates) >= 2:
+        rs = [float(x) for x in trunc_rates]
+        if all(r >= 0.5 for r in rs):
             return "quality_fail_truncated"
 
     return None
