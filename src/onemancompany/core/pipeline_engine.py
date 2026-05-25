@@ -799,6 +799,31 @@ class PipelineEngine:
                 "(HARKing); (b) any confirmatory claim without a real "
                 "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
+        elif stage["id"] == 8:
+            desc += (
+                "## REQUIRED FIRST STEP — Stage 8 (Paper Generation) review\n"
+                "Read both the producer's paper draft AND "
+                "`stage4_methodology_designer.md` from the project workspace, "
+                "then verify:\n"
+                "  (a) **Math notation preservation (HARD GATE).** Count the "
+                "number of `$$...$$` block equations and `$...$` inline math "
+                "in Stage 4. The Stage 8 Methodology section MUST contain "
+                "equations rendered in the SAME LaTeX syntax — flattening "
+                "`$\\sum_i Y_i$` into `sum_i Y_i` plain-text is auto-REJECT. "
+                "If Stage 4 has ≥3 LaTeX equation blocks and Stage 8's "
+                "Methodology section has zero, REJECT.\n"
+                "  (b) **Numerical traceability.** Every numeric claim "
+                "(accuracies, p-values, CIs, contingency counts) in Stage 8 "
+                "must match Stage 7 exactly.\n"
+                "  (c) **No fabricated references.** Every cited paper must "
+                "appear in Stage 4 or Stage 5 references, OR be a clearly "
+                "well-known foundational work the producer flags as new.\n"
+                "  (d) **No HARK.** Every confirmatory claim must trace to "
+                "a Stage 4/5 pre-registered hypothesis.\n"
+                "  (e) **Honest limitations.** Stage 7's documented coverage "
+                "gaps (e.g. manipulation check not captured) must be "
+                "transcribed into the Limitations section.\n\n"
+            )
         desc += f"--- Producer Output ---\n{producer_result}\n"
 
         # For Stage 6, use the sub-critic phase label; otherwise use the
