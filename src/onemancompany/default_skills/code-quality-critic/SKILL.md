@@ -32,7 +32,7 @@ python3 -c "import ast; ast.parse(open('/tmp/stage6_impl/experiment.py').read())
 
 ## What You Are Grading
 
-Score 10 dimensions. **D1-D5 are hard gates** (any FAIL → REJECT).
+Score 12 dimensions. **D1-D5, D11, D12 are hard gates** (any FAIL → REJECT).
 D6-D10 reduce confidence but do not auto-reject.
 
 ### D1 — Spec Coverage
@@ -124,6 +124,40 @@ For each `.py` file referenced in the receipt:
 - ✅ Receipt in English. Code in English (comments, identifiers).
 - ❌ Non-English receipt → auto-REJECT.
 
+### D12 — Chat-Template + Stop-Token Discipline (Hard Gate for LLM Inference)
+
+For implementations that call a chat / instruct model (`Qwen-Instruct`,
+`Llama-Instruct`, `Mistral-Instruct`, …), the inference loop MUST use
+`tokenizer.apply_chat_template` with `add_generation_prompt=True`, and
+MUST pass `eos_token_id` to `model.generate(...)`. Without these two,
+the model keeps emitting "Human: ... Assistant: ..." Q&A pairs until
+it hits `max_new_tokens`, the output is 100% truncated, and accuracy
+collapses to whatever a regex grabs from runaway text (usually 0%).
+
+Static checks you can run:
+
+- ✅ `grep -n "apply_chat_template" experiment.py` returns at least one
+  hit inside the generate function (NOT only in a comment).
+- ✅ `grep -n "eos_token_id" experiment.py` returns a hit inside the
+  `model.generate(...)` call.
+- ✅ The model name pattern (`*-Instruct`, `*-Chat`, `*-IT`) in the
+  spec MUST correspond to chat-template usage.
+
+Reject patterns (any of these is FAIL):
+
+- ❌ `model.generate(...)` called on raw `tokenizer(prompt, ...).input_ids`
+  for an instruct model (no chat template applied).
+- ❌ No `eos_token_id` argument anywhere in the generate call.
+- ❌ A `max_new_tokens` value with no stopping criteria + no chat template
+  (the runaway-text scenario).
+
+Why D12 exists: an earlier run shipped 19 KB of competent-looking code
+that passed D1–D11. Smoke run technically succeeded, but RESULT_JSON
+showed `accuracy_direct=0, accuracy_cot=0, direct_truncated=3/3,
+cot_truncated=3/3`. The model was generating new Q&A pairs forever
+because the prompt was fed without `apply_chat_template`. A 2-line
+critic check would have caught this before any GPU time burned.
+
 ### D11 — Smoke Mode (Hard Gate)
 The driver script MUST expose a `--smoke` flag (or equivalent CLI
 switch) that runs a radically shrunken version of the experiment
@@ -174,7 +208,10 @@ the full run. This dimension is the architectural safety net.
    `.py` file.
 6. For D11: grep the driver for `--smoke`, then verify the receipt
    has both smoke and full entrypoints.
-7. Walk D1-D11. Each gets a one-sentence justification.
+7. For D12: grep `apply_chat_template` and `eos_token_id` in the
+   generate function; verify they're inside the generate call, not
+   just docstrings.
+8. Walk D1-D12. Each gets a one-sentence justification.
 8. Decide PASS / REJECT.
 
 ## Output Format
@@ -197,6 +234,7 @@ Per-dimension scoring:
   D9  Spec-Gap Honesty       : PASS / FAIL — <one sentence>
   D10 Language & Style       : PASS / FAIL — <one sentence>
   D11 Smoke Mode             : PASS / FAIL — <one sentence>
+  D12 Chat-Template + Stop   : PASS / FAIL — <one sentence>
 
 Rationale: <2-4 sentences summarising the verdict and pointing the
 implementer at any failing dimension>
@@ -204,7 +242,7 @@ implementer at any failing dimension>
 
 ## Decision Rule
 
-ALL of D1, D2, D3, D4, D5, D11 must PASS for an overall PASS. D6-D10
+ALL of D1, D2, D3, D4, D5, D11, D12 must PASS for an overall PASS. D6-D10
 failures alone pull confidence below 0.85 but do not auto-reject.
 
 **Three auto-REJECT triggers regardless of dimensions**:

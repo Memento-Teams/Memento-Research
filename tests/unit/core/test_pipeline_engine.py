@@ -476,6 +476,14 @@ def test_detect_smoke_failure():
     assert pe._detect_smoke_failure("SMOKE_FAIL status=failed") == "smoke_fail"
     assert pe._detect_smoke_failure("SMOKE_TIMEOUT — implementation likely hung") == "smoke_timeout"
     assert pe._detect_smoke_failure("Status: blocked_smoke_failure") == "blocked_smoke_failure"
+    # Quality-gate markers (smoke succeeded but results garbage)
+    assert pe._detect_smoke_failure("status: blocked_smoke_invalid") == "blocked_smoke_invalid"
+    assert pe._detect_smoke_failure(
+        "QUALITY_FAIL_ACCURACY_ZERO acc_d=0.0 acc_c=0.0"
+    ) == "quality_fail_accuracy_zero"
+    assert pe._detect_smoke_failure("QUALITY_FAIL_TRUNCATED rate=1.00") == "quality_fail_truncated"
+    assert pe._detect_smoke_failure("NO_RESULT_JSON in smoke log_tail") == "no_result_json"
+    assert pe._detect_smoke_failure("NO_METRICS available from RESULT_JSON") == "no_metrics"
     # Narrative phrasing (real Stage 6b producer report format)
     assert pe._detect_smoke_failure(
         "Submitted smoke run first. Status reached `failed` at 15:33:08. "

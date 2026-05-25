@@ -90,15 +90,88 @@ while :; do
 done
 ```
 
-- `SMOKE_OK` → proceed to submit the full run below.
+- `SMOKE_OK` → proceed to **Step 1b' (quality check)** below before
+  submitting full.
 - `SMOKE_FAIL` or `SMOKE_TIMEOUT` → **DO NOT SUBMIT THE FULL RUN.**
   Skip ahead to Step 3 (write report) with status `blocked_smoke_failure`,
   attach the smoke run_id + log_tail. The Stage 6a Code Writer needs
   to fix the implementation before any retry burns more GPU. This is
   the safety net for hung-pipeline bugs.
 
+## Step 1b' — Smoke quality check (don't trust "succeeded")
+
+A smoke run that returns ``succeeded`` can still produce **garbage
+results**: e.g. the implementation hits ``max_new_tokens`` on every
+example because the chat template wasn't applied, so accuracy is 0%
+and truncation rate is 100%. Tech-success ≠ scientific-success.
+
+After SMOKE_OK, fetch the smoke `RESULT_JSON` (printed at end of run
+into the log_tail) and validate:
+
 ```bash
-# Step 1c — submit the full run, only if SMOKE_OK
+# Pull smoke's full log_tail (no --summary so we get the RESULT_JSON block)
+SMOKE_TAIL=$(bash "$SKILL_DIR/scripts/fast_query_exp_status.sh" "$SMOKE_RID" 2>/dev/null)
+
+# Extract the RESULT_JSON block (the impl prints `=== RESULT_JSON: {...} ===`)
+RESULT=$(echo "$SMOKE_TAIL" | python3 -c '
+import sys, json, re
+data = sys.stdin.read()
+# Try parsing as a status response with log_tail field
+try:
+    obj = json.loads(data)
+    tail = obj.get("log_tail", "") or data
+except Exception:
+    tail = data
+m = re.search(r"=== ?RESULT_JSON:?\s*(\{.*?\})\s*===", tail, re.DOTALL)
+print(m.group(1) if m else "")
+')
+
+# Parse the key metrics
+QUALITY=$(echo "$RESULT" | python3 -c '
+import sys, json
+try:
+    r = json.loads(sys.stdin.read())
+except Exception:
+    print("NO_RESULT_JSON"); raise SystemExit
+# Drill into census / aggregate (impl-specific keys; adapt as needed)
+cen = r.get("census", r)
+acc_d = cen.get("accuracy_direct", cen.get("accuracy_a", None))
+acc_c = cen.get("accuracy_cot",    cen.get("accuracy_b", None))
+trunc_d = cen.get("direct_truncated", 0)
+trunc_c = cen.get("cot_truncated", 0)
+n = cen.get("n_problems", 0) or 1
+trunc_rate = (trunc_d + trunc_c) / max(2*n, 1)
+# Quality gate: both accuracies known AND at least one > 0 AND trunc_rate < 0.5
+if acc_d is None or acc_c is None:
+    print("NO_METRICS")
+elif acc_d == 0.0 and acc_c == 0.0:
+    print(f"QUALITY_FAIL_ACCURACY_ZERO acc_d={acc_d} acc_c={acc_c}")
+elif trunc_rate >= 0.5:
+    print(f"QUALITY_FAIL_TRUNCATED rate={trunc_rate:.2f}")
+else:
+    print(f"QUALITY_OK acc_d={acc_d} acc_c={acc_c} trunc_rate={trunc_rate:.2f}")
+')
+echo "QUALITY=$QUALITY"
+```
+
+- `QUALITY_OK` → proceed to Step 1c (submit full).
+- `QUALITY_FAIL_ACCURACY_ZERO` / `QUALITY_FAIL_TRUNCATED` / `NO_RESULT_JSON` /
+  `NO_METRICS` → **DO NOT SUBMIT FULL.** Skip to Step 3 with status
+  `blocked_smoke_invalid` and paste the QUALITY line + smoke RESULT_JSON
+  as evidence. The Stage 6a Code Writer must fix the inference loop
+  (likely missing `apply_chat_template`, no stop tokens, or wrong
+  `max_new_tokens`) before any retry.
+
+The quality gate exists because in a real run we observed: smoke
+returned `succeeded`, RESULT_JSON had `accuracy_direct=0, accuracy_cot=0,
+direct_truncated=3/3, cot_truncated=3/3` — the model was generating
+"Human: ... Assistant: ..." Q&A pairs forever, hitting max_tokens, and
+the regex grabbed random numbers from the runaway text. A 1-line
+quality gate would have caught this in 5 minutes instead of burning
+hours on a doomed full run.
+
+```bash
+# Step 1c — submit the full run, only if SMOKE_OK AND QUALITY_OK
 RUN_ID_T1=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
   -c "cd omc/<project_id>/<iter_id>/ && python experiment.py <other args>" \

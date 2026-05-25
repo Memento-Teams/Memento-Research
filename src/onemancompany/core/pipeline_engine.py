@@ -90,8 +90,10 @@ def _detect_smoke_failure(result: str) -> str | None:
 
     Triggered phrases (case-insensitive):
       - ``SMOKE_FAIL``, ``SMOKE_TIMEOUT``         (literal markers our runbook emits)
+      - ``blocked_smoke_failure`` / ``blocked_smoke_invalid``  (status markers)
+      - ``QUALITY_FAIL_ACCURACY_ZERO`` / ``QUALITY_FAIL_TRUNCATED``  (quality-gate markers)
+      - ``NO_RESULT_JSON`` / ``NO_METRICS``        (smoke RESULT_JSON unparseable)
       - ``smoke (test|run) ... failed``
-      - ``blocked_smoke_failure``
       - ``smoke test failed``
       - ``smoke run ... status: failed``
 
@@ -110,7 +112,16 @@ def _detect_smoke_failure(result: str) -> str | None:
     # check returns the most precise label (otherwise the shorter
     # "smoke_fail" would shadow the more specific "smoke_failure" /
     # "blocked_smoke_failure" matches).
-    for marker in ("blocked_smoke_failure", "smoke_timeout", "smoke_fail"):
+    for marker in (
+        "blocked_smoke_failure",
+        "blocked_smoke_invalid",
+        "quality_fail_accuracy_zero",
+        "quality_fail_truncated",
+        "no_result_json",
+        "no_metrics",
+        "smoke_timeout",
+        "smoke_fail",
+    ):
         if marker in low:
             return marker
     # Narrative phrasing

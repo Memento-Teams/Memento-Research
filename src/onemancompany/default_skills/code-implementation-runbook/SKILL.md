@@ -90,6 +90,33 @@ For each implementation task:
    - Temperature & sampling params: read from Stage 5 spec.
    - k values: parameterised, never hardcoded outside the
      pre-registered set.
+   - **Chat-model inference: ALWAYS use `tokenizer.apply_chat_template`**
+     when calling an instruct/chat model (Qwen-Instruct, Llama-Instruct,
+     Mistral-Instruct, etc.). Raw prompt strings cause the model to keep
+     generating "Human: ... Assistant: ..." Q&A pairs until it hits
+     `max_new_tokens`, producing truncated garbage with 0% accuracy.
+     The pattern:
+
+         messages = [{"role": "user", "content": prompt}]
+         input_ids = tokenizer.apply_chat_template(
+             messages, add_generation_prompt=True, return_tensors="pt"
+         ).to(device)
+         out = model.generate(
+             input_ids,
+             max_new_tokens=N,
+             do_sample=False,                       # greedy for temperature=0
+             eos_token_id=tokenizer.eos_token_id,   # MUST set to stop cleanly
+             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+         )
+         response = tokenizer.decode(
+             out[0][input_ids.shape[1]:],            # slice off the prompt
+             skip_special_tokens=True,
+         )
+
+     The Stage 6a critic auto-REJECTs implementations that call
+     `model.generate(input_ids=tokenizer(prompt).input_ids, ...)` (raw
+     prompt, no chat template) — that's the no-stop-token failure mode
+     observed in a prior run.
 
 4. **Output format** —
    - Use `JSONL` output (one record per problem/seed/condition cell)
