@@ -5,15 +5,19 @@
 # it bootstraps .onemancompany/ directly from the checked-in repo assets.
 #
 # Usage:
-#   bash start.sh            # Rebuild runtime data and restart backend
+#   bash start.sh            # Restart backend (preserve all runtime data)
 #   bash start.sh start      # Start backend only (auto-bootstrap if needed)
 #   bash start.sh stop       # Stop backend only
-#   bash start.sh restart    # Rebuild runtime data and restart backend
+#   bash start.sh restart    # Restart backend (preserve all runtime data)
+#   bash start.sh reinit     # DESTRUCTIVE: wipe runtime data + reinit + restart
+#                            # (deletes .onemancompany/ entirely; use only when
+#                            #  you want a clean slate)
 #   bash start.sh status     # Show whether the backend is listening
 #
 # Backward-compatible aliases:
 #   bash start.sh --start
 #   bash start.sh --stop
+#   bash start.sh --wipe     # alias for reinit
 
 set -euo pipefail
 
@@ -30,13 +34,15 @@ error() { printf '\033[1;31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
 print_help() {
   cat <<'EOF'
-Usage: bash start.sh [start|stop|restart|status|--start|--stop|--help]
+Usage: bash start.sh [start|stop|restart|reinit|status|--start|--stop|--wipe|--help]
 
 Commands:
-  (default)  Rebuild runtime data from this repo and restart backend
+  (default)  Restart backend (preserve runtime data — same as restart)
   start      Start backend only, bootstrapping .onemancompany/ if needed
   stop       Stop backend only
-  restart    Rebuild runtime data from this repo and restart backend
+  restart    Restart backend (preserve runtime data: logs, projects, employees)
+  reinit     DESTRUCTIVE: rm -rf .onemancompany/ then reinit + restart
+             (use this only when you want to discard all runtime state)
   status     Show whether the backend is listening
   --start    Alias for start
   --stop     Alias for stop
@@ -257,6 +263,13 @@ case "$COMMAND" in
     status_backend
     ;;
   restart|"")
+    stop_backend
+    start_backend
+    ;;
+  reinit|--reinit|wipe|--wipe)
+    warn "About to WIPE all runtime data (logs, projects, employees, talents)."
+    warn "Press Ctrl-C within 5 seconds to abort."
+    sleep 5
     stop_backend
     init_data
     start_backend
