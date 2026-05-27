@@ -142,6 +142,14 @@ class _AuthGateMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith(ALLOW_PREFIXES) or path == "/favicon.ico":
             return await call_next(request)
+        # Optional localhost bypass (OMC_TRUST_LOCALHOST=1): requests originating
+        # on the server itself (127.0.0.1/::1) skip the login gate. Lets
+        # server-side automation (e.g. headless full-auto pipeline runs) hit the
+        # API without a login cookie; external clients are unaffected.
+        if os.environ.get("OMC_TRUST_LOCALHOST") == "1":
+            client_host = request.client.host if request.client else ""
+            if client_host in ("127.0.0.1", "::1", "localhost"):
+                return await call_next(request)
         token = request.cookies.get(COOKIE, "")
         if token and _token_valid(token):
             return await call_next(request)
