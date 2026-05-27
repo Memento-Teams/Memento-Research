@@ -281,13 +281,19 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
-        """Begin the pipeline from the given stage."""
+    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False):
+        """Begin the pipeline from the given stage.
+
+        ``auto_approve`` (headless/unattended mode): when True, every CEO gate
+        is advanced automatically — the pipeline runs end-to-end with no human
+        confirmation. Used for background full-auto runs.
+        """
         self.state["current_stage"] = max(1, min(start_stage, 9))
         self.state["start_stage"] = self.state["current_stage"]
         self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, 9))
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
+        self.state["auto_approve"] = bool(auto_approve)
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
@@ -992,8 +998,26 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
+            # Headless/unattended mode: advance the gate automatically so the
+            # pipeline runs end-to-end with no human confirmation. Covers BOTH
+            # gate openings (clean PASS and retries-exhausted) since both land
+            # here. A human would otherwise click "approve" in the UI.
+            if self.state.get("auto_approve"):
+                loop.create_task(self._auto_approve_gate(stage_id, exhausted))
         except RuntimeError as exc:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
+
+    async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
+        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        import asyncio
+        await asyncio.sleep(0)  # let the gate event flush first
+        if self.phase != "gate":
+            return
+        logger.info(
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
+            "(exhausted={})", stage_id, exhausted,
+        )
+        self.on_ceo_approve("")
 
     def _emit_pipeline_complete(self):
         import asyncio

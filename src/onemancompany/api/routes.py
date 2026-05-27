@@ -519,6 +519,7 @@ async def ceo_submit_task(
     start_stage: int = Form(1),
     end_stage: int = Form(9),
     stage_assignments: str = Form(""),
+    auto_approve: bool = Form(False),
     files: list[UploadFile] = File(default=[]),
 ) -> dict:
     """CEO submits a task with optional files, routed to EA via persistent loop."""
@@ -648,7 +649,7 @@ async def ceo_submit_task(
             except Exception as exc:
                 logger.warning("Ignoring invalid stage_assignments JSON: {}", exc)
 
-        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments)
+        engine.start(start_stage=start_stage, end_stage=end_stage, prior_context=prior_context, stage_assignments=_assignments, auto_approve=auto_approve)
 
     except Exception as e:
         logger.error("Failed to start pipeline: {}", e)
