@@ -80,13 +80,13 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 # Skills whose runbook ships with the talent itself (cloned from the
 # Talent Market) are NOT listed here — the talent-clone step in
 # `add_or_update_employee` already copies them. Currently:
-#   - methodology_designer → runbook lives at
-#     https://github.com/YihangChen9/methodology-designer (via hire_list
-#     source_repo + clone_talent_repo).
+#   - methodology_designer → https://github.com/YihangChen9/methodology-designer
+#   - experiment_designer  → https://github.com/YihangChen9/experiment-designer
+#   - result_analyst       → https://github.com/YihangChen9/result-analyst
+# Only runbooks that still live in `default_skills/` and need to be
+# injected onto talents that don't bundle them belong in this map.
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
-    "experiment_designer": ["experiment-debate-convener"],
     "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
-    "result_analyst": ["result-analysis-runbook"],
     "adversarial_review": [
         "methodology-quality-critic",
         "experiment-quality-critic",

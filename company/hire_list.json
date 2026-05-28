@@ -234,7 +234,8 @@
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Experiment Designer for the AutoResearch pipeline. Specify experimental protocols, datasets, metrics, ablations, controls, and result collection plans for the proposed method.",
-    "source_type": "talent_market"
+    "source_type": "talent_market",
+    "source_repo": "https://github.com/YihangChen9/experiment-designer"
   },
   {
     "cv_version": "1.0",
@@ -290,7 +291,8 @@
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Result Analyst for the AutoResearch pipeline. Interpret results against hypotheses, baselines, uncertainty, and failure cases. Separate evidence from speculation.",
-    "source_type": "talent_market"
+    "source_type": "talent_market",
+    "source_repo": "https://github.com/YihangChen9/result-analyst"
   },
   {
     "cv_version": "1.0",

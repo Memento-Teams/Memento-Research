@@ -544,19 +544,26 @@ class TestAdversarialReviewerGetsQualityCritic:
         assert "methodology-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
 
 
-class TestExperimentSkillRunbooks:
-    """experiment_designer must auto-receive the experiment-debate-convener
-    runbook; adversarial_review must also auto-receive experiment-quality-critic
-    in addition to methodology-quality-critic."""
+class TestExperimentDesignerTalentMarketSourced:
+    """experiment-debate-convener no longer lives in this repo. It ships
+    with the experiment-designer talent at
+    https://github.com/YihangChen9/experiment-designer and is fetched at
+    hire time via hire_list.json `source_repo` → `clone_talent_repo`.
 
-    def _setup(self, tmp_path, monkeypatch):
+    These tests pin the post-migration invariants:
+      1. The runbook is NOT injected via `_inject_default_skills`.
+      2. `_SKILL_REQUIRED_RUNBOOKS` no longer maps experiment_designer.
+      3. hire_list.json carries the source_repo URL for the talent.
+    The adversarial_review still gets experiment-quality-critic because the
+    critic is owned by the adversarial-reviewer (one critic for stages 4/5/7).
+    """
+
+    def _setup_default_skills_minus_convener(self, tmp_path, monkeypatch):
         import onemancompany.agents.onboarding as ob_mod
         monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
         for skill_name in (
             "task_lifecycle",
-            "methodology-debate-convener",
             "methodology-quality-critic",
-            "experiment-debate-convener",
             "experiment-quality-critic",
         ):
             src_dir = tmp_path / "default_skills" / skill_name
@@ -564,8 +571,11 @@ class TestExperimentSkillRunbooks:
             (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
         return ob_mod
 
-    def test_experiment_designer_gets_experiment_convener(self, tmp_path, monkeypatch):
-        ob_mod = self._setup(tmp_path, monkeypatch)
+    def test_experiment_designer_no_convener_from_default_skills(self, tmp_path, monkeypatch):
+        """An employee carrying experiment_designer must NOT have the
+        runbook injected from default_skills/ — the talent-clone step is
+        the sole source."""
+        ob_mod = self._setup_default_skills_minus_convener(tmp_path, monkeypatch)
         emp_dir = tmp_path / "00200"
         skills_dir = emp_dir / "skills"
         skills_dir.mkdir(parents=True)
@@ -573,10 +583,16 @@ class TestExperimentSkillRunbooks:
 
         ob_mod._inject_default_skills(skills_dir, employee_id="00200")
 
-        assert (skills_dir / "experiment-debate-convener" / "SKILL.md").exists()
+        assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
+        assert not (skills_dir / "experiment-debate-convener").exists(), (
+            "experiment-debate-convener must come from the talent clone, "
+            "not from _inject_default_skills"
+        )
 
-    def test_adversarial_review_gets_both_quality_critics(self, tmp_path, monkeypatch):
-        ob_mod = self._setup(tmp_path, monkeypatch)
+    def test_adversarial_review_still_gets_experiment_quality_critic(self, tmp_path, monkeypatch):
+        """The critic side is unchanged — adversarial_review still gets
+        all three *-quality-critic runbooks from default_skills/."""
+        ob_mod = self._setup_default_skills_minus_convener(tmp_path, monkeypatch)
         emp_dir = tmp_path / "00201"
         skills_dir = emp_dir / "skills"
         skills_dir.mkdir(parents=True)
@@ -584,19 +600,76 @@ class TestExperimentSkillRunbooks:
 
         ob_mod._inject_default_skills(skills_dir, employee_id="00201")
 
-        # Already had this from PR #19
         assert (skills_dir / "methodology-quality-critic" / "SKILL.md").exists()
-        # NEW: also gets the experiment critic
         assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
 
-    def test_mapping_includes_experiment_designer(self):
+    def test_experiment_designer_not_in_required_runbooks(self):
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "experiment_designer" in _SKILL_REQUIRED_RUNBOOKS
-        assert "experiment-debate-convener" in _SKILL_REQUIRED_RUNBOOKS["experiment_designer"]
+        assert "experiment_designer" not in _SKILL_REQUIRED_RUNBOOKS
 
     def test_adversarial_review_includes_experiment_quality_critic(self):
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
         assert "experiment-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+    def test_hire_list_carries_source_repo(self):
+        """hire_list.json must record the GitHub URL so _do_cv_hire clones
+        directly."""
+        import json
+        repo_root = Path(__file__).resolve().parents[3]
+        with open(repo_root / "company" / "hire_list.json") as f:
+            entries = json.load(f)
+        entry = next((e for e in entries if e.get("talent_id") == "experiment-designer"), None)
+        assert entry is not None, "experiment-designer missing from hire_list.json"
+        assert entry.get("source_repo", "").startswith("https://github.com/"), (
+            "hire_list.json experiment-designer entry must carry source_repo URL"
+        )
+
+
+class TestResultAnalystTalentMarketSourced:
+    """Same migration story as experiment-designer, for Stage 7."""
+
+    def _setup_default_skills_minus_runbook(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "result-quality-critic"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_result_analyst_no_runbook_from_default_skills(self, tmp_path, monkeypatch):
+        ob_mod = self._setup_default_skills_minus_runbook(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00210"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- result_analyst\nname: ResultAnalyst\n")
+
+        ob_mod._inject_default_skills(skills_dir, employee_id="00210")
+
+        assert (skills_dir / "task_lifecycle" / "SKILL.md").exists()
+        assert not (skills_dir / "result-analysis-runbook").exists(), (
+            "result-analysis-runbook must come from the talent clone, "
+            "not from _inject_default_skills"
+        )
+
+    def test_result_analyst_not_in_required_runbooks(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "result_analyst" not in _SKILL_REQUIRED_RUNBOOKS
+
+    def test_adversarial_review_still_gets_result_quality_critic(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "result-quality-critic" in _SKILL_REQUIRED_RUNBOOKS["adversarial_review"]
+
+    def test_hire_list_carries_source_repo(self):
+        import json
+        repo_root = Path(__file__).resolve().parents[3]
+        with open(repo_root / "company" / "hire_list.json") as f:
+            entries = json.load(f)
+        entry = next((e for e in entries if e.get("talent_id") == "result-analyst"), None)
+        assert entry is not None, "result-analyst missing from hire_list.json"
+        assert entry.get("source_repo", "").startswith("https://github.com/"), (
+            "hire_list.json result-analyst entry must carry source_repo URL"
+        )
 
 
 class TestExperimentInfraRunbook:
@@ -677,50 +750,10 @@ class TestExperimentInfraRunbook:
 
 
 class TestResultAnalysisRunbook:
-    """result_analyst must auto-receive the result-analysis-runbook
-    so Stage 7 dispatchers can run confirmatory analysis from the
-    pre-registration contract. Mirrors TestExperimentInfraRunbook."""
-
-    def _setup(self, tmp_path, monkeypatch):
-        import onemancompany.agents.onboarding as ob_mod
-        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
-        for skill_name in ("task_lifecycle", "result-analysis-runbook"):
-            src_dir = tmp_path / "default_skills" / skill_name
-            src_dir.mkdir(parents=True)
-            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
-        return ob_mod
-
-    def test_result_analyst_gets_runbook(self, tmp_path, monkeypatch):
-        ob_mod = self._setup(tmp_path, monkeypatch)
-        emp_dir = tmp_path / "00500"
-        skills_dir = emp_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (emp_dir / "profile.yaml").write_text(
-            "skills:\n- result_analyst\nname: ResultAnalyst\n"
-        )
-
-        ob_mod._inject_default_skills(skills_dir, employee_id="00500")
-
-        assert (skills_dir / "result-analysis-runbook" / "SKILL.md").exists()
-
-    def test_non_result_analyst_does_not_get_runbook(self, tmp_path, monkeypatch):
-        ob_mod = self._setup(tmp_path, monkeypatch)
-        emp_dir = tmp_path / "00501"
-        skills_dir = emp_dir / "skills"
-        skills_dir.mkdir(parents=True)
-        (emp_dir / "profile.yaml").write_text("skills:\n- some_other_skill\n")
-
-        ob_mod._inject_default_skills(skills_dir, employee_id="00501")
-
-        assert not (skills_dir / "result-analysis-runbook").exists(), (
-            "Only employees with result_analyst skill should receive "
-            "the result-analysis-runbook"
-        )
-
-    def test_mapping_includes_result_analyst(self):
-        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "result_analyst" in _SKILL_REQUIRED_RUNBOOKS
-        assert "result-analysis-runbook" in _SKILL_REQUIRED_RUNBOOKS["result_analyst"]
+    """result-analysis-runbook moved to the talent repo at
+    https://github.com/YihangChen9/result-analyst. The Stage 7 critic-side
+    runbook (result-quality-critic) still lives in default_skills/ and
+    must be injected on adversarial_review hires."""
 
     def test_adversarial_review_gets_result_quality_critic(self, tmp_path, monkeypatch):
         """The Stage 7 critic-side runbook (result-quality-critic) must
