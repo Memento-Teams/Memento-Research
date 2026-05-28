@@ -350,6 +350,18 @@ class PipelineEngine:
                 "methodology draft, convene a debate that critiques the draft, save "
                 "the transcript, and revise v1 into a CCF-A-grade final methodology "
                 "(8 sections, English only). Do not skip any phase.\n"
+                "\n## REQUIRED FINAL STEP\n"
+                'After the final methodology document is saved, call load_skill("paper-framework-figure") '
+                "and follow that runbook to render a CCF-A-grade framework figure "
+                "via nano banana (google/gemini-2.5-flash-image on OpenRouter). The "
+                "skill walks you through synthesising the 4-section work summary "
+                "(背景 / 问题和难点 / 创新点 / 具体的技术路线) from the prior stages, "
+                "calling the image API with the correct 'Generate ONE image' wrapper, "
+                "saving the PNG as stage4_framework_figure.png, and embedding it in "
+                "stage4_methodology_designer.md with a numbered Figure caption. The "
+                "Stage 4 critic checks D10 (Framework Figure) as a hard gate — "
+                "missing or generic figure = auto-REJECT. Every CCF-A methodology "
+                "ships with one, no exceptions.\n"
             )
         # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
         # → revise → coordination (assignments table). The experiment convener
@@ -397,6 +409,33 @@ class PipelineEngine:
                 "falsification checks, and cap the overall verdict at whatever "
                 "coverage Stage 6 actually delivered. Do not invent new tests, "
                 "do not substitute metrics, do not HARK.\n"
+            )
+        # Stage 8 (Paper Generation) renders the CCF-A paper from Stage 4
+        # methodology + Stage 5 plan + Stage 6 run + Stage 7 results. A
+        # framework figure (Figure 1) is non-negotiable for CCF-A venues.
+        elif stage["id"] == 8:
+            desc += (
+                "\n## REQUIRED FIRST STEP — REUSE THE STAGE 4 FRAMEWORK FIGURE\n"
+                "Stage 4 already rendered the framework figure as "
+                "`stage4_framework_figure.png` in this same iteration directory. "
+                "Do NOT call `paper-framework-figure` again — do NOT regenerate via "
+                "nano banana — it would burn API budget and produce a different "
+                "(potentially inconsistent) figure. Instead, embed the existing "
+                "PNG as the paper's Figure 1 by including a line of the form\n"
+                "\n    ![Figure 1. <one-paragraph caption naming every box/arrow shown>]"
+                "(stage4_framework_figure.png)\n"
+                "\nin the Methodology section (or the Introduction, whichever you "
+                "reference first). The caption must NAME every component the figure "
+                "actually shows (Stage 1: Prompt-Format Control, Stage 2: Gated Routing, "
+                "Stage 3: Adaptive Budgeting, Stage 4: Evaluation & Gatekeeping, "
+                "plus the Unified Evaluation row and the Shared Controls row) — no "
+                "'see above', no vague pronouns. The Stage 8 critic checks D-FIG "
+                "(Figure 1 embedded + named) as a hard gate.\n"
+                "\nWrite stage8_paper_writer.md with the standard CCF-A sections "
+                "(Abstract, Introduction, Related Work, Methodology, Experimental "
+                "Setup, Results, Discussion, Limitations, Conclusion, "
+                "Reproducibility, References). Preserve all LaTeX notation "
+                "($...$, $$...$$) from Stage 4 verbatim.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "

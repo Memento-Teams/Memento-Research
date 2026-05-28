@@ -91,6 +91,11 @@ _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
         "experiment-quality-critic",
         "result-quality-critic",
     ],
+    # Stage 4 (methodology) renders the headline framework figure via
+    # nano banana. Stage 8 (paper) REUSES the Stage 4 PNG — it does not
+    # regenerate. So only methodology_designer needs the runbook injected;
+    # paper_writer just references stage4_framework_figure.png by path.
+    "methodology_designer": ["paper-framework-figure"],
 }
 
 

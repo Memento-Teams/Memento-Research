@@ -7,16 +7,24 @@ complete" but "would this pass peer review at a top venue".
 The producer should have submitted:
 1. A final methodology document (`stage4_methodology_designer.md` or similar).
 2. A debate transcript (`stage4_debate_transcript.md` in the project workspace).
+3. A framework figure PNG (`stage4_framework_figure.png`) rendered via the
+   `paper-framework-figure` skill — referenced from the methodology document
+   with a numbered caption.
 
 If the transcript file is **missing**, **REJECT immediately** with reason
 "debate not run" — the producer is required to convene a debate (see
 `methodology-debate-convener` skill).
 
+If `stage4_framework_figure.png` is **missing OR not referenced from the
+methodology document**, **REJECT immediately** with reason "framework
+figure missing" — every CCF-A methodology must ship with a visual
+framework. See D10 below.
+
 ---
 
 ## What You Are Grading
 
-CCF-A methodology sections are evaluated on these 8 dimensions. Use them as a
+CCF-A methodology sections are evaluated on these 10 dimensions. Use them as a
 literal checklist. Score each PASS or FAIL with a one-sentence rationale, then
 aggregate.
 
@@ -78,6 +86,22 @@ transcript in at least 2 places where a methodological decision was made.
 - ✅ Quote or paraphrase from named participant(s) for at least 2 decisions.
 - ❌ Methodology decisions appear without grounding in transcript — signals the producer wrote in a vacuum.
 
+### D10 — Framework Figure (every CCF-A methodology ships with one)
+
+- ✅ `stage4_framework_figure.png` exists in the project workspace.
+- ✅ Embedded in the methodology document via a Markdown image tag
+  (`![Figure 1. ...](stage4_framework_figure.png)`) with a numbered
+  caption ("Figure 1. ..." or "Figure 2. ...").
+- ✅ Caption names every box / arrow shown in the figure in one
+  paragraph (CCF-A house style). No "see above", no vague pronouns.
+- ✅ The figure visualises the methodology's actual components, not a
+  generic flowchart. If a reader couldn't tell which paper the figure
+  belongs to from the figure alone, the figure is too generic.
+
+This is a **hard gate** — methodologies without a figure are rejected
+outright. The producer renders the figure via the
+`paper-framework-figure` skill (nano banana via OpenRouter).
+
 ### D9 — Language & Style (academic prose quality)
 A CCF-A reviewer will downgrade a structurally complete methodology if the
 writing is sloppy. Grade the prose against academic standards.
@@ -125,15 +149,16 @@ Confidence: 0.{NN}    # see scale below
 Decision: PASS | REJECT
 
 Per-dimension scoring:
-  D1 Research Question      : PASS / FAIL — <one sentence>
-  D2 Hypotheses & Variables : PASS / FAIL — <one sentence>
-  D3 Experimental Design    : PASS / FAIL — <one sentence>
-  D4 Evaluation Metrics     : PASS / FAIL — <one sentence>
-  D5 Threats to Validity    : PASS / FAIL — <one sentence>
-  D6 Alternatives Considered: PASS / FAIL — <one sentence>
-  D7 Reproducibility        : PASS / FAIL — <one sentence>
-  D8 Citation of Debate     : PASS / FAIL — <one sentence>
-  D9 Language & Style       : PASS / FAIL — <one sentence>
+  D1  Research Question      : PASS / FAIL — <one sentence>
+  D2  Hypotheses & Variables : PASS / FAIL — <one sentence>
+  D3  Experimental Design    : PASS / FAIL — <one sentence>
+  D4  Evaluation Metrics     : PASS / FAIL — <one sentence>
+  D5  Threats to Validity    : PASS / FAIL — <one sentence>
+  D6  Alternatives Considered: PASS / FAIL — <one sentence>
+  D7  Reproducibility        : PASS / FAIL — <one sentence>
+  D8  Citation of Debate     : PASS / FAIL — <one sentence>
+  D9  Language & Style       : PASS / FAIL — <one sentence>
+  D10 Framework Figure       : PASS / FAIL — <one sentence>
 
 If REJECT, list the specific section(s) the producer must rewrite, with
 example improvements drawn from the debate transcript where possible.
@@ -146,12 +171,17 @@ example improvements drawn from the debate transcript where possible.
 - **0.55–0.74** Several FAILs including D3/D4/D5 — methodology unfinished; REJECT.
 - **0.00–0.54** Structural failure (missing sections, no transcript, document not in English, hallucinated content). REJECT immediately.
 
-**Decision rule**: ALL of D1, D2, D3, D4, D5 must PASS to issue PASS.
+**Decision rule**: ALL of D1, D2, D3, D4, D5, D10 must PASS to issue PASS.
 D6/D7/D8/D9 failures alone are not auto-REJECT but should pull confidence
 below 0.85 — flag in reasoning so the producer fixes them before paper
 time. **Exception**: a D9 failure caused by the document being in a
 non-English language IS auto-REJECT — the writing-style sub-failures (mixed
 tense, switching terminology) are not.
+
+D10 (Framework Figure) is non-negotiable: every CCF-A methodology ships
+with a figure, no exceptions. If the producer hits D10 FAIL repeatedly,
+inspect the figure prompt audit trail (`paper_figure_prompt.md`) and
+flag the specific section that needs sharpening before the next retry.
 
 ---
 
