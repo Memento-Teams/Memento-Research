@@ -183,6 +183,25 @@ For each implementation task:
    and use that constant in the existing loop. One-line change to the
    loop; no duplicate code path.
 
+6. **Validation / canary gates check the PIPELINE, never baseline
+   correctness.** If you add a semantic "canary" check (golden prompts
+   with reference answers) to validate the harness, it MUST gate only on
+   **pipeline integrity**: answer **extraction** works, output is
+   non-empty and parseable, the model loads, the JSON schema is right.
+   **Never fatally `abort` the run because a *baseline / weak* condition
+   got an item wrong** — e.g. direct-answering missing a *hard* GSM8K
+   problem. That wrong answer is almost certainly the **expected result
+   you are measuring**, not a bug; aborting on it throws away a valid
+   experiment (this exact mis-design has burned full runs). Rules:
+   - Validate extraction only on items whose answer is **unambiguous**,
+     or assert correctness **only for the strong condition** (e.g. CoT),
+     never for the baseline.
+   - A canary mismatch on a baseline condition is a **warning**, logged
+     and carried into results — it does **not** halt the run.
+   - The only things that may hard-abort a smoke/canary are pipeline
+     faults: empty output, unparseable JSON, extraction returning `None`
+     on a known-format answer, model-load failure, or 0% extraction rate.
+
 ## Phase 4 — Push to the remote working dir (MANDATORY)
 
 **Writing code locally is not enough.** If you stop here, the

@@ -38,6 +38,12 @@ STAGES = [
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
+# Stage 6's code-fix loop (impl_critic rejects + smoke-failure route-backs) each
+# surface a real, distinct bug that the code-writer then fixes — productive
+# progress, not spinning — so it gets more headroom than the generic budget.
+# (A canary smoke-fail + a JSON-bug smoke-fail used to exhaust 3 retries before
+# the now-fixed code ever got to run the full experiment.)
+STAGE6_IMPL_MAX_RETRIES = 6
 
 # Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
 # The literal directory name (e.g. ``iter_001``) is fine — git tag names
@@ -885,12 +891,12 @@ class PipelineEngine:
                     self._dispatch_producer()
                 else:
                     impl_retries = self.state.get("impl_retries", 0)
-                    if impl_retries < MAX_RETRIES:
+                    if impl_retries < STAGE6_IMPL_MAX_RETRIES:
                         self.state["impl_retries"] = impl_retries + 1
                         self._save()
                         logger.info(
                             "[PIPELINE] Stage 6a (impl) REJECTED (retry {}/{}) — re-dispatching code_implementer",
-                            impl_retries + 1, MAX_RETRIES,
+                            impl_retries + 1, STAGE6_IMPL_MAX_RETRIES,
                         )
                         self._emit_stage_event("stage_failed", 6, confidence=confidence)
                         # Re-enter impl_producer (set explicitly so the
@@ -969,7 +975,7 @@ class PipelineEngine:
                 smoke_marker = _detect_smoke_failure(result)
                 if smoke_marker:
                     impl_retries = self.state.get("impl_retries", 0)
-                    if impl_retries < MAX_RETRIES:
+                    if impl_retries < STAGE6_IMPL_MAX_RETRIES:
                         self.state["impl_retries"] = impl_retries + 1
                         # Reset exec_retries — the next exec_producer attempt
                         # is dispatching code, not running it, so the runner
@@ -981,7 +987,7 @@ class PipelineEngine:
                             "[PIPELINE] Stage 6b runner reported smoke failure "
                             "({}) — routing back to impl_producer for code fix "
                             "(impl retry {}/{})",
-                            smoke_marker, impl_retries + 1, MAX_RETRIES,
+                            smoke_marker, impl_retries + 1, STAGE6_IMPL_MAX_RETRIES,
                         )
                         self._emit_stage_event("stage_failed", 6)
                         self._dispatch_producer(
