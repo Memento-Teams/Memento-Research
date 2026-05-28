@@ -476,14 +476,22 @@ class TestMethodologyDesignerTalentMarketSourced:
             "after the talent-market migration"
         )
 
-    def test_methodology_designer_not_in_required_runbooks(self):
-        """The map must NOT list methodology_designer — the runbook ships
-        with the talent (via hire_list source_repo). Re-adding it here
-        would cause _inject_default_skills to look for the runbook in
-        default_skills/, where it no longer lives, and emit a noisy warning
-        on every hire."""
+    def test_methodology_designer_does_not_inject_convener(self):
+        """The convener runbook (methodology-debate-convener) ships with
+        the talent — it must NOT appear in `_SKILL_REQUIRED_RUNBOOKS`.
+
+        Other shared utility skills (e.g. `paper-framework-figure` for
+        nano-banana figure rendering) MAY still be injected onto
+        methodology_designer hires from `default_skills/`. So this
+        assertion is scoped to the convener specifically, not to the
+        whole `methodology_designer` key."""
         from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
-        assert "methodology_designer" not in _SKILL_REQUIRED_RUNBOOKS
+        injected = _SKILL_REQUIRED_RUNBOOKS.get("methodology_designer", [])
+        assert "methodology-debate-convener" not in injected, (
+            "methodology-debate-convener must come from the talent clone, "
+            "not from `_inject_default_skills` (the talent's bundled "
+            "skills/ directory is the SSOT)"
+        )
 
     def test_hire_list_uses_talent_market_source(self):
         """hire_list must register the talent as source_type=talent_market
@@ -781,3 +789,93 @@ class TestResultAnalystTalentMarketSourced:
         assert (skills_dir / "experiment-quality-critic" / "SKILL.md").exists()
         # NEW: Stage 7 critic must also land
         assert (skills_dir / "result-quality-critic" / "SKILL.md").exists()
+
+
+class TestPaperFrameworkFigureSkill:
+    """paper-framework-figure must auto-inject for both methodology_designer
+    (Stage 4) and paper_writer (Stage 8), so `load_skill(...)` resolves the
+    nano-banana figure runbook in the agent's skills/ dir at runtime."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import onemancompany.agents.onboarding as ob_mod
+        monkeypatch.setattr(ob_mod, "_DEFAULT_SKILLS_DIR", tmp_path / "default_skills")
+        for skill_name in ("task_lifecycle", "paper-framework-figure"):
+            src_dir = tmp_path / "default_skills" / skill_name
+            src_dir.mkdir(parents=True)
+            (src_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\nContent")
+        return ob_mod
+
+    def test_methodology_designer_gets_figure_skill(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00400"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- methodology_designer\nname: MethDesigner\n"
+        )
+        ob_mod._inject_default_skills(skills_dir, employee_id="00400")
+        assert (skills_dir / "paper-framework-figure" / "SKILL.md").exists()
+
+    def test_paper_writer_gets_figure_skill(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00401"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text(
+            "skills:\n- paper_writer\nname: PaperWriter\n"
+        )
+        ob_mod._inject_default_skills(skills_dir, employee_id="00401")
+        assert (skills_dir / "paper-framework-figure" / "SKILL.md").exists()
+
+    def test_other_employees_do_not_get_figure_skill(self, tmp_path, monkeypatch):
+        ob_mod = self._setup(tmp_path, monkeypatch)
+        emp_dir = tmp_path / "00402"
+        skills_dir = emp_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (emp_dir / "profile.yaml").write_text("skills:\n- topic_refiner\n")
+        ob_mod._inject_default_skills(skills_dir, employee_id="00402")
+        assert not (skills_dir / "paper-framework-figure").exists()
+
+    def test_mapping_includes_methodology_and_paper(self):
+        from onemancompany.agents.onboarding import _SKILL_REQUIRED_RUNBOOKS
+        assert "paper-framework-figure" in _SKILL_REQUIRED_RUNBOOKS.get("methodology_designer", [])
+        assert "paper-framework-figure" in _SKILL_REQUIRED_RUNBOOKS.get("paper_writer", [])
+
+
+class TestPaperFrameworkFigureSkillFile:
+    """Sanity-check the paper-framework-figure SKILL.md ships with the
+    required hard-gate, wrapper directive, and the 4-section summary
+    schema. If any drifts, the skill won't produce the right image."""
+
+    SKILL_PATH = (
+        Path(__file__).resolve().parents[3]
+        / "src" / "onemancompany" / "default_skills"
+        / "paper-framework-figure" / "SKILL.md"
+    )
+
+    def test_file_exists(self):
+        assert self.SKILL_PATH.exists()
+
+    def test_has_frontmatter(self):
+        head = self.SKILL_PATH.read_text(encoding="utf-8")[:600]
+        assert head.startswith("---\n")
+        assert "name: paper-framework-figure" in head
+        assert "google/gemini-2.5-flash-image" in head
+
+    def test_warns_about_chat_mode_bug(self):
+        """Without the 'Generate ONE image' wrapper, the model replies in
+        chat mode (text, 0 image tokens). The SKILL.md MUST warn the
+        agent so it doesn't waste calls."""
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+        assert "Generate ONE image" in text
+        assert "image_tokens: 0" in text or "no image" in text.lower()
+
+    def test_specifies_4_section_summary_schema(self):
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+        for heading in ("背景", "问题和难点", "创新点", "具体的技术路线"):
+            assert heading in text, f"missing 4-section schema heading {heading!r}"
+
+    def test_warns_about_api_key_secrecy(self):
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+        assert "OPENROUTER_API_KEY" in text
+        assert "Do NOT echo" in text or "Do NOT" in text

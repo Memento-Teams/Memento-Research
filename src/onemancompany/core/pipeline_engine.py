@@ -491,6 +491,18 @@ class PipelineEngine:
                 "methodology draft, convene a debate that critiques the draft, save "
                 "the transcript, and revise v1 into a CCF-A-grade final methodology "
                 "(8 sections, English only). Do not skip any phase.\n"
+                "\n## REQUIRED FINAL STEP\n"
+                'After the final methodology document is saved, call load_skill("paper-framework-figure") '
+                "and follow that runbook to render a CCF-A-grade framework figure "
+                "via nano banana (google/gemini-2.5-flash-image on OpenRouter). The "
+                "skill walks you through synthesising the 4-section work summary "
+                "(背景 / 问题和难点 / 创新点 / 具体的技术路线) from the prior stages, "
+                "calling the image API with the correct 'Generate ONE image' wrapper, "
+                "saving the PNG as stage4_framework_figure.png, and embedding it in "
+                "stage4_methodology_designer.md with a numbered Figure caption. The "
+                "Stage 4 critic checks D10 (Framework Figure) as a hard gate — "
+                "missing or generic figure = auto-REJECT. Every CCF-A methodology "
+                "ships with one, no exceptions.\n"
             )
         # Stage 5 (Experiment Design) mirrors the Stage 4 flow: draft → debate
         # → revise → coordination (assignments table). The experiment convener
@@ -538,6 +550,27 @@ class PipelineEngine:
                 "falsification checks, and cap the overall verdict at whatever "
                 "coverage Stage 6 actually delivered. Do not invent new tests, "
                 "do not substitute metrics, do not HARK.\n"
+            )
+        # Stage 8 (Paper Generation) renders the CCF-A paper from Stage 4
+        # methodology + Stage 5 plan + Stage 6 run + Stage 7 results. A
+        # framework figure (Figure 1) is non-negotiable for CCF-A venues.
+        elif stage["id"] == 8:
+            desc += (
+                "\n## REQUIRED FIRST STEP\n"
+                'Before writing the paper body, call load_skill("paper-framework-figure") '
+                "and render Figure 1 — the headline framework diagram. It walks you "
+                "through synthesising the 4-section work summary "
+                "(背景 / 问题和难点 / 创新点 / 具体的技术路线) from the prior stages "
+                "(1-7), calling nano banana via OpenRouter with the correct "
+                "'Generate ONE image' wrapper, saving the PNG as "
+                "stage8_framework_figure.png, and writing a numbered Figure caption "
+                "that names every component shown. Render the figure BEFORE the "
+                "paper body so you can reference it in the Introduction.\n"
+                "\nAfter Figure 1 is in place, write stage8_paper_writer.md with the "
+                "standard CCF-A sections (Abstract, Introduction, Related Work, "
+                "Methodology, Experimental Setup, Results, Discussion, Limitations, "
+                "Conclusion, Reproducibility, References). Preserve all LaTeX "
+                "notation ($...$, $$...$$) from Stage 4 verbatim.\n"
             )
         desc += (
             f"\nYour task: produce the deliverable for this stage. "
