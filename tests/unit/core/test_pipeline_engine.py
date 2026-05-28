@@ -1399,3 +1399,36 @@ def test_dispatch_critic_stage7_not_in_other_stages(tmp_path, monkeypatch):
                 f"Stage {stage_id} critic must not carry the Stage 7 "
                 f"result-quality-critic trigger"
             )
+
+
+
+# ---------------------------------------------------------------------------
+# paper-framework-figure dispatch wiring (Stage 4 final step + Stage 8 first step)
+# ---------------------------------------------------------------------------
+
+def test_stage4_desc_triggers_paper_framework_figure_after_methodology():
+    """Stage 4 task description must tell the methodology agent to
+    render the framework figure AFTER the methodology is written.
+    Without this trigger, the bundled paper-framework-figure skill
+    sits unused in the agent's skills/ dir."""
+    from onemancompany.core import pipeline_engine
+    import inspect
+    src = inspect.getsource(pipeline_engine)
+    assert 'load_skill("paper-framework-figure")' in src
+    # Stage 4 specifically — appears in the Stage 4 branch (REQUIRED FINAL STEP)
+    assert "REQUIRED FINAL STEP" in src
+    assert "stage4_framework_figure.png" in src
+
+
+def test_stage8_desc_triggers_paper_framework_figure_before_paper_body():
+    """Stage 8 must render Figure 1 BEFORE writing the paper body so
+    the Introduction can reference it."""
+    from onemancompany.core import pipeline_engine
+    import inspect
+    src = inspect.getsource(pipeline_engine)
+    # Stage 8 branch must exist
+    assert 'stage["id"] == 8' in src
+    # And mention the figure skill
+    assert "stage8_framework_figure.png" in src
+    # CCF-A section list still required
+    assert "Abstract" in src and "Reproducibility" in src

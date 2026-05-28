@@ -128,3 +128,56 @@ class TestExperimentCriticSkill:
         text = EXP_CRITIC.read_text(encoding="utf-8")
         assert "Confidence:" in text
         assert "Decision: PASS" in text
+
+
+
+# ---------------------------------------------------------------------------
+# D10 — Framework Figure (every CCF-A methodology must have a figure)
+# ---------------------------------------------------------------------------
+
+class TestCriticD10FrameworkFigure:
+    """Every Stage 4 methodology must ship with a framework figure
+    rendered via nano banana. The critic enforces this as a hard gate
+    (auto-REJECT) on D10, equivalent to D1-D5."""
+
+    def test_critic_lists_d10_dimension(self):
+        text = QUALITY_CRITIC.read_text(encoding="utf-8")
+        assert "D10" in text
+        assert "Framework Figure" in text
+
+    def test_critic_d10_is_hard_gate(self):
+        """D10 must be in the decision rule alongside D1-D5 (not in the
+        soft D6/D7/D8/D9 bucket). Without D10 hard gating, a producer
+        can submit a methodology without a figure and PASS critic."""
+        text = QUALITY_CRITIC.read_text(encoding="utf-8")
+        # The decision rule line names D10 as hard
+        assert "D1, D2, D3, D4, D5, D10" in text
+
+    def test_critic_warns_about_missing_figure_file(self):
+        """If stage4_framework_figure.png is missing or not referenced,
+        the critic must REJECT (not just dock confidence)."""
+        text = QUALITY_CRITIC.read_text(encoding="utf-8")
+        # Normalise whitespace so the assertion survives soft line breaks
+        # in the SKILL.md prose.
+        flat = " ".join(text.split())
+        assert "stage4_framework_figure.png" in flat
+        assert "REJECT" in flat
+        assert "framework figure missing" in flat
+
+    def test_critic_requires_numbered_caption(self):
+        text = QUALITY_CRITIC.read_text(encoding="utf-8")
+        # The caption must be numbered (Figure 1. / Figure 2. ...)
+        assert "numbered caption" in text or "Figure 1." in text
+
+
+def test_stage4_dispatch_calls_figure_skill_required():
+    """Stage 4 producer task description must call the figure skill
+    REQUIRED (not optional). Wording change from PR #58: 'may auto-REJECT'
+    → 'auto-REJECT', 'no exceptions'."""
+    from onemancompany.core import pipeline_engine
+    import inspect
+    src = inspect.getsource(pipeline_engine)
+    assert 'load_skill("paper-framework-figure")' in src
+    # Phrase must be assertive — no "may" / "could" weasels
+    s4 = src.split('stage["id"] == 4')[1].split('elif stage["id"] == 5')[0]
+    assert "auto-REJECT" in s4 and "no exceptions" in s4
