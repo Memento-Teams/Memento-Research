@@ -514,6 +514,69 @@ class TestSkillConditionalRunbookInjection:
         assert not (skills_dir / "methodology-debate-convener").exists()
 
 
+class TestMethodologyDesignerHireE2E:
+    """Production-realistic end-to-end check for the talent-bundled migration.
+
+    hire_list.json hires methodology-designer with no `repo_url`, which
+    causes the clone step in `_do_cv_hire` to be skipped and leaves
+    `_TALENTS_CLONE_DIR/methodology-designer` empty. The hire then relies
+    on `resolve_talent_dir` falling back to `_BUILTIN_TALENTS_DIR`
+    (`src/onemancompany/talent_market/talents/`), where this PR puts the
+    bundled `skills/methodology-debate-convener/` folder.
+
+    If this test fails, Stage 4 will be broken in production: the convener
+    will call `load_skill("methodology-debate-convener")` and get a
+    "Skill not found" error because nothing copied it into the employee's
+    skills dir.
+    """
+
+    def test_resolve_talent_dir_falls_back_to_builtin(self, tmp_path, monkeypatch):
+        """With an empty clone dir, resolve_talent_dir must return the
+        built-in `src/.../talents/methodology-designer/` path."""
+        import onemancompany.agents.onboarding as ob_mod
+
+        # Empty clone dir simulates "no repo_url → clone skipped".
+        empty_clone = tmp_path / "empty_clone"
+        empty_clone.mkdir()
+        monkeypatch.setattr(ob_mod, "_TALENTS_CLONE_DIR", empty_clone)
+
+        resolved = ob_mod.resolve_talent_dir("methodology-designer")
+        assert resolved is not None, (
+            "resolve_talent_dir must fall back to _BUILTIN_TALENTS_DIR when "
+            "the clone dir is empty"
+        )
+        assert (resolved / "skills" / "methodology-debate-convener" / "SKILL.md").exists(), (
+            f"Built-in talent at {resolved} must bundle the convener runbook"
+        )
+
+    def test_copy_talent_assets_bundles_convener_runbook(self, tmp_path, monkeypatch):
+        """End-to-end: empty clone dir + copy_talent_assets must produce
+        `emp/skills/methodology-debate-convener/SKILL.md`."""
+        import onemancompany.agents.onboarding as ob_mod
+
+        empty_clone = tmp_path / "empty_clone"
+        empty_clone.mkdir()
+        monkeypatch.setattr(ob_mod, "_TALENTS_CLONE_DIR", empty_clone)
+
+        emp_dir = tmp_path / "emp_00099"
+        emp_dir.mkdir()
+
+        # Replay the hire-time copy step.
+        talent_dir = ob_mod.resolve_talent_dir("methodology-designer")
+        assert talent_dir is not None  # guarded by previous test, repeated for clarity
+        ob_mod.copy_talent_assets(talent_dir, emp_dir)
+
+        bundled_skill = emp_dir / "skills" / "methodology-debate-convener" / "SKILL.md"
+        assert bundled_skill.exists(), (
+            "After hire, the employee's skills dir must contain the bundled "
+            "convener runbook (this is what load_skill('methodology-debate-convener') "
+            "in Stage 4 resolves against)"
+        )
+        # Content sanity — the file should be the real runbook, not an empty placeholder
+        content = bundled_skill.read_text(encoding="utf-8")
+        assert "Phase 3: Write the Initial Methodology Draft" in content
+
+
 class TestAdversarialReviewerGetsQualityCritic:
     """Whoever has adversarial_review must get the methodology-quality-critic
     runbook auto-injected, so that the Stage 4 critic-side trigger resolves."""
