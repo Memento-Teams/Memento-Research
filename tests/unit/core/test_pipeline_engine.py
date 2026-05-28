@@ -549,6 +549,56 @@ def test_detect_smoke_failure():
     assert pe._detect_smoke_failure(None) is None  # noqa: type-arg
 
 
+def test_archive_stage_artifacts(tmp_path, monkeypatch):
+    """Every stage PASS should copy .md / .json artifacts to
+    experiments_archive/<pid>/<iter>/ so they survive a wipe of
+    .onemancompany/. Runtime files (pipeline_state.yaml, task_tree.yaml)
+    must NOT be archived."""
+    project_dir = tmp_path / "fake_project"
+    project_dir.mkdir()
+    (project_dir / "stage4_methodology_designer.md").write_text("# methodology", encoding="utf-8")
+    (project_dir / "stage4_gate_review.md").write_text("Decision: PASS", encoding="utf-8")
+    (project_dir / "stage7_result_analyst.md").write_text("# results", encoding="utf-8")
+    (project_dir / "aggregate_results.json").write_text('{"n":1319}', encoding="utf-8")
+    # Runtime files — must NOT be archived
+    (project_dir / "pipeline_state.yaml").write_text("phase: gate", encoding="utf-8")
+    (project_dir / "task_tree.yaml").write_text("root: x", encoding="utf-8")
+
+    archive_root = tmp_path / "experiments_archive"
+    monkeypatch.setattr(pe, "_ARCHIVE_ROOT", archive_root)
+
+    n = pe._archive_stage_artifacts(str(project_dir), "pid123", "iter_001")
+    assert n == 4, f"expected 4 archived files (3 md + 1 json), got {n}"
+
+    archived = archive_root / "pid123" / "iter_001"
+    assert archived.is_dir()
+    names = sorted(f.name for f in archived.iterdir())
+    assert names == [
+        "aggregate_results.json",
+        "stage4_gate_review.md",
+        "stage4_methodology_designer.md",
+        "stage7_result_analyst.md",
+    ]
+    assert not (archived / "pipeline_state.yaml").exists()
+    assert not (archived / "task_tree.yaml").exists()
+
+    # Subsequent call should overwrite (idempotent)
+    (project_dir / "stage4_methodology_designer.md").write_text("# v2", encoding="utf-8")
+    n2 = pe._archive_stage_artifacts(str(project_dir), "pid123", "iter_001")
+    assert n2 == 4
+    assert (archived / "stage4_methodology_designer.md").read_text() == "# v2"
+
+
+def test_archive_stage_artifacts_swallows_errors(tmp_path, monkeypatch):
+    """Archive must never raise — pipeline correctness must not depend on
+    write success to a side directory."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    monkeypatch.setattr(pe, "_ARCHIVE_ROOT", blocker)
+    n = pe._archive_stage_artifacts(str(tmp_path), "p", "iter_001")
+    assert n == 0
+
+
 def test_recover_verdict_from_gate_review(tmp_path):
     """If a critic submit_result is a stub, the engine should fall back to
     reading the stage{N}_gate_review*.md file to recover the real verdict."""

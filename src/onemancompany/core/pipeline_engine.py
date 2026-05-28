@@ -53,6 +53,45 @@ class RevertNotAllowedError(Exception):
 # Tag for pipeline-managed nodes so vessel can identify them
 PIPELINE_NODE_TAG = "pipeline_managed"
 
+# Local-only archive root for stage artifacts. Lives at the repo root,
+# OUTSIDE ``.onemancompany/``, so it survives any ``start.sh reinit``
+# wipe of the runtime data dir. Git-ignored on purpose — the artifacts
+# are research outputs, not source code.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ARCHIVE_ROOT = _REPO_ROOT / "experiments_archive"
+
+
+def _archive_stage_artifacts(project_dir: str, project_id: str, iteration_id: str) -> int:
+    """Copy the current iteration's stage_*.md / *.json / *.yaml artifacts
+    to ``<repo_root>/experiments_archive/<project_id>/<iteration_id>/``.
+
+    Called from ``_on_critic_pass`` so every stage that reaches the gate
+    has its outputs persisted outside the runtime data dir. Best-effort;
+    never raises — archive failures must not break the pipeline.
+
+    Returns the number of files copied (0 if anything went wrong).
+    """
+    import shutil
+    try:
+        archive_dir = _ARCHIVE_ROOT / project_id / iteration_id
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        src_dir = Path(project_dir)
+        copied = 0
+        for pattern in ("*.md", "*.json", "*.yaml"):
+            for src in src_dir.glob(pattern):
+                # Skip pipeline_state.yaml and task_tree.yaml — runtime
+                # state, not research output. Keep stage_*, debate, gate
+                # reviews, receipts, papers.
+                if src.name in ("pipeline_state.yaml", "task_tree.yaml"):
+                    continue
+                shutil.copy2(src, archive_dir / src.name)
+                copied += 1
+        return copied
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("[ARCHIVE] failed to archive artifacts to {}: {}",
+                       _ARCHIVE_ROOT, exc)
+        return 0
+
 
 def _recover_verdict_from_gate_review(project_dir: str, stage_id: int) -> str | None:
     """When a critic's submit_result is a stub placeholder (the executor's
@@ -1210,6 +1249,16 @@ class PipelineEngine:
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "[PIPELINE] commit_stage failed at stage {}: {}", stage["id"], exc,
+            )
+        # Persist artifacts outside .onemancompany/ so they survive a
+        # ``start.sh reinit`` wipe. Local-only (git-ignored).
+        n_archived = _archive_stage_artifacts(
+            self.project_dir, self.project_id, self._iteration_id(),
+        )
+        if n_archived:
+            logger.info(
+                "[PIPELINE] Stage {} archived {} files to experiments_archive/{}/{}/",
+                stage["id"], n_archived, self.project_id, self._iteration_id(),
             )
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)

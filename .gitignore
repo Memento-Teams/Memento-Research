@@ -3,6 +3,11 @@
 docs/
 .onemancompany/
 
+# Local-only stage-artifact archive. Pipeline engine rsyncs stage_*.md /
+# *.json from .onemancompany/.../iter_*/ here on every Stage PASS, so
+# research outputs survive a ``start.sh reinit`` wipe. Not source code.
+experiments_archive/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
