@@ -233,6 +233,19 @@ class PipelineEngine:
         self.state["active_employee_id"] = employee_id
         self._save()
 
+        # Start each pipeline stage with a FRESH Claude conversation. The
+        # daemon otherwise resumes one session per (employee, project) and
+        # accumulates history across every stage it touches — the critic
+        # reviews all 9 stages, so its resumed history blows past the model
+        # context window (observed: 623K tokens > 262K limit, Stage 6 critic
+        # failed → empty deliverable). Pipeline tasks pass full context in
+        # the prompt, so resumed history is pure overhead.
+        try:
+            from onemancompany.core.claude_session import reset_session
+            reset_session(employee_id, self.project_id)
+        except Exception as _e:  # best-effort; never block dispatch
+            logger.debug("[PIPELINE] reset_session skipped for {}: {}", employee_id, _e)
+
         employee_manager.schedule_node(employee_id, node.id, tree_path)
         employee_manager._schedule_next(employee_id)
 
@@ -387,13 +400,19 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None):
-        """Begin the pipeline from the given stage."""
+    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False):
+        """Begin the pipeline from the given stage.
+
+        ``auto_approve`` (headless/unattended mode): when True, every CEO gate
+        is advanced automatically — the pipeline runs end-to-end with no human
+        confirmation. Used for background full-auto runs.
+        """
         self.state["current_stage"] = max(1, min(start_stage, 9))
         self.state["start_stage"] = self.state["current_stage"]
         self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, 9))
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
+        self.state["auto_approve"] = bool(auto_approve)
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
@@ -1137,8 +1156,26 @@ class PipelineEngine:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
+            # Headless/unattended mode: advance the gate automatically so the
+            # pipeline runs end-to-end with no human confirmation. Covers BOTH
+            # gate openings (clean PASS and retries-exhausted) since both land
+            # here. A human would otherwise click "approve" in the UI.
+            if self.state.get("auto_approve"):
+                loop.create_task(self._auto_approve_gate(stage_id, exhausted))
         except RuntimeError as exc:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
+
+    async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
+        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        import asyncio
+        await asyncio.sleep(0)  # let the gate event flush first
+        if self.phase != "gate":
+            return
+        logger.info(
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
+            "(exhausted={})", stage_id, exhausted,
+        )
+        self.on_ceo_approve("")
 
     def _emit_pipeline_complete(self):
         import asyncio
