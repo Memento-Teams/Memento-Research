@@ -76,8 +76,12 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 # from default_skills/ are injected into their skills/ directory so that
 # load_skill(<runbook>) can resolve at runtime. This is the SSOT for the
 # pattern; adding a new convener-style skill is one-line dict edit.
+# Skills whose runbook ships bundled with the talent (under
+# `talents/<talent-id>/skills/<runbook>/`) are NOT listed here — those are
+# already copied during the talent-clone step in onboarding. Only runbooks
+# that still live in `default_skills/` and need to be injected onto talents
+# that don't bundle them belong in this map.
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
-    "methodology_designer": ["methodology-debate-convener"],
     "experiment_designer": ["experiment-debate-convener"],
     "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
     "result_analyst": ["result-analysis-runbook"],
@@ -654,11 +658,17 @@ def _inject_default_skills(
 
     Skill-conditional runbook injection: if the employee carries a skill
     listed in ``_SKILL_REQUIRED_RUNBOOKS``, the mapped runbook names are
-    added to the injection list (e.g. ``methodology_designer`` →
-    ``methodology-debate-convener``). When ``employee_skills`` is not
+    added to the injection list (e.g. ``experiment_designer`` →
+    ``experiment-debate-convener``). When ``employee_skills`` is not
     provided, the function reads ``skills_dir.parent / 'profile.yaml'`` to
     discover the employee's skills; if no profile file is present, only the
     universal defaults are injected.
+
+    Runbooks that ship bundled with the talent (under
+    ``talents/<talent-id>/skills/<runbook>/``) are NOT in this map — the
+    talent-clone step in :func:`add_or_update_employee` already copies
+    them. Only runbooks that still live in ``default_skills/`` belong
+    here.
     """
     from onemancompany.core.config import EA_ID
     names = list(_DEFAULT_SKILL_NAMES)

@@ -284,6 +284,10 @@ docs/task-decomposition-algorithm.md
 docs/organizational-evolution-mcts.md
 docs/.DS_Store
 
+# Auto-archived stage artifacts (per-PASS rsync from .onemancompany/projects/*).
+# Pure local snapshots, not source of truth — never track.
+experiments_archive/
+
 # memento test scratch dirs
 .tmp_memento_*/
 

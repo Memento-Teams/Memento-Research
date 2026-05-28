@@ -1,0 +1,18 @@
+{
+  "id": "methodology-designer",
+  "name": "Methodology Designer",
+  "version": "1.0.0",
+  "role": "Researcher",
+  "hosting": "company",
+  "settings": {
+    "sections": []
+  },
+  "prompts": {
+    "skills": ["skills/*/SKILL.md"]
+  },
+  "tools": {
+    "builtin": [],
+    "custom": []
+  },
+  "platform_capabilities": []
+}

@@ -8,8 +8,18 @@ from __future__ import annotations
 from pathlib import Path
 
 
-SKILLS_ROOT = Path(__file__).resolve().parents[3] / "src" / "onemancompany" / "default_skills"
-CONVENER = SKILLS_ROOT / "methodology-debate-convener" / "SKILL.md"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SKILLS_ROOT = REPO_ROOT / "src" / "onemancompany" / "default_skills"
+# methodology-debate-convener is bundled with the methodology-designer talent,
+# not in default_skills/. The quality-critic still lives in default_skills/
+# because it's used by the adversarial_review talent (which reviews all
+# three producer stages).
+CONVENER = (
+    REPO_ROOT
+    / "src" / "onemancompany" / "talent_market" / "talents"
+    / "methodology-designer" / "skills"
+    / "methodology-debate-convener" / "SKILL.md"
+)
 QUALITY_CRITIC = SKILLS_ROOT / "methodology-quality-critic" / "SKILL.md"
 
 
