@@ -1,3 +1,8 @@
+---
+name: methodology-debate-convener
+description: Stage-4 runbook — draft v0 methodology, convene a 3-5 person multi-agent debate via run_debate, save the transcript, then revise v1 into the final CCF-A-grade methodology document. Activate when you receive a "Stage 4 (Methodology Design)" task.
+---
+
 # Methodology Debate Convener — Run a Debate Before You Write the Methodology
 
 You are designing the methodology for a research project. The methodology
