@@ -76,14 +76,19 @@ _EA_SKILL_NAMES = ["project-brainstorming"]
 # from default_skills/ are injected into their skills/ directory so that
 # load_skill(<runbook>) can resolve at runtime. This is the SSOT for the
 # pattern; adding a new convener-style skill is one-line dict edit.
+#
+# Skills whose runbook ships with the talent itself (cloned from the
+# Talent Market) are NOT listed here — the talent-clone step in
+# `add_or_update_employee` already copies them. Currently three talents
+# follow this pattern (resolved via talent_market.onboard() → clone):
+#   - methodology_designer → https://github.com/YihangChen9/methodology-designer
+#   - experiment_designer  → https://github.com/YihangChen9/experiment-designer
+#   - result_analyst       → https://github.com/YihangChen9/result-analyst
 _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
-    "methodology_designer": ["methodology-debate-convener"],
-    "experiment_designer": ["experiment-debate-convener"],
     "experiment_runner": ["experiment-infra", "experiment-execution-runbook"],
     # The code_implementer needs experiment-infra so it can call
     # fast_push_code.sh to ship the implementation to the remote working dir.
     "code_implementer": ["code-implementation-runbook", "experiment-infra"],
-    "result_analyst": ["result-analysis-runbook"],
     "adversarial_review": [
         "methodology-quality-critic",
         "experiment-quality-critic",
@@ -621,23 +626,34 @@ async def clone_talent_repo(repo_url: str, talent_id: str) -> Path:
             # Multi-talent repo: each subdir with profile.yaml is a talent.
             # Save by profile.yaml's `id` field (falling back to dir name) so
             # resolve_talent_dir(talent_id) can find it by its canonical ID.
+            # Look in repo root AND in a conventional `talent/` subdirectory
+            # — many talent repos keep their bundle there to avoid cluttering
+            # the project root with research code.
             import yaml as _yaml
-            for sub in tmp_clone.iterdir():
-                if sub.is_dir() and (sub / PROFILE_FILENAME).exists():
-                    try:
-                        profile_id = (_yaml.safe_load(read_text_utf(sub / PROFILE_FILENAME)) or {}).get("id", "")
-                    except Exception:
-                        profile_id = ""
-                    dest_name = profile_id or sub.name
-                    dest = _TALENTS_CLONE_DIR / dest_name
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(str(sub), str(dest), ignore=shutil.ignore_patterns(".git"))
-                    # Also save under dir name as alias if different
-                    if profile_id and profile_id != sub.name:
-                        alias = _TALENTS_CLONE_DIR / sub.name
-                        if not alias.exists():
-                            shutil.copytree(str(sub), str(alias), ignore=shutil.ignore_patterns(".git"))
+            scan_roots = [tmp_clone]
+            if (tmp_clone / "talent").is_dir():
+                scan_roots.append(tmp_clone / "talent")
+            seen_subs: set[Path] = set()
+            for scan_root in scan_roots:
+                for sub in scan_root.iterdir():
+                    if sub in seen_subs:
+                        continue
+                    seen_subs.add(sub)
+                    if sub.is_dir() and (sub / PROFILE_FILENAME).exists():
+                        try:
+                            profile_id = (_yaml.safe_load(read_text_utf(sub / PROFILE_FILENAME)) or {}).get("id", "")
+                        except Exception:
+                            profile_id = ""
+                        dest_name = profile_id or sub.name
+                        dest = _TALENTS_CLONE_DIR / dest_name
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(str(sub), str(dest), ignore=shutil.ignore_patterns(".git"))
+                        # Also save under dir name as alias if different
+                        if profile_id and profile_id != sub.name:
+                            alias = _TALENTS_CLONE_DIR / sub.name
+                            if not alias.exists():
+                                shutil.copytree(str(sub), str(alias), ignore=shutil.ignore_patterns(".git"))
     finally:
         shutil.rmtree(tmp_clone, ignore_errors=True)
 
