@@ -581,24 +581,35 @@ def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monke
 # Stage 6 (Auto Experiment) — runner preference + experiment-infra trigger
 # ---------------------------------------------------------------------------
 
-def test_find_employee_for_stage_6_prefers_runner_over_experimentalist(monkeypatch):
-    """When both an experiment_runner and an experimentalist are on the
-    roster, Stage 6 must route to the runner — they hold the experiment-infra
-    runbook and can actually fire remote infra."""
+def test_find_employee_for_stage_6_resolves_code_implementer(monkeypatch):
+    """Stage 6's first dispatch maps to the code_implementer (Stage 6a).
+    The experiment_runner is the *second* dispatch (Stage 6b) — see
+    ``_find_stage_6b_employee``."""
+    by_skill = {
+        "code_implementer": "emp-coder-027",
+        "experiment_runner": "emp-runner-025",
+    }
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
+    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-coder-027"
+
+
+def test_find_stage_6b_employee_prefers_runner_over_experimentalist(monkeypatch):
+    """Stage 6b's runner resolution prefers the experiment_runner (real
+    remote infra) over the experimentalist (simulator-only)."""
     by_skill = {
         "experiment_runner": "emp-runner-007",
         "experimentalist": "emp-sim-001",
     }
     monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
-    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-runner-007"
+    assert pe._find_stage_6b_employee() == "emp-runner-007"
 
 
-def test_find_employee_for_stage_6_falls_back_to_experimentalist(monkeypatch):
-    """No experiment_runner on roster — Stage 6 falls back to the existing
+def test_find_stage_6b_employee_falls_back_to_experimentalist(monkeypatch):
+    """No experiment_runner on roster — Stage 6b falls back to the
     experimentalist so the pipeline still runs (degraded, simulation only)."""
     by_skill = {"experimentalist": "emp-sim-001"}
     monkeypatch.setattr(pe, "_find_employee_by_skill", lambda s: by_skill.get(s))
-    assert pe._find_employee_for_stage(6, "experimentalist") == "emp-sim-001"
+    assert pe._find_stage_6b_employee() == "emp-sim-001"
 
 
 def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
@@ -613,12 +624,13 @@ def test_find_employee_for_stage_5_unchanged_no_runner_fallback(monkeypatch):
     assert pe._find_employee_for_stage(5, "experiment_designer") == "emp-designer-006"
 
 
-def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
-    """Stage 6 producer task description must instruct the agent to load
-    the experiment-execution-runbook skill (which itself names experiment-infra)."""
+def test_dispatch_producer_stage6_injects_code_implementation_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 6's first producer dispatch is Stage 6a — the code implementer.
+    Its description must instruct the agent to load the
+    code-implementation-runbook (which carries the upstream-pin Phase 0)."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
-                        lambda skill: "emp-runner-007" if skill == "experiment_runner" else None)
+                        lambda skill: "emp-coder-027" if skill == "code_implementer" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
                         lambda self, *args: dispatched.append(args))
@@ -629,26 +641,25 @@ def test_dispatch_producer_stage6_injects_execution_runbook_trigger(tmp_path, mo
     engine.state["current_stage"] = 6
     engine._dispatch_producer()
 
-    assert dispatched, "Stage 6 producer must dispatch"
+    assert dispatched, "Stage 6a producer must dispatch"
     desc = dispatched[0][1]
-    assert 'load_skill("experiment-execution-runbook")' in desc, (
-        "Stage 6 task description must instruct the producer to load the execution runbook"
+    assert 'load_skill("code-implementation-runbook")' in desc, (
+        "Stage 6a task description must instruct the producer to load "
+        "code-implementation-runbook (Phase 0 honours the upstream pin)"
     )
-    assert "experiment-infra" in desc, (
-        "Stage 6 task description must mention the experiment-infra runbook so the "
-        "agent knows the fast_*.sh scripts are available for remote rows"
+    assert "stage5_codebase_pin.md" in desc or "pin" in desc.lower(), (
+        "Stage 6a task description must reference the Stage 5 codebase pin"
     )
 
 
-def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path, monkeypatch):
-    """Stage 6 dispatch resolution must reach the experiment_runner
-    employee (not whoever owns the 'experimentalist' skill) when a runner
-    is on the roster."""
+def test_dispatch_producer_stage6_routes_to_code_implementer_employee(tmp_path, monkeypatch):
+    """Stage 6's first dispatch resolves to the code_implementer
+    (not the experiment_runner — that comes in the 6b second pass)."""
     dispatched = []
     monkeypatch.setattr(
         pe, "_find_employee_by_skill",
-        lambda skill: {"experiment_runner": "emp-runner",
-                       "experimentalist": "emp-sim"}.get(skill),
+        lambda skill: {"code_implementer": "emp-coder",
+                       "experiment_runner": "emp-runner"}.get(skill),
     )
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
@@ -660,9 +671,71 @@ def test_dispatch_producer_stage6_routes_to_experiment_runner_employee(tmp_path,
     engine.state["current_stage"] = 6
     engine._dispatch_producer()
 
-    assert dispatched == ["emp-runner"], (
-        f"Expected dispatch to experiment_runner employee, got {dispatched}"
+    assert dispatched == ["emp-coder"], (
+        f"Expected first Stage 6 dispatch to code_implementer, got {dispatched}"
     )
+
+
+def test_dispatch_producer_b_stage6_injects_execution_runbook_trigger(tmp_path, monkeypatch):
+    """Stage 6b's producer dispatch must instruct the agent to load the
+    experiment-execution-runbook and reference the implementation receipt
+    from Stage 6a."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-runner-025" if skill == "experiment_runner" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer_b()
+
+    assert dispatched, "Stage 6b producer must dispatch"
+    emp_id, desc, title = dispatched[0]
+    assert emp_id == "emp-runner-025"
+    assert 'load_skill("experiment-execution-runbook")' in desc, (
+        "Stage 6b task description must instruct the runner to load the execution runbook"
+    )
+    assert "stage6_implementation_receipt.md" in desc, (
+        "Stage 6b must reference Stage 6a's implementation receipt"
+    )
+
+
+def test_stage6_phase_transitions_producer_to_producer_b_to_critic(tmp_path, monkeypatch):
+    """On a successful Stage 6 run, on_task_complete must walk the
+    producer → producer_b → critic transition (not jump straight to
+    the critic on producer completion)."""
+    transitions = []
+
+    def _capture_phase(self, *a, **kw):
+        transitions.append(self.state["phase"])
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: {"code_implementer": "emp-coder",
+                                       "experiment_runner": "emp-runner",
+                                       pe.CRITIC_SKILL: "emp-critic"}.get(skill))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: _capture_phase(self))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    engine._dispatch_producer()                       # → producer (6a)
+    engine.on_task_complete("emp-coder", "n1", "6a receipt")  # → producer_b
+    engine.on_task_complete("emp-runner", "n2", "6b report")  # → critic
+
+    assert transitions == ["producer", "producer_b", "critic"], (
+        f"Expected producer → producer_b → critic, got {transitions}"
+    )
+    # 6a result is stored separately; 6b's report is the canonical stage 6 result
+    assert engine.state["stage_6a_result"] == "6a receipt"
+    assert engine.state["stage_results"]["6"] == "6b report"
 
 
 def test_dispatch_critic_stage6_injects_evidence_grading(tmp_path, monkeypatch):
@@ -689,8 +762,8 @@ def test_dispatch_critic_stage6_injects_evidence_grading(tmp_path, monkeypatch):
 
 
 def test_stage6_trigger_not_in_stage4_or_stage5(tmp_path, monkeypatch):
-    """Stage 6 triggers (execution-runbook + run_id grading) must be
-    stage-scoped — earlier stages must not carry them."""
+    """Stage 6 triggers (code-impl-runbook + execution-runbook + run_id
+    grading) must be stage-scoped — earlier stages must not carry them."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: f"emp-{skill}" if skill else None)
@@ -706,7 +779,9 @@ def test_stage6_trigger_not_in_stage4_or_stage5(tmp_path, monkeypatch):
         engine.state["current_stage"] = stage_id
         engine._dispatch_producer()
         if dispatched:
-            assert "experiment-execution-runbook" not in dispatched[0][1]
+            desc = dispatched[0][1]
+            assert "experiment-execution-runbook" not in desc
+            assert "code-implementation-runbook" not in desc
 
 
 # ---------------------------------------------------------------------------
