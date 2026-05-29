@@ -360,12 +360,86 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
         assert all(fb == "" for _, fb in redispatched), f"unexpected redispatch with feedback: {redispatched}"
 
 
-def test_parse_critic_decision_and_confidence():
-    assert pe.PipelineEngine._parse_critic_pass("reject: weak evidence") is False
-    assert pe.PipelineEngine._parse_critic_pass("pass: strong enough") is True
-    assert pe.PipelineEngine._parse_critic_pass("looks fine") is True
+def test_parse_critic_decision_and_confidence(tmp_path):
+    # ``_parse_critic_pass`` is now an instance method (it reaches for the
+    # on-disk gate-review file as a stub-recovery fallback) — needs an engine.
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+
+    assert engine._parse_critic_pass("reject: weak evidence") is False
+    assert engine._parse_critic_pass("pass: strong enough") is True
+    # Default-REJECT on ambiguity (was: default PASS, the silent-auto-approve
+    # loophole behind #60 / #63).
+    assert engine._parse_critic_pass("looks fine") is False
+    # Table-format verdict (#60 fix 4).
+    assert engine._parse_critic_pass("| Decision | PASS |") is True
+    assert engine._parse_critic_pass("| **Decision** | **REJECT** |") is False
+
     assert pe.PipelineEngine._parse_confidence("Confidence: 1.0") == 1.0
     assert pe.PipelineEngine._parse_confidence("no score") is None
+
+
+def test_parse_critic_pass_stub_falls_back_to_disk(tmp_path):
+    """When the critic submits a stub like ``"Executed: bash"``, parser must
+    fall back to reading ``stage{N}_gate_review.md`` from disk and verdict
+    against THAT content. Default to REJECT if neither yields a signal."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    # Case A: stub + on-disk gate review exists with a PASS verdict
+    gate_review = tmp_path / "stage6_gate_review.md"
+    gate_review.write_text("# Gate Review\n\n| Decision | PASS |\n\nConfidence 0.92.")
+    assert engine._parse_critic_pass("Executed: bash") is True, (
+        "Stub critic result + on-disk PASS should resolve to PASS"
+    )
+
+    # Case B: stub + on-disk gate review with REJECT
+    gate_review.write_text("# Gate Review\n\n| Decision | REJECT |\n\nMissing run_ids.")
+    assert engine._parse_critic_pass("Executed: bash") is False
+
+    # Case C: stub + no on-disk file → default REJECT (safer than auto-PASS)
+    gate_review.unlink()
+    assert engine._parse_critic_pass("Executed: bash") is False, (
+        "Stub critic result + no fallback file should default to REJECT (not PASS)"
+    )
+
+
+def test_cap_for_critic_trims_oversized_producer_output():
+    """#62: critic's input must stay under a soft budget so late-stage
+    runs don't blow Kimi-K2.6's 262K context window. Cap keeps head +
+    tail with an explicit elision marker."""
+    # Under budget: passed through unchanged
+    short = "x" * 10_000
+    assert pe.PipelineEngine._cap_for_critic(short, stage_id=4) == short
+    # Empty → empty
+    assert pe.PipelineEngine._cap_for_critic("", stage_id=4) == ""
+    # Over budget: head + elision marker + tail
+    head = "HEAD" + ("a" * 49_996)        # exactly 50K
+    middle = "M" * 200_000                # 200K elided
+    tail = ("z" * 24_996) + "TAIL"        # exactly 25K
+    big = head + middle + tail
+    out = pe.PipelineEngine._cap_for_critic(big, stage_id=6)
+    assert out.startswith("HEAD"), "Head bytes must be preserved"
+    assert out.endswith("TAIL"), "Tail bytes must be preserved"
+    assert "elided" in out, "Elision marker must be present"
+    assert len(out) < len(big), "Output must be shorter than input"
+    # Total budget respected (head + tail + ~120-byte marker)
+    assert len(out) <= 80_000 + 200, f"Capped output exceeded budget: {len(out)}"
+
+
+def test_is_stub_result():
+    """Stub detection — used by parser fallback and (future) producer
+    stub-detection gates. ``"Executed: ..."``-style outputs come from
+    the agent runtime falling back to tool-name summaries when the LLM
+    returned no text content."""
+    assert pe.PipelineEngine._is_stub_result("Executed: bash") is True
+    assert pe.PipelineEngine._is_stub_result("Executed tools: write, read, bash") is True
+    assert pe.PipelineEngine._is_stub_result("") is True
+    assert pe.PipelineEngine._is_stub_result("# Gate Review\n\n## Decision\n\nPASS — 0.95 confidence.\n\nFull analysis follows... " + "x" * 350) is False
+    # Length threshold: a "Executed: ..." prefix that's followed by a kilobyte
+    # of real tool output is not a stub.
+    long_executed = "Executed: bash\n" + "real captured output line\n" * 50
+    assert pe.PipelineEngine._is_stub_result(long_executed) is False
 
 
 def test_parse_confidence_handles_unparseable_match(monkeypatch):
@@ -742,6 +816,45 @@ def test_stage6_phase_transitions_producer_to_producer_b_to_critic(tmp_path, mon
     # 6a result is stored separately; 6b's report is the canonical stage 6 result
     assert engine.state["stage_6a_result"] == "6a receipt"
     assert engine.state["stage_results"]["6"] == "6b report"
+
+
+def test_producer_stub_result_retries_instead_of_advancing(tmp_path, monkeypatch):
+    """When a producer returns a stub like ``"Executed: bash"`` (agent
+    runtime fallback when LLM produced no text), the engine MUST retry
+    the producer with feedback rather than store the stub as the stage
+    deliverable. Closes #60 fix #2.
+
+    Old behaviour: stub → stored as stage_result → critic gets tool-name
+    summary → ``_parse_critic_pass`` defaulted to PASS on ambiguity →
+    NOT TESTED paper marches on."""
+    feedbacks = []
+    orig = pe.PipelineEngine._dispatch_producer
+    def _capturing(self, feedback=""):
+        feedbacks.append(feedback)
+        return orig(self, feedback=feedback)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", _capturing)
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-meth")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4  # any non-stage-6 stage; stub gate is universal
+
+    engine._dispatch_producer()  # initial dispatch
+    # Producer returns a stub
+    engine.on_task_complete("emp", "n1", "Executed: bash")
+
+    assert engine.state["retries"] == 1, "Stub result should bump retries, not advance"
+    assert any("stub" in fb.lower() for fb in feedbacks), (
+        f"Retry feedback must name the stub failure mode; got {feedbacks!r}"
+    )
+    # Stage result must NOT have been stored (otherwise critic would see it)
+    assert "4" not in engine.state.get("stage_results", {}), (
+        "Stub result must not pollute stage_results"
+    )
 
 
 def test_stage6a_hard_gate_retries_on_missing_receipt(tmp_path, monkeypatch):

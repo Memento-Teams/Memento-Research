@@ -600,14 +600,95 @@ class PipelineEngine:
                 "(HARKing); (b) any confirmatory claim without a real "
                 "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
-        desc += f"--- Producer Output ---\n{producer_result}\n"
+        # Cap producer output sent to critic (#62): full cumulative context
+        # has been observed to blow Kimi-K2.6's 262K-token window (993K input
+        # in late-stage runs), causing ContextWindowExceededError and the
+        # critic to silently auto-pass on its stored stub. We keep the head
+        # (where summaries / decisions usually live) plus the tail (where
+        # spec-tables / receipts live), with an explicit elision marker so
+        # the critic knows we trimmed.
+        producer_excerpt = self._cap_for_critic(producer_result, stage_id=stage["id"])
+        desc += f"--- Producer Output ---\n{producer_excerpt}\n"
 
         self.state["phase"] = "critic"
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
+    # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
+    # ≈ 20K tokens, comfortably under the smaller-window critic models
+    # (Kimi-K2.6: 262K, MiniMax-M2.7: 128K-ish, Claude-Sonnet: 200K) while
+    # leaving headroom for the system prompt + critic runbook + tool spec
+    # which together routinely cost another 20-40 KB.
+    _CRITIC_BUDGET_BYTES = 80_000
+    _CRITIC_HEAD_BYTES = 50_000
+    _CRITIC_TAIL_BYTES = 25_000
+
+    @classmethod
+    def _cap_for_critic(cls, producer_result: str, stage_id: int) -> str:
+        """Trim ``producer_result`` to fit the critic's context budget.
+
+        Strategy: keep head (decisions, summaries) + tail (tables, receipts);
+        elide the middle with an explicit marker naming how many bytes were
+        dropped. Stage 6's runner-report and Stage 8's paper are the typical
+        offenders past the budget."""
+        if not producer_result or len(producer_result) <= cls._CRITIC_BUDGET_BYTES:
+            return producer_result
+        head = producer_result[: cls._CRITIC_HEAD_BYTES]
+        tail = producer_result[-cls._CRITIC_TAIL_BYTES :]
+        elided = len(producer_result) - cls._CRITIC_HEAD_BYTES - cls._CRITIC_TAIL_BYTES
+        logger.info(
+            "[PIPELINE] Stage {} producer output trimmed for critic: {} bytes → head {} + tail {} + elided {} bytes",
+            stage_id, len(producer_result), cls._CRITIC_HEAD_BYTES, cls._CRITIC_TAIL_BYTES, elided,
+        )
+        return (
+            head
+            + f"\n\n--- [ {elided:,} bytes elided from middle for critic context budget; "
+            f"head {cls._CRITIC_HEAD_BYTES:,}B + tail {cls._CRITIC_TAIL_BYTES:,}B retained ] ---\n\n"
+            + tail
+        )
+
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
+        if self.phase in ("producer", "producer_b"):
+            stage = self._stage_def()
+            # Stub-result gate (#60 fix 2): if the producer returned a
+            # placeholder like ``"Executed: bash"`` (the agent runtime's
+            # fallback when the LLM produced no text content), treat it
+            # as producer failure and retry with explicit feedback — do
+            # NOT store as the stage deliverable, where the critic would
+            # see only tool names and (under the old default-PASS parser)
+            # silently advance. Closes #60 fix #2 / #63 fix #4.
+            if self._is_stub_result(result):
+                feedback = (
+                    f"Your submit_result was a stub: {result.strip()[:200]!r}. "
+                    "This happens when the agent runtime falls back to summarising tool names "
+                    "because your final response had no text content. You must produce a "
+                    "non-trivial deliverable (write the actual file, then submit_result with a "
+                    "summary referencing it). Re-run the full task; do not stop at tool calls."
+                )
+                retries = self.state.get("retries", 0)
+                if retries < MAX_RETRIES:
+                    self.state["retries"] = retries + 1
+                    self._save()
+                    logger.warning(
+                        "[PIPELINE] Stage {} {} produced a stub ({} chars) — retry {}/{}",
+                        stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
+                    )
+                    self._emit_stage_event("stage_failed", stage["id"])
+                    if self.phase == "producer_b":
+                        self._dispatch_producer_b(feedback=feedback)
+                    else:
+                        self._dispatch_producer(feedback=feedback)
+                    return
+                logger.warning(
+                    "[PIPELINE] Stage {} {} stub-result exhausted retries — holding for CEO",
+                    stage["id"], self.phase,
+                )
+                self.state["phase"] = "gate"
+                self._save()
+                self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+                return
+
         if self.phase == "producer":
             stage = self._stage_def()
             # Stage 6 has a 2-step producer: 6a (code_implementer) then 6b
@@ -1049,14 +1130,80 @@ class PipelineEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_critic_pass(result: str) -> bool:
-        upper = result.upper()
+    def _is_stub_result(result: str) -> bool:
+        """A producer/critic ``result`` is a stub when the agent runtime fell
+        back to synthesising a summary from tool names (no real text content).
+        These show up as ``"Executed: bash"`` / ``"Executed tools: write, read"``
+        — see ``agents/base.py:_synthesize_fallback``. Stubs that pass to the
+        critic look like work but contain no analysis, and the critic's own
+        stub return then defaults to PASS by the old parse logic — closing
+        the silent-empty-stage loop #60 / #63 describe.
+
+        Threshold (~300 chars) is empirical: real CCF-A producer outputs are
+        kilobytes; stubs are typically 14-200 chars."""
+        if not result:
+            return True
+        stripped = result.strip()
+        if len(stripped) < 300 and (
+            stripped.startswith("Executed: ")
+            or stripped.startswith("Executed tools: ")
+        ):
+            return True
+        return False
+
+    def _parse_critic_pass(self, result: str) -> bool:
+        """Parse the critic's PASS/REJECT verdict.
+
+        Robustness improvements (#60 fix 4 / #63 fix 4):
+        - If the critic's ``submit_result`` was a stub (e.g. ``"Executed: bash"``
+          from a context-window-truncated review), fall back to reading the
+          on-disk ``stage{N}_gate_review.md`` the critic was told to write.
+        - Support table-format verdicts (``| Decision | PASS |``) as well as
+          the conversational ``"Decision: PASS"`` form.
+        - Default to REJECT on ambiguity (no PASS, no REJECT signal). The old
+          default-to-PASS branch was the auto-approve-empty-stage loophole.
+        """
+        text = result or ""
+        # Stub → reach for the gate-review file on disk.
+        if self._is_stub_result(text):
+            stage_id = self.current_stage
+            gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
+            if gate_review.exists():
+                try:
+                    text = gate_review.read_text(encoding="utf-8")
+                    logger.info(
+                        "[PIPELINE] Critic submit_result was a stub — falling back to {} ({} bytes)",
+                        gate_review.name, len(text),
+                    )
+                except OSError as exc:
+                    logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+                    text = result  # restore original
+            else:
+                logger.warning(
+                    "[PIPELINE] Critic submit_result is a stub and no {} file found on disk — defaulting to REJECT",
+                    gate_review.name,
+                )
+
+        upper = text.upper()
+        # Explicit table-format ``| Decision | PASS |`` and ``| **Decision** | **PASS** |``
+        # — strip markdown emphasis before checking.
+        compact = re.sub(r"[\s|*_]+", " ", upper)
+        if " DECISION PASS " in compact:
+            return True
+        if " DECISION REJECT " in compact:
+            return False
+        # Conversational form: prefer the FIRST explicit signal.
         if "REJECT" in upper:
             return False
         if "PASS" in upper:
             return True
-        # Default to pass if ambiguous
-        return True
+        # Ambiguous → safer default is REJECT (auto-pass on empty stages was
+        # the #63 / #60 root cause).
+        logger.warning(
+            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT signal, len={}) — defaulting to REJECT",
+            len(text),
+        )
+        return False
 
     @staticmethod
     def _parse_confidence(result: str) -> float | None:
