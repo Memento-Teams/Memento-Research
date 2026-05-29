@@ -616,6 +616,62 @@ class PipelineEngine:
             # the critic. 6a's submit_result is informational only — the
             # canonical stage 6 deliverable is 6b's runner report.
             if stage["id"] == 6:
+                # Hard-gate: 6a must have produced stage6_implementation_receipt.md
+                # naming the runnable entrypoint, and the upstream/ patches must
+                # be committed (so the runner can push a clean diff). The runbook
+                # says these are mandatory, but LLMs frequently skip them after
+                # writing the patch files — burning a 6a → 6b → critic cycle
+                # that always ends BLOCKED. Catch it here.
+                receipt_path = Path(self.project_dir) / "stage6_implementation_receipt.md"
+                upstream_dir = Path(self.project_dir) / "upstream"
+                missing = []
+                if not receipt_path.exists() or receipt_path.stat().st_size < 200:
+                    missing.append("stage6_implementation_receipt.md (must exist and be non-trivial)")
+                if upstream_dir.exists() and (upstream_dir / ".git").exists():
+                    # Check for uncommitted changes — patches should be in a commit.
+                    import subprocess
+                    try:
+                        dirty = subprocess.run(
+                            ["git", "status", "--short"],
+                            cwd=str(upstream_dir), capture_output=True, text=True, timeout=10,
+                        ).stdout.strip()
+                        if dirty:
+                            missing.append(
+                                f"uncommitted patches in upstream/ (git status shows:\n{dirty[:300]}\n"
+                                f"— run `cd upstream && git add -A && git commit -m 'Stage 6 adaptation'` before submit_result)"
+                            )
+                    except Exception:
+                        pass  # don't block on git failures; receipt check is the primary gate
+
+                if missing:
+                    feedback = (
+                        "Stage 6a hard-gate FAILED. You wrote code but did not finalize Phase 5+6:\n\n"
+                        + "\n".join(f"  - {m}" for m in missing)
+                        + "\n\nGo back and complete: (1) commit the upstream/ patches as ONE commit, "
+                        "(2) push them to remote via fast_push_code.sh (Phase 4), "
+                        "(3) write stage6_implementation_receipt.md (Phase 5 template — at minimum: "
+                        "pin status header, file list with line counts, runnable entrypoint command), "
+                        "(4) call submit_result. Read the receipt back from disk to verify before submit. "
+                        "Patches without a receipt are invisible to the 6b runner — your work is lost."
+                    )
+                    retries = self.state.get("retries", 0)
+                    if retries < MAX_RETRIES:
+                        self.state["retries"] = retries + 1
+                        self._save()
+                        logger.warning(
+                            "[PIPELINE] Stage 6a hard-gate FAILED ({} missing) — retry {}/{}",
+                            len(missing), retries + 1, MAX_RETRIES,
+                        )
+                        self._emit_stage_event("stage_failed", stage["id"])
+                        self._dispatch_producer(feedback=feedback)
+                        return
+                    # Exhausted: still surface as a producer fail, hold for CEO.
+                    logger.warning("[PIPELINE] Stage 6a hard-gate exhausted after {} retries", MAX_RETRIES)
+                    self.state["phase"] = "gate"
+                    self._save()
+                    self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+                    return
+
                 self.state["stage_6a_result"] = result
                 self._save()
                 logger.info("[PIPELINE] Stage 6a (code impl) complete, dispatching Stage 6b (runner)")

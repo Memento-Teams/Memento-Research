@@ -723,6 +723,12 @@ def test_stage6_phase_transitions_producer_to_producer_b_to_critic(tmp_path, mon
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
                         lambda self, *args, **kwargs: None)
 
+    # Satisfy the Stage 6a hard-gate: receipt file must exist (>= 200 bytes),
+    # and no upstream/ git repo means the uncommitted-patches check is skipped.
+    (tmp_path / "stage6_implementation_receipt.md").write_text(
+        "# Receipt\n" + "x" * 250  # > 200-byte threshold
+    )
+
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 6
 
@@ -736,6 +742,55 @@ def test_stage6_phase_transitions_producer_to_producer_b_to_critic(tmp_path, mon
     # 6a result is stored separately; 6b's report is the canonical stage 6 result
     assert engine.state["stage_6a_result"] == "6a receipt"
     assert engine.state["stage_results"]["6"] == "6b report"
+
+
+def test_stage6a_hard_gate_retries_on_missing_receipt(tmp_path, monkeypatch):
+    """If Stage 6a producer finishes WITHOUT producing
+    stage6_implementation_receipt.md, the engine must retry the producer
+    (with feedback explaining the gap) rather than silently advancing to
+    Stage 6b — which would always BLOCK on missing receipt and burn a full
+    6a → 6b → critic cycle. Closes #63's fix #4."""
+    dispatched_phases = []
+    feedbacks = []
+
+    def _capture(self, *args, **kw):
+        dispatched_phases.append(self.state["phase"])
+
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: {"code_implementer": "emp-coder",
+                                       "experiment_runner": "emp-runner",
+                                       pe.CRITIC_SKILL: "emp-critic"}.get(skill))
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: _capture(self))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event",
+                        lambda self, *args, **kwargs: None)
+    # Capture the feedback string the retry receives
+    orig_dispatch_producer = pe.PipelineEngine._dispatch_producer
+    def _capturing_dispatch_producer(self, feedback=""):
+        feedbacks.append(feedback)
+        return orig_dispatch_producer(self, feedback=feedback)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", _capturing_dispatch_producer)
+
+    # Do NOT create the receipt file — gate should fail
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    engine._dispatch_producer()  # initial 6a dispatch
+    engine.on_task_complete("emp-coder", "n1", "incomplete 6a output")
+
+    # After hard-gate failure, retry should re-dispatch producer (not advance)
+    assert dispatched_phases[-1] == "producer", (
+        f"Hard-gate failure should retry producer, got phases {dispatched_phases}"
+    )
+    # Retry count incremented
+    assert engine.state["retries"] == 1
+    # Feedback should mention the missing receipt
+    assert any("stage6_implementation_receipt.md" in fb for fb in feedbacks), (
+        f"Retry feedback must name the missing receipt; got {feedbacks!r}"
+    )
 
 
 def test_dispatch_critic_stage6_injects_evidence_grading(tmp_path, monkeypatch):
