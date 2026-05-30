@@ -40,6 +40,22 @@ STAGES = [
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
 
+# Canonical default employee per stage, sourced from company/hire_list.json.
+# When multiple hired employees share the same skill, the one originating
+# from the canonical talent_id wins. Falls back to skill-based lookup if
+# the canonical talent is not on the roster.
+STAGE_TALENT_DEFAULTS = {
+    1: "topic-refiner",
+    2: "literature-surveyor",
+    3: "idea-generator",
+    4: "methodology-designer",
+    5: "experiment-designer",
+    6: "experimentalist",
+    7: "result-analyst",
+    8: "paper-writer",
+    9: "paper-reviewer",
+}
+
 # Iteration identifier used in git tag names (``<iteration>/stage-<N>``).
 # The literal directory name (e.g. ``iter_001``) is fine — git tag names
 # allow underscores. Centralised here so the engine and project_repo
@@ -89,18 +105,40 @@ def _find_employee_by_skill(skill: str) -> str | None:
     return None
 
 
+def _find_employee_by_talent_id(talent_id: str) -> str | None:
+    """Find the first employee whose ``talent_id`` matches.
+
+    ``talent_id`` is the hire_list.json identifier carried forward by
+    ``execute_hire`` so the pipeline can route each stage to the canonical
+    default talent rather than any arbitrary employee that happens to
+    share the same skill.
+    """
+    if not talent_id:
+        return None
+    configs = load_employee_configs()
+    for emp_id, cfg in configs.items():
+        if getattr(cfg, "talent_id", "") == talent_id:
+            return emp_id
+    return None
+
+
 def _find_employee_for_stage(stage_id: int, primary_skill: str) -> str | None:
     """Resolve the producer employee for a stage with stage-specific fallbacks.
 
-    Stage 6 (Auto Experiment) prefers an `experiment_runner` employee — they
-    carry the `experiment-infra` runbook and can actually drive remote infra.
-    If no runner is on the roster, fall back to `experimentalist` (the
-    default research talent), who can still produce a simulated report.
+    Resolution order:
+      1. Stage 6 only: an ``experiment_runner`` employee (they carry the
+         experiment-infra runbook and can drive real remote infra).
+      2. The canonical hire_list talent for the stage
+         (see ``STAGE_TALENT_DEFAULTS``).
+      3. Any employee whose skills include ``primary_skill``.
     """
     if stage_id == 6:
         runner = _find_employee_by_skill("experiment_runner")
         if runner:
             return runner
+    canonical = _find_employee_by_talent_id(STAGE_TALENT_DEFAULTS.get(stage_id, ""))
+    if canonical:
+        return canonical
     return _find_employee_by_skill(primary_skill)
 
 
