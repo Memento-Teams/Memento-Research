@@ -169,7 +169,7 @@ init_data() {
 }
 
 start_backend() {
-  local port pid
+  local port pid owners max_wait
   port="$(resolve_port)"
 
   ensure_venv
@@ -194,7 +194,7 @@ start_backend() {
   # (_bootstrap_hire_list_employees in main.py), which on a cold start can
   # take a few minutes — talent-market clone + execute_hire for 13 talents.
   # So the port-bind wait is sized for first-run worst-case, not steady-state.
-  local max_wait=300
+  max_wait=300
   for _ in $(seq 1 "$max_wait"); do
     # If our spawned process is gone, the previous run's stale process may
     # still be holding the port — bail loudly instead of falsely claiming
@@ -205,7 +205,6 @@ start_backend() {
       exit 1
     fi
     # Verify the listener on $port is OUR spawned pid, not a leftover.
-    local owners
     owners="$(listener_pids)"
     if [ -n "$owners" ] && echo "$owners" | grep -qx "$pid"; then
       info "Backend ready at http://localhost:$port"

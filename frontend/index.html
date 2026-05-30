@@ -1053,6 +1053,10 @@ function _showAgentPicker(stageId, event) {
     const rowStyle = isSelected
       ? 'padding:6px 12px;cursor:pointer;font-size:.78rem;background:var(--green-subtle);color:var(--green);font-weight:600'
       : 'padding:6px 12px;cursor:pointer;font-size:.78rem';
+    // mouseout restores the selected highlight (green-subtle) for the
+    // currently-effective row and clears the hover tint for every other
+    // row — otherwise hovering then leaving a non-selected row would
+    // leave the hover background painted until next render.
     picker.innerHTML += `<div style="${rowStyle}" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='${isSelected ? 'var(--green-subtle)' : ''}'" onclick="_assignStageAgent(${stageId},'${emp.employee_number}')">${_escHtml(emp.name)} <span style="color:var(--text4);font-size:.65rem">${emp.role||''}</span></div>`;
   });
 
