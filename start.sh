@@ -168,6 +168,11 @@ init_data() {
   info "Runtime data initialized."
 }
 
+# Set to 1 by start_backend when it had to bootstrap the data dir from
+# scratch. The `start` case reads this to decide whether to auto-hire the
+# founding roster after the backend comes up.
+BOOTSTRAPPED=0
+
 start_backend() {
   local port pid
   port="$(resolve_port)"
@@ -177,6 +182,7 @@ start_backend() {
   if [ ! -d "$DATA_DIR/company/human_resource/employees" ] || [ ! -f "$DATA_DIR/.env" ]; then
     warn ".onemancompany/ missing or incomplete — bootstrapping from repo."
     init_data
+    BOOTSTRAPPED=1
   fi
 
   if [ -n "$(listener_pids)" ]; then
@@ -191,7 +197,10 @@ start_backend() {
 
   for _ in $(seq 1 15); do
     if [ -n "$(listener_pids)" ]; then
-      info "Backend ready at http://localhost:$port"
+      # Listening confirms the port is bound; "Backend ready" is printed
+      # by the caller after the founding roster is hired so the user only
+      # opens the page once the app is actually usable.
+      info "Backend listening on :$port"
       return 0
     fi
     sleep 1
@@ -252,6 +261,12 @@ case "$COMMAND" in
     ;;
   start|--start)
     start_backend
+    # Only auto-hire if start_backend had to bootstrap an empty data dir;
+    # otherwise we'd duplicate-hire on top of an existing roster.
+    if [ "$BOOTSTRAPPED" -eq 1 ]; then
+      hire_from_list
+    fi
+    info "Backend ready at http://localhost:$(resolve_port)"
     ;;
   status)
     status_backend
@@ -261,6 +276,7 @@ case "$COMMAND" in
     init_data
     start_backend
     hire_from_list
+    info "Backend ready at http://localhost:$(resolve_port)"
     ;;
   *)
     error "Unknown command: $COMMAND. Run 'bash start.sh --help' for usage."
