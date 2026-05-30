@@ -4959,6 +4959,15 @@ async def hire_from_cv(body: dict) -> dict:
             logger.exception("[cv_hire] Failed to hire {}", name)
             await _publish_cv_error(f"Onboarding failed for '{name}': {e}")
 
+    # `sync=True` is used by `start.sh`'s hire_from_list bootstrap: the script
+    # needs the POST to block until the employee is actually on the roster so
+    # the frontend doesn't load /api/bootstrap while hires are still in flight.
+    # The CEO-driven UI hire path (default) keeps the fire-and-forget flow so
+    # progress events stream via WebSocket without holding the request open.
+    if body.get("sync"):
+        await _do_cv_hire()
+        return {"status": "hired", "name": name, "role": role}
+
     spawn_background(_do_cv_hire())
     return {"status": "onboarding", "name": name, "role": role, "message": "Onboarding started in background"}
 
