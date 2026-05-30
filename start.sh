@@ -168,12 +168,6 @@ init_data() {
   info "Runtime data initialized."
 }
 
-# Set to 1 by start_backend when it had to bootstrap the data dir from
-# scratch. The `start` case reads this to decide whether to auto-hire the
-# founding roster after the backend comes up. `restart` always wipes the
-# data dir and always hires explicitly, so it does not depend on this flag.
-BOOTSTRAPPED=0
-
 start_backend() {
   local port pid
   port="$(resolve_port)"
@@ -183,7 +177,6 @@ start_backend() {
   if [ ! -d "$DATA_DIR/company/human_resource/employees" ] || [ ! -f "$DATA_DIR/.env" ]; then
     warn ".onemancompany/ missing or incomplete — bootstrapping from repo."
     init_data
-    BOOTSTRAPPED=1
   fi
 
   if [ -n "$(listener_pids)" ]; then
@@ -196,78 +189,23 @@ start_backend() {
   pid=$!
   info "Backend PID: $pid"
 
-  for _ in $(seq 1 15); do
+  # Uvicorn opens the listening socket only AFTER FastAPI lifespan startup
+  # finishes. Lifespan now runs the founding-roster hire inline
+  # (_bootstrap_hire_list_employees in main.py), which on a cold start can
+  # take a few minutes — talent-market clone + execute_hire for 13 talents.
+  # So the port-bind wait is sized for first-run worst-case, not steady-state.
+  local max_wait=300
+  for _ in $(seq 1 "$max_wait"); do
     if [ -n "$(listener_pids)" ]; then
-      info "Backend listening on :$port"
-      # Port-bind happens before FastAPI's startup hooks finish mounting
-      # routes. Poll /api/bootstrap (the same endpoint the frontend hits
-      # on page load) so the next caller — typically hire_from_list —
-      # doesn't race the route table.
-      for _ in $(seq 1 30); do
-        if curl -sf -o /dev/null -m 2 "http://localhost:$port/api/bootstrap"; then
-          return 0
-        fi
-        sleep 1
-      done
-      warn "Backend port is open but /api/bootstrap not responding. Last log lines:"
-      tail -10 "$LOG" || true
-      exit 1
+      info "Backend ready at http://localhost:$port"
+      return 0
     fi
     sleep 1
   done
 
-  warn "Backend did not become ready in time. Last log lines:"
-  tail -10 "$LOG" || true
+  warn "Backend did not become ready in ${max_wait}s. Last log lines:"
+  tail -20 "$LOG" || true
   exit 1
-}
-
-hire_from_list() {
-  local hire_file count port
-  hire_file="$REPO_DIR/company/hire_list.json"
-  port="$(resolve_port)"
-
-  if [ ! -f "$hire_file" ]; then
-    info "No hire_list.json found, skipping auto-hire."
-    return
-  fi
-
-  count="$("$PYTHON" -c "import json; print(len(json.load(open('$hire_file'))))")"
-  if [ "$count" -eq 0 ]; then
-    info "hire_list.json is empty, skipping auto-hire."
-    return
-  fi
-
-  info "Auto-hiring $count employee(s) from hire_list.json ..."
-  "$PYTHON" -c "
-import json, urllib.request
-
-with open('$hire_file', encoding='utf-8') as f:
-    hires = json.load(f)
-
-for cv in hires:
-    # sync=True blocks until execute_hire returns so the next iteration —
-    # and the eventual 'Backend ready' line in start.sh — can rely on the
-    # employee actually being on the roster. Without this the POST returns
-    # immediately while clone_talent_repo + execute_hire run in the
-    # background, and the frontend's first /api/bootstrap call sees an
-    # empty roster (pipeline stages then fall back to 'auto').
-    body = json.dumps({'cv': cv, 'sync': True}).encode()
-    req = urllib.request.Request(
-        'http://localhost:$port/api/candidates/hire-from-cv',
-        data=body,
-        headers={'Content-Type': 'application/json'},
-    )
-    try:
-        # Talent-Market clone + execute_hire can be slow on first run; give
-        # each CV plenty of headroom rather than racing the default timeout.
-        resp = urllib.request.urlopen(req, timeout=180)
-        result = json.loads(resp.read())
-        status = result.get('status', result)
-        marker = '✓' if status == 'hired' else '✗'
-        print(f'  {marker} {cv[\"name\"]}: {status}')
-    except Exception as e:
-        print(f'  ✗ {cv[\"name\"]}: {e}')
-"
 }
 
 COMMAND="${1:-restart}"
@@ -280,14 +218,11 @@ case "$COMMAND" in
     stop_backend
     ;;
   start|--start)
+    # The founding roster is hired inside lifespan startup (see
+    # _bootstrap_hire_list_employees in main.py), so start_backend's port-
+    # listen wait already gates on hires being done. No separate hire step
+    # needed here.
     start_backend
-    # Only auto-hire if start_backend had to bootstrap an empty data dir;
-    # otherwise we'd duplicate-hire on top of an existing roster.
-    port="$(resolve_port)"
-    if [ "$BOOTSTRAPPED" -eq 1 ]; then
-      hire_from_list
-    fi
-    info "Backend ready at http://localhost:$port"
     ;;
   status)
     status_backend
@@ -296,9 +231,6 @@ case "$COMMAND" in
     stop_backend
     init_data
     start_backend
-    port="$(resolve_port)"
-    hire_from_list
-    info "Backend ready at http://localhost:$port"
     ;;
   *)
     error "Unknown command: $COMMAND. Run 'bash start.sh --help' for usage."
