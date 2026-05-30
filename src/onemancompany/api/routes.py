@@ -4876,11 +4876,11 @@ async def hire_from_cv(body: dict) -> dict:
         ))
 
     async def _do_cv_hire() -> bool:
-        """Run the hire flow. Returns True iff the employee was actually
-        registered. All failure paths publish a TALENT_PROFILE_ERROR event
-        and return False so `sync=True` callers (start.sh) can report the
-        outcome accurately. The async CEO-driven path ignores the return
-        value — failures still surface via the event bus."""
+        """Run the hire flow. Returns True iff the employee was registered.
+        All failure paths publish a TALENT_PROFILE_ERROR event and return
+        False so `sync=True` callers (lifespan bootstrap) can report the
+        outcome accurately. The async CEO-driven UI hire path ignores the
+        return value — failures still surface via the event bus."""
         try:
             # Clone talent repo so copy_talent_assets can copy skills/tools/manifest
             if talent_id:
@@ -4966,11 +4966,10 @@ async def hire_from_cv(body: dict) -> dict:
             await _publish_cv_error(f"Onboarding failed for '{name}': {e}")
             return False
 
-    # `sync=True` is used by `start.sh`'s hire_from_list bootstrap: the script
-    # needs the POST to block until the employee is actually on the roster so
-    # the frontend doesn't load /api/bootstrap while hires are still in flight.
-    # The CEO-driven UI hire path (default) keeps the fire-and-forget flow so
-    # progress events stream via WebSocket without holding the request open.
+    # `sync=True` is used by the lifespan startup bootstrap so the founding
+    # roster is on disk before uvicorn binds the listening socket. The
+    # CEO-driven UI hire path (default) keeps fire-and-forget so progress
+    # events stream via WebSocket without holding the request open.
     if body.get("sync"):
         ok = await _do_cv_hire()
         return {

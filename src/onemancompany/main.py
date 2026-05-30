@@ -418,6 +418,72 @@ def _bootstrap_data_dir() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Founding-roster bootstrap
+# ---------------------------------------------------------------------------
+
+# Re-exported at module level so tests can monkeypatch them. These are the
+# only symbols ``_bootstrap_hire_list_employees`` reads from the outside.
+from onemancompany.core.config import DATA_ROOT, load_employee_configs  # noqa: E402
+
+HIRE_LIST_FILENAME = "hire_list.json"
+
+
+async def _bootstrap_hire_list_employees() -> None:
+    """Hire ``company/hire_list.json`` employees inline during lifespan startup
+    so the port is bound only after the founding roster is on disk. Per-CV
+    failures are caught and logged — one bad hire must not abort the rest of
+    the bootstrap (regression for the case where Methodology Designer
+    crashed the request handler and every later CV got Connection refused)."""
+    import json
+
+    hire_file = DATA_ROOT / "company" / HIRE_LIST_FILENAME
+    if not hire_file.exists():
+        return
+
+    try:
+        cvs = json.loads(hire_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("[startup] Failed to parse hire_list.json: {}", exc)
+        return
+
+    if not cvs:
+        return
+
+    # Skip talents already on the roster (idempotent re-runs on warm restart).
+    existing_talent_ids = {
+        getattr(cfg, "talent_id", "")
+        for cfg in load_employee_configs().values()
+        if getattr(cfg, "talent_id", "")
+    }
+    pending = [cv for cv in cvs if cv.get("talent_id", "") not in existing_talent_ids]
+    if not pending:
+        print(f"[startup] hire_list: all {len(cvs)} talent(s) already on roster")
+        return
+
+    from onemancompany.api.routes import hire_from_cv
+
+    print(f"[startup] hire_list: hiring {len(pending)} talent(s)...")
+    hired = 0
+    failed = 0
+    for cv in pending:
+        name = cv.get("name") or cv.get("talent_id", "<unknown>")
+        try:
+            result = await hire_from_cv({"cv": cv, "sync": True})
+            if isinstance(result, dict) and result.get("status") == "hired":
+                print(f"[startup]   ✓ {name}")
+                hired += 1
+            else:
+                print(f"[startup]   ✗ {name}: {result}")
+                failed += 1
+        except Exception as exc:
+            # Per-CV failures must not abort the loop — log and move on so
+            # the rest of the roster still bootstraps.
+            print(f"[startup]   ✗ {name}: {exc}")
+            failed += 1
+    print(f"[startup] hire_list: {hired} hired, {failed} failed")
+
+
+# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
@@ -641,6 +707,16 @@ async def lifespan(app: FastAPI):
         _app_ver = _pkg_version("onemancompany")
     except Exception:
         _app_ver = "dev"
+
+    # Hire the founding roster from company/hire_list.json BEFORE uvicorn
+    # binds the port. The previous architecture pushed this to start.sh
+    # via HTTP POSTs after the server was already serving, which (a) raced
+    # the frontend's first /api/bootstrap call and (b) was fragile — a
+    # mid-hire backend crash left a half-empty roster while the loop kept
+    # printing ✓ for queued CVs. Running inline here means the port doesn't
+    # open until the canonical talents are on disk.
+    await _bootstrap_hire_list_employees()
+
     print(f"🏢 One Man Company HQ v{_app_ver} is running!")
     print(f"   Frontend: http://localhost:{_settings.port}")
 
