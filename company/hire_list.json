@@ -272,10 +272,10 @@
     "department": "Engineering",
     "description": "Translates Stage 5 experiment plans into runnable Python (experiment.py + analysis.py + extraction.py + prompts.py) with mandatory --smoke gate, chat_template + eos_token_id discipline, DRY single-helper rule, SHA256-pinned model + dataset. Hire onto every Stage 6 team that needs code synthesis from a CCF-A prose spec.",
     "agent_family": "omctalent",
-    "hosting": "omctalent",
+    "hosting": "company",
     "auth_method": "api_key",
-    "api_provider": "custom",
-    "llm_model": "MiniMax-M2.7",
+    "api_provider": "openrouter",
+    "llm_model": "anthropic/claude-opus-4.8-fast",
     "temperature": 0.3,
     "skills": [
       "code_implementer"
