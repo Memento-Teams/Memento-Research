@@ -49,6 +49,10 @@ class EnvVarRequest:
     requested_by: str
     reason: str
     future: asyncio.Future = field(repr=False)
+    # The loop the future was created on — needed because the watchdog
+    # callback that resolves these runs in a separate observer thread,
+    # and ``Future.set_result`` is not thread-safe.
+    loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
 
 
 # key -> list of pending futures (concurrent agents share the list).
@@ -121,15 +125,18 @@ async def request_env(
     """
     loop = asyncio.get_running_loop()
     result: dict[str, str] = {}
-    waiters: list[asyncio.Future] = []
     new_requests: list[EnvVarRequest] = []
 
+    on_disk = _read_env_file()
     for entry in keys:
         name = entry["name"]
         _known_keys.add(name)
-        existing = os.environ.get(name)
+        # Honor pre-filled values in either os.environ or .env so the user
+        # can set the key before the agent ever runs and skip the prompt.
+        existing = os.environ.get(name) or on_disk.get(name, "")
         if existing and existing != PLACEHOLDER_VALUE:
             result[name] = existing
+            os.environ[name] = existing
             continue
         fut: asyncio.Future = loop.create_future()
         req = EnvVarRequest(
@@ -139,17 +146,16 @@ async def request_env(
             requested_by=requested_by,
             reason=reason,
             future=fut,
+            loop=loop,
         )
         _pending.setdefault(name, []).append(req)
-        waiters.append(fut)
         new_requests.append(req)
 
-    if not waiters:
+    if not new_requests:
         return result
 
     # Write placeholders so the row is visible in the panel even before
     # the user types anything. Skip ones the user already half-filled.
-    on_disk = _read_env_file()
     to_write = {
         r.key: PLACEHOLDER_VALUE
         for r in new_requests
@@ -161,7 +167,18 @@ async def request_env(
     await _publish_request_event(new_requests, requested_by, reason)
 
     # Block forever — user decides when to save. No timeout by design.
-    values = await asyncio.gather(*waiters)
+    # If our caller is cancelled, prune our requests from _pending so a
+    # later save_env doesn't try to resolve them and the row clears.
+    try:
+        values = await asyncio.gather(*(r.future for r in new_requests))
+    except asyncio.CancelledError:
+        for r in new_requests:
+            waiters = _pending.get(r.key)
+            if waiters and r in waiters:
+                waiters.remove(r)
+                if not waiters:
+                    _pending.pop(r.key, None)
+        raise
     for req, v in zip(new_requests, values):
         result[req.key] = v
     return result
@@ -188,20 +205,50 @@ async def _publish_request_event(
     ))
 
 
+def _validate_update(key: str, value: str) -> None:
+    """Reject anything that would corrupt ``.env`` (newline injection),
+    or values that are themselves the placeholder marker."""
+    if not key or not key.strip():
+        raise ValueError("env var key must be non-empty")
+    if any(ch in key for ch in "\n\r=") or key.strip() != key:
+        raise ValueError(f"invalid env var key: {key!r}")
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"env var value for {key} contains newline")
+    if value == PLACEHOLDER_VALUE:
+        raise ValueError(f"refusing to save placeholder marker for {key}")
+
+
 def save_env(updates: dict[str, str]) -> None:
     """Persist ``updates`` to ``.env`` + :mod:`os.environ`, then resolve
     any matching pending futures. Called by the HTTP route the ENV
-    panel posts to, and by the .env watcher."""
+    panel posts to, and by the .env watcher.
+
+    Thread-safe: futures may have been created on the asyncio loop, but
+    this function can be invoked from the watchdog observer thread —
+    resolve via ``loop.call_soon_threadsafe`` to avoid corrupting future
+    state."""
     if not updates:
         return
+    for k, v in updates.items():
+        _validate_update(k, v)
     _write_env_file(updates)
     for k, v in updates.items():
         os.environ[k] = v
         _known_keys.add(k)
         waiters = _pending.pop(k, [])
         for req in waiters:
-            if not req.future.done():
+            if req.future.done():
+                continue
+            target_loop = req.loop
+            if target_loop and target_loop.is_running():
+                target_loop.call_soon_threadsafe(_safe_set_result, req.future, v)
+            else:
                 req.future.set_result(v)
+
+
+def _safe_set_result(fut: asyncio.Future, v: str) -> None:
+    if not fut.done():
+        fut.set_result(v)
 
 
 def _on_env_file_changed() -> None:
@@ -227,21 +274,34 @@ def scan_placeholders() -> list[str]:
 def list_env() -> list[dict]:
     """Snapshot for the ENV Management panel.
 
-    Returns one row per known key with name / value / pending flag.
-    Secrets are NOT masked here — masking is a frontend concern; the
-    backend stays the source of truth."""
+    Returns one row per known key. Real values are NEVER returned to
+    the client — the panel only needs to know whether the value is set
+    or pending. Secrets stay on the backend; the input box shows a
+    placeholder for set rows."""
     on_disk = _read_env_file()
     names = set(on_disk) | set(_known_keys)
     rows: list[dict] = []
     for name in sorted(names):
         value = on_disk.get(name, os.environ.get(name, ""))
         pending = value == PLACEHOLDER_VALUE or name in _pending
+        # Mark the current secret type so the frontend can decide
+        # whether to render the input as password or text on edit.
+        secret = True
+        if name in _pending and _pending[name]:
+            secret = _pending[name][0].secret
         rows.append({
             "name": name,
-            "value": "" if pending else value,
+            "set": bool(value) and not pending,
             "pending": pending,
+            "secret": secret,
         })
     return rows
+
+
+def reset_for_tests() -> None:
+    """Test-only: clear module state so fixtures isolate cleanly."""
+    _pending.clear()
+    _known_keys.clear()
 
 
 # ---------------------------------------------------------------------------

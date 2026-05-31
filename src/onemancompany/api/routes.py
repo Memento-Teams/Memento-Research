@@ -6286,12 +6286,17 @@ async def env_list() -> dict:
 async def env_save(request: Request) -> dict:
     """Persist user-supplied env vars and unblock any waiting agent.
 
-    Body: ``{"FOO_KEY": "value", "BAR_KEY": "value", ...}``."""
+    Body: ``{"FOO_KEY": "value", "BAR_KEY": "value", ...}``. Values are
+    validated by ``env_manager.save_env`` (no newlines, no placeholder
+    marker, non-empty key)."""
     from onemancompany.core.env_manager import save_env
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be a dict of key→value")
-    save_env({str(k): str(v) for k, v in body.items()})
+    try:
+        save_env({str(k): str(v) for k, v in body.items()})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"status": "ok", "saved": list(body.keys())}
 
 

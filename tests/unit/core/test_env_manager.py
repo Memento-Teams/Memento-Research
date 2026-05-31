@@ -288,3 +288,101 @@ class TestListEnv:
         assert pending["pending"] is True
         known = next(r for r in listing if r["name"] == "KNOWN_KEY")
         assert known["pending"] is False
+
+    def test_list_env_never_returns_real_values(self, env_path):
+        """Backend must NOT leak secrets to the panel — review
+        finding from code-reviewer: the previous response shape echoed
+        the plaintext value on GET /api/env."""
+        from onemancompany.core import env_manager as em
+        env_path.write_text("SECRET_KEY=sk-real-thing\n", encoding="utf-8")
+        rows = em.list_env()
+        for row in rows:
+            assert "value" not in row, (
+                "list_env must not include the actual value — secret leak"
+            )
+
+
+class TestInputValidation:
+    """Guards against `.env` corruption + placeholder confusion. All
+    of these are reachable from POST /api/env, so the validation has
+    to live in save_env itself (not just in the route)."""
+
+    def test_save_rejects_newline_in_value(self, env_path):
+        from onemancompany.core import env_manager as em
+        with pytest.raises(ValueError):
+            em.save_env({"FOO": "v\nMALICIOUS=x"})
+
+    def test_save_rejects_carriage_return_in_value(self, env_path):
+        from onemancompany.core import env_manager as em
+        with pytest.raises(ValueError):
+            em.save_env({"FOO": "v\rinjection"})
+
+    def test_save_rejects_empty_key(self, env_path):
+        from onemancompany.core import env_manager as em
+        with pytest.raises(ValueError):
+            em.save_env({"": "v"})
+
+    def test_save_rejects_key_with_equals_or_newline(self, env_path):
+        from onemancompany.core import env_manager as em
+        with pytest.raises(ValueError):
+            em.save_env({"BAD=KEY": "v"})
+        with pytest.raises(ValueError):
+            em.save_env({"BAD\nKEY": "v"})
+
+    def test_save_rejects_placeholder_marker_as_value(self, env_path):
+        from onemancompany.core import env_manager as em
+        with pytest.raises(ValueError):
+            em.save_env({"FOO": em.PLACEHOLDER_VALUE})
+
+
+class TestCancellationCleansPending:
+    @pytest.mark.asyncio
+    async def test_cancelled_request_removes_from_pending(self, env_path):
+        from onemancompany.core import env_manager as em
+        task = asyncio.create_task(em.request_env(
+            keys=[{"name": "CANCEL_ME"}],
+            requested_by="00018",
+            reason="t",
+        ))
+        await asyncio.sleep(0.05)
+        assert "CANCEL_ME" in em._pending
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert "CANCEL_ME" not in em._pending
+
+
+class TestPreFilledKeyReturnsImmediately:
+    @pytest.mark.asyncio
+    async def test_dotenv_value_returned_without_blocking(self, env_path):
+        """A user can fill ``.env`` BEFORE the agent runs; request_env
+        must honour that and return immediately."""
+        from onemancompany.core import env_manager as em
+        env_path.write_text("PREFILLED=preset\n", encoding="utf-8")
+        result = await asyncio.wait_for(em.request_env(
+            keys=[{"name": "PREFILLED"}],
+            requested_by="00018",
+            reason="t",
+        ), timeout=1.0)
+        assert result == {"PREFILLED": "preset"}
+
+
+class TestThreadSafeResolution:
+    @pytest.mark.asyncio
+    async def test_save_env_from_other_thread_resolves_future(self, env_path):
+        """``Future.set_result`` is not thread-safe; the watcher thread
+        must hop back to the loop via ``call_soon_threadsafe``. Verify
+        by calling save_env from a worker thread."""
+        import threading
+        from onemancompany.core import env_manager as em
+        task = asyncio.create_task(em.request_env(
+            keys=[{"name": "FROM_THREAD"}],
+            requested_by="00018",
+            reason="t",
+        ))
+        await asyncio.sleep(0.05)
+        t = threading.Thread(target=em.save_env, args=({"FROM_THREAD": "v"},))
+        t.start()
+        result = await asyncio.wait_for(task, timeout=1.0)
+        t.join()
+        assert result == {"FROM_THREAD": "v"}

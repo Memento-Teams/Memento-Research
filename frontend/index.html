@@ -2335,11 +2335,12 @@ async function _openEnvPanel(focusKeys) {
     }
     const label = document.createElement('div');
     label.style.cssText = 'font-size:7px;color:var(--text-dim,#aaa);margin-bottom:4px;';
-    label.textContent = row.name + (row.pending ? '  ⚠ pending' : '');
+    const statusTxt = row.pending ? '  ⚠ pending' : (row.set ? '  ✓ set' : '');
+    label.textContent = row.name + statusTxt;
     const input = document.createElement('input');
-    input.type = 'password';
-    input.value = row.value || '';
-    input.placeholder = row.pending ? 'Pending — paste value' : '(hidden)';
+    input.type = row.secret === false ? 'text' : 'password';
+    input.value = '';
+    input.placeholder = row.pending ? 'Pending — paste value' : (row.set ? '(hidden — paste to overwrite)' : '');
     input.style.cssText = 'width:100%;background:#000;color:#fff;border:1px solid #444;font-family:inherit;font-size:8px;padding:6px;';
     inputs[row.name] = input;
     wrap.appendChild(label);
@@ -2380,6 +2381,19 @@ async function _openEnvPanel(focusKeys) {
   document.getElementById('envPanelClose').onclick = () => backdrop.remove();
 }
 window._openEnvPanel = _openEnvPanel;
+
+// Show the pending badge on load if anything is waiting. Covers the
+// "restored from previous session" case where ENV_REQUEST fires before
+// the WebSocket subscriber is ready.
+(async () => {
+  try {
+    const data = await fetch('/api/env').then(r => r.json());
+    if ((data.rows || []).some(r => r.pending)) {
+      const badge = document.getElementById('envPendingBadge');
+      if (badge) badge.style.display = '';
+    }
+  } catch (_) {}
+})();
 
 renderPipelineBar();
 </script>
