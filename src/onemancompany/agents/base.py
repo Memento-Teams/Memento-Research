@@ -69,6 +69,16 @@ _NO_OUTPUT = "(no output)"
 _LLM_STREAM_RETRY_ATTEMPTS = 3  # total attempts including the first try
 _LLM_STREAM_RETRY_DELAYS = (1.0, 3.0)  # backoff before attempts 2 and 3
 
+# Per-chunk read deadline for streaming LLM responses. Without this,
+# providers that hang silently (server keeps the socket open but stops
+# sending chunks) only surface as failures when the outer 1-hour task
+# wait_for fires — burning the whole task budget on a single broken call.
+# 60 s is well beyond any healthy inter-chunk gap on a streaming response;
+# anything longer is almost certainly a provider stall. When httpx raises
+# ReadTimeout, the L1 retry loop in ``run_streamed`` catches it and
+# retries up to ``_LLM_STREAM_RETRY_ATTEMPTS`` times before propagating.
+_LLM_STREAM_READ_TIMEOUT = 60.0
+
 # Substrings used as a fallback when the exception class is opaque (e.g. an
 # openai/anthropic SDK error wrapping the underlying httpx failure).
 _TRANSIENT_NETWORK_MARKERS = (
@@ -79,6 +89,27 @@ _TRANSIENT_NETWORK_MARKERS = (
     "server disconnected",
     "remote protocol error",
 )
+
+
+def _make_streaming_http_client():
+    """Build an ``httpx.AsyncClient`` for ``ChatOpenAI`` with a tight
+    per-chunk read deadline. Returns ``None`` if httpx is unavailable so
+    the caller falls back to the SDK's default client (which won't have
+    the idle-chunk protection but at least keeps tests/CI runnable when
+    httpx isn't on the path).
+
+    Each ``make_llm`` call gets its own client so disposal lifetime
+    follows the LLM object's lifetime — no global pool to leak."""
+    try:
+        import httpx
+    except Exception:  # pragma: no cover — httpx is always installed in practice
+        return None
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(
+            timeout=300.0,  # total request budget (matches request_timeout below)
+            read=_LLM_STREAM_READ_TIMEOUT,
+        ),
+    )
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -282,6 +313,10 @@ def make_llm(employee_id: str = "", temperature: float | None = None) -> BaseCha
                 max_retries=3,
                 request_timeout=300.0,
                 stream_usage=True,
+                # http_async_client supplies the per-chunk read deadline
+                # that turns silent provider stalls into ReadTimeout, which
+                # L1 in run_streamed already classifies as transient.
+                http_async_client=_make_streaming_http_client(),
             )
 
     # --- Fallback: unknown provider or no key → fall back to openrouter with default model ---
@@ -302,6 +337,9 @@ def make_llm(employee_id: str = "", temperature: float | None = None) -> BaseCha
         max_retries=3,
         request_timeout=300.0,
         stream_usage=True,
+        # See above — per-chunk read deadline; silent stall → ReadTimeout
+        # → L1 retry instead of waiting out the full task budget.
+        http_async_client=_make_streaming_http_client(),
     )
 
 
