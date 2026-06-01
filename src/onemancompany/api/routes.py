@@ -8289,3 +8289,34 @@ async def api_product_activity(slug: str, limit: int = 50) -> list[dict]:
     from onemancompany.core import product as prod
 
     return prod.list_product_activity(slug, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# aigraph reverse proxy — lets the browser-side orbit/conflict graph
+# (frontend/src/lcg-graph.js) reach the server-local aigraph service at
+# 127.0.0.1:8765 via same-origin /aigraph (8765 isn't browser-reachable, and
+# fetching it directly from the browser fails with "Failed to fetch").
+# ---------------------------------------------------------------------------
+import os as _os_aig
+
+_AIGRAPH_UPSTREAM = _os_aig.environ.get("AIGRAPH_URL", "http://127.0.0.1:8765").rstrip("/")
+
+
+@router.api_route("/aigraph/{path:path}", methods=["GET"])
+async def _aigraph_proxy(path: str, request: Request):
+    """Proxy GET /aigraph/<path>?<qs> -> <AIGRAPH_UPSTREAM>/<path>?<qs>."""
+    import httpx
+    from starlette.responses import Response as _StarResponse
+
+    upstream = f"{_AIGRAPH_UPSTREAM}/{path}"
+    qs = request.url.query
+    if qs:
+        upstream += f"?{qs}"
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as _c:
+            r = await _c.get(upstream)
+        media = r.headers.get("content-type", "application/json")
+        return _StarResponse(content=r.content, status_code=r.status_code, media_type=media)
+    except Exception as _e:  # noqa: BLE001
+        from fastapi.responses import JSONResponse as _JR
+        return _JR({"error": f"aigraph upstream unreachable: {_e}"}, status_code=502)
