@@ -534,6 +534,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
     <div class="sidebar-section">
       <button class="sidebar-mod-btn" id="btnLlmSettings" onclick="window._openLlmSettings && window._openLlmSettings()">🧠 Agent LLM</button>
       <button class="sidebar-mod-btn" id="btnEnvSettings" onclick="window._openEnvPanel && window._openEnvPanel()">🔧 ENV Management <span id="envPendingBadge" style="display:none;background:#f33;color:#fff;padding:0 4px;margin-left:4px;border-radius:2px;font-size:6px;">!</span></button>
+      <button class="sidebar-mod-btn" id="btnInfraRuns" onclick="window._openInfraPanel && window._openInfraPanel()">🧪 Infra Runs</button>
     </div>
   </aside>
 
@@ -2461,6 +2462,140 @@ window._openEnvPanel = _openEnvPanel;
       if (badge) badge.style.display = '';
     }
   } catch (_) {}
+})();
+
+// ── Infra Runs panel ──────────────────────────────────────────
+(function () {
+  let _infraPollTimer = null;
+
+  function _statusBadge(status) {
+    const colours = { queued: '#888', running: '#2a6', succeeded: '#4c8', failed: '#f33' };
+    const s = (status || 'unknown').toLowerCase();
+    const bg = colours[s] || '#555';
+    return `<span style="background:${bg};color:#fff;padding:1px 6px;border-radius:3px;font-size:7px;font-family:var(--mono)">${s}</span>`;
+  }
+
+  function _parseOwner(run) {
+    // Try to extract omc/<project_id>/<iter> from cmd or metadata
+    const src = (run.cmd || '') + ' ' + JSON.stringify(run.metadata || {});
+    const m = src.match(/omc\/([^/\s]+)\/([^/\s]+)/);
+    if (m) return `${m[1]}/${m[2]}`;
+    return run.submitted_by || run.owner || '';
+  }
+
+  function _elapsed(startedAt) {
+    if (!startedAt) return '';
+    const secs = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
+    if (secs < 0) return '';
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
+  }
+
+  function _renderRuns(body, runsData, budgetData, baseUrl) {
+    body.innerHTML = '';
+
+    // Budget bar
+    if (budgetData && !budgetData.error) {
+      const used = budgetData.used != null ? budgetData.used : (budgetData.spent != null ? budgetData.spent : 0);
+      const total = budgetData.total != null ? budgetData.total : (budgetData.limit != null ? budgetData.limit : 0);
+      const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+      const bar = document.createElement('div');
+      bar.style.cssText = 'margin-bottom:12px;padding:8px;background:#111;border:1px solid #333;';
+      bar.innerHTML = `<div style="font-size:7px;opacity:.7;margin-bottom:4px;font-family:var(--mono)">BUDGET</div>
+        <div style="background:#222;height:6px;border-radius:3px;overflow:hidden;margin-bottom:4px">
+          <div style="width:${pct.toFixed(1)}%;background:${pct > 80 ? '#f33' : '#2a6'};height:100%"></div>
+        </div>
+        <div style="font-size:7px;font-family:var(--mono);opacity:.8">$${(+used).toFixed(2)} used${total ? ' / $' + (+total).toFixed(2) + ' total' : ''}</div>`;
+      body.appendChild(bar);
+    }
+
+    const runs = runsData.runs || runsData.data || (Array.isArray(runsData) ? runsData : []);
+    if (runs.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'opacity:.6;padding:8px;font-size:8px;';
+      empty.textContent = 'No active runs.';
+      body.appendChild(empty);
+      return;
+    }
+
+    for (const run of runs) {
+      const row = document.createElement('div');
+      row.style.cssText = 'margin-bottom:8px;padding:8px;border:1px solid #333;background:#111;';
+      const runId = run.run_id || run.id || '?';
+      const runUrl = baseUrl ? `${baseUrl.replace(/\/$/, '')}/runs/${runId}` : null;
+      const idHtml = runUrl
+        ? `<a href="${runUrl}" target="_blank" rel="noopener" style="color:#7af;text-decoration:none;font-family:var(--mono);font-size:7px;">${runId}</a>`
+        : `<span style="font-family:var(--mono);font-size:7px;">${runId}</span>`;
+      const owner = _parseOwner(run);
+      const elapsed = _elapsed(run.started_at || run.created_at);
+      const cost = run.cost != null ? `$${(+run.cost).toFixed(4)}` : '';
+      row.innerHTML = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${idHtml} ${_statusBadge(run.status)}
+          ${owner ? `<span style="font-size:7px;opacity:.7">${owner}</span>` : ''}
+          ${elapsed ? `<span style="font-size:7px;opacity:.6">⏱ ${elapsed}</span>` : ''}
+          ${cost ? `<span style="font-size:7px;opacity:.6">💰 ${cost}</span>` : ''}
+        </div>`;
+      body.appendChild(row);
+    }
+  }
+
+  async function _openInfraPanel() {
+    document.getElementById('infraPanelBackdrop')?.remove();
+    if (_infraPollTimer) { clearInterval(_infraPollTimer); _infraPollTimer = null; }
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'infraPanelBackdrop';
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:flex-end;justify-content:flex-start;';
+
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:#1a1a1a;border:1px solid #444;width:380px;max-height:70vh;margin:0 0 0 0;display:flex;flex-direction:column;font-family:var(--mono,monospace);font-size:8px;color:#eee;border-radius:4px 4px 0 0;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding:8px 12px;background:#222;border-bottom:1px solid #444;display:flex;align-items:center;justify-content:space-between;';
+    header.innerHTML = '<span>🧪 Infra Runs</span><button id="infraPanelClose" style="background:transparent;color:#fff;border:1px solid #444;padding:2px 6px;cursor:pointer;font-family:inherit;font-size:8px;">×</button>';
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:10px 12px;overflow:auto;flex:1;';
+    body.innerHTML = '<div style="opacity:.6;">Loading\u2026</div>';
+
+    modal.appendChild(header);
+    modal.appendChild(body);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    function _closePanel() {
+      if (_infraPollTimer) { clearInterval(_infraPollTimer); _infraPollTimer = null; }
+      backdrop.remove();
+    }
+    document.getElementById('infraPanelClose').onclick = _closePanel;
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) _closePanel(); });
+
+    async function _refresh() {
+      try {
+        const [runsResp, budgetResp] = await Promise.all([
+          fetch('/api/infra/runs').then(r => r.json()),
+          fetch('/api/infra/budget').then(r => r.json()),
+        ]);
+        if (runsResp.error === 'INFRA not configured') {
+          body.innerHTML = '';
+          const msg = document.createElement('div');
+          msg.style.cssText = 'opacity:.8;padding:8px;';
+          msg.innerHTML = 'INFRA not configured \u2014 set <code>INFRA_SERVER_URL</code> and <code>INFRA_SESSION_KEY</code> in the <a href="#" style="color:#7af;">ENV panel</a>.';
+          msg.querySelector('a').onclick = e => { e.preventDefault(); _closePanel(); window._openEnvPanel && window._openEnvPanel(['INFRA_SERVER_URL', 'INFRA_SESSION_KEY']); };
+          body.appendChild(msg);
+          return;
+        }
+        _renderRuns(body, runsResp, budgetResp, runsResp.base_url || '');
+      } catch (e) {
+        body.innerHTML = `<div style="opacity:.6;color:#f88;">Error loading infra data. Check the server logs.</div>`;
+      }
+    }
+
+    await _refresh();
+    _infraPollTimer = setInterval(_refresh, 30000);
+  }
+
+  window._openInfraPanel = _openInfraPanel;
 })();
 
 renderPipelineBar();

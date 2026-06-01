@@ -6300,6 +6300,65 @@ async def env_save(request: Request) -> dict:
     return {"status": "ok", "saved": list(body.keys())}
 
 
+# ── Infra runs panel ─────────────────────────────────────
+
+
+@router.get("/api/infra/runs")
+async def infra_runs() -> dict:
+    """Proxy to the experiment-infra ``/api/list_runs`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing so the frontend can render an informative empty state.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{server_url}/api/list_runs",
+                headers={"X-Session-Key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        logger.warning("[infra/runs] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
+@router.get("/api/infra/budget")
+async def infra_budget() -> dict:
+    """Proxy to the experiment-infra ``/api/budget`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{server_url}/api/budget",
+                headers={"X-Session-Key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        logger.warning("[infra/budget] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
 # ── Generic credentials endpoint ────────────────────────
 @router.post("/api/credentials/{service_name}")
 async def submit_credentials(service_name: str, request: Request) -> dict:
