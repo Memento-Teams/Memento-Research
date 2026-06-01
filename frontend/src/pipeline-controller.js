@@ -101,9 +101,13 @@ export class PipelineController {
 
     // Live activity ticker under the stage head — one-line summary of
     // what the agent is doing right now, so the user sees motion even
-    // when the long body text scrolls past.
-    if (typeof setStageActivity === 'function') {
-      setStageActivity(cardId, message);
+    // when the long body text scrolls past. ``window.*`` is mandatory:
+    // ``setStageActivity`` is a top-level ``function`` in index.html
+    // and lives on ``window``, but a bare reference from this ES
+    // module didn't resolve in practice (the previous ``typeof``
+    // guard evaluated to ``'undefined'`` and the call was skipped).
+    if (typeof window !== 'undefined' && typeof window.setStageActivity === 'function') {
+      window.setStageActivity(cardId, message);
     }
   }
 
@@ -139,7 +143,7 @@ export class PipelineController {
     setStage(sid, 'done');
     delete this.stageRuntime[sid];
     this._renderEta(sid);
-    if (typeof clearStageActivity === 'function') clearStageActivity(cardId);
+    if (typeof window !== 'undefined' && typeof window.clearStageActivity === 'function') window.clearStageActivity(cardId);
   }
 
   handleStageFailed({ stageId, confidence, reason }) {
@@ -159,7 +163,7 @@ export class PipelineController {
     setStage(sid, 'failed');
     delete this.stageRuntime[sid];
     this._renderEta(sid);
-    if (typeof clearStageActivity === 'function') clearStageActivity(cardId);
+    if (typeof window !== 'undefined' && typeof window.clearStageActivity === 'function') window.clearStageActivity(cardId);
   }
 
   handleDirectorAction({ phase, message }) {
