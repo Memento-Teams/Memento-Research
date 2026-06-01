@@ -8301,3 +8301,53 @@ async def api_product_activity(slug: str, limit: int = 50) -> list[dict]:
     from onemancompany.core import product as prod
 
     return prod.list_product_activity(slug, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# aigraph reverse proxy — lets the browser-side orbit/conflict graph
+# (frontend/src/lcg-graph.js) reach the server-local aigraph service at
+# 127.0.0.1:8765 via same-origin /aigraph (8765 isn't browser-reachable, and
+# fetching it directly from the browser fails with "Failed to fetch").
+# ---------------------------------------------------------------------------
+import os as _os_aig
+
+_AIGRAPH_UPSTREAM = _os_aig.environ.get("AIGRAPH_URL", "http://127.0.0.1:8765").rstrip("/")
+
+# Only these aigraph REST endpoints are reachable through the proxy. The
+# frontend orbit graph fetches /query/graph; /query and /api/runs are the other
+# read-only endpoints OMC uses. An explicit allowlist (not a "../" reject) is
+# the right control here: the path has no prefix to escape — /aigraph/admin
+# would otherwise reach upstream/admin directly — so we enumerate what is
+# permitted rather than try to blocklist what is not.
+_AIGRAPH_ALLOWED_PATHS = frozenset({"query/graph", "query", "api/runs"})
+
+
+@router.api_route("/aigraph/{path:path}", methods=["GET"])
+async def _aigraph_proxy(path: str, request: Request):
+    """Proxy GET /aigraph/<path>?<qs> -> <AIGRAPH_UPSTREAM>/<path>?<qs>.
+
+    Restricted to the read-only aigraph endpoints the frontend needs, and the
+    upstream host is pinned (no redirect-following) so the proxy can't be turned
+    into an SSRF gadget.
+    """
+    import httpx
+    from fastapi.responses import JSONResponse as _JR
+    from starlette.responses import Response as _StarResponse
+
+    norm = path.strip("/")
+    if norm not in _AIGRAPH_ALLOWED_PATHS:
+        return _JR({"error": f"aigraph path not allowed: {path}"}, status_code=404)
+
+    upstream = f"{_AIGRAPH_UPSTREAM}/{norm}"
+    qs = request.url.query
+    if qs:
+        upstream += f"?{qs}"
+    try:
+        # follow_redirects=False keeps the request pinned to the upstream host —
+        # a malicious/compromised upstream can't 3xx us into an internal SSRF.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=20.0) as _c:
+            r = await _c.get(upstream)
+        media = r.headers.get("content-type", "application/json")
+        return _StarResponse(content=r.content, status_code=r.status_code, media_type=media)
+    except Exception as _e:  # noqa: BLE001
+        return _JR({"error": f"aigraph upstream unreachable: {_e}"}, status_code=502)
