@@ -755,7 +755,8 @@ class PipelineEngine:
 
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
-        self._reset_attempt_timing()
+        if self.phase != "critic":
+            self._reset_attempt_timing()
         stage = self._stage_def()
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
@@ -1323,6 +1324,7 @@ class PipelineEngine:
                     self._save()
                     logger.info("[PIPELINE] Stage {} REJECTED (retry {}/{})", stage["id"], retries + 1, MAX_RETRIES)
                     self._emit_stage_event("stage_failed", stage["id"], confidence=confidence)
+                    self._reset_attempt_timing()
                     self._dispatch_producer(feedback=result)
                 else:
                     self._record_stage_memory(
@@ -1828,6 +1830,13 @@ class PipelineEngine:
             elapsed = max(0.0, float(time.time()) - float(started_at))
         except (TypeError, ValueError):
             return
+        try:
+            timeout_seconds = float(self._stage_def().get("timeout_seconds", 0) or 0)
+        except Exception:
+            timeout_seconds = 0
+        if timeout_seconds <= 0:
+            timeout_seconds = 3600.0
+        elapsed = min(elapsed, timeout_seconds * 2.0)
 
         timing = self.state.get("attempt_timing", {})
         if phase in ("producer", "producer_b"):

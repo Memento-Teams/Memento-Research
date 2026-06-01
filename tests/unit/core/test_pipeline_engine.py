@@ -454,6 +454,48 @@ def test_on_task_complete_updates_attempt_timing_and_records_it(tmp_path, monkey
     assert recorded["critic_elapsed_seconds"] == 12.0
 
 
+def test_critic_retry_persists_attempt_timing_before_reset(tmp_path, monkeypatch):
+    recorded = {}
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_critic_pass", lambda *a, **k: False)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_confidence", lambda *a, **k: 0.2)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": None)
+
+    def fake_record(self, stage, **kwargs):
+        recorded.update(kwargs)
+        return "m-1"
+
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine.state["phase"] = "critic"
+    engine.state["retries"] = 0
+    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 41.0, "critic_elapsed_seconds": 9.0}
+
+    engine.on_task_complete("00014", "n2", "REJECT confidence: 0.2")
+
+    assert recorded["producer_elapsed_seconds"] == 41.0
+    assert recorded["critic_elapsed_seconds"] == 9.0
+    assert engine.state["attempt_timing"] == {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+
+def test_record_active_phase_elapsed_clamps_clock_jump_outliers(tmp_path, monkeypatch):
+    now = {"t": 10_000.0}
+    monkeypatch.setattr(pe.time, "time", lambda: now["t"])
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    monkeypatch.setattr(engine, "_stage_def", lambda stage_id=None: {"id": 2, "timeout_seconds": 1200})
+    engine.state["active_task_started_at"] = 10.0
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+    engine._record_active_phase_elapsed("producer")
+
+    assert engine.state["attempt_timing"]["producer_elapsed_seconds"] == 2400.0
+
+
 @pytest.mark.parametrize("feedback,expect_revise", [
     # advance-with-comment chats that must NOT trigger a redo
     ("再补充一点细节", False),
