@@ -139,6 +139,23 @@ from enum import Enum
 
 ENV_OMC_DEBUG = "OMC_DEBUG"
 IS_DEBUG = os.environ.get(ENV_OMC_DEBUG, "0") == "1"
+
+# Completion-consumer timeout (seconds). The serial tree-completion consumer
+# wraps each child-complete handler in a timeout. Stage 4/5 multi-agent debates
+# create slow-but-finite completion processing (history lookups over many
+# ephemeral _sys_ debate projects, next-stage dispatch + memory retrieval) that
+# overruns a tight cap; cutting it off mid-processing leaves the task tree
+# inconsistent and wedges the run. Default 300s gives debate completion room to
+# finish; override via env for slower/faster deployments. See issue #103.
+ENV_OMC_COMPLETION_CONSUMER_TIMEOUT = "OMC_COMPLETION_CONSUMER_TIMEOUT"
+try:
+    COMPLETION_CONSUMER_TIMEOUT_S = float(
+        os.environ.get(ENV_OMC_COMPLETION_CONSUMER_TIMEOUT, "300")
+    )
+    if COMPLETION_CONSUMER_TIMEOUT_S <= 0:
+        COMPLETION_CONSUMER_TIMEOUT_S = 300.0
+except (TypeError, ValueError):
+    COMPLETION_CONSUMER_TIMEOUT_S = 300.0
 ENV_OMC_EMPLOYEE_ID = "OMC_EMPLOYEE_ID"
 ENV_OMC_TASK_ID = "OMC_TASK_ID"
 ENV_OMC_PROJECT_ID = "OMC_PROJECT_ID"

@@ -2225,6 +2225,90 @@ class TestCompletionQueue:
         mgr._ensure_completion_queue()
         assert mgr._completion_queue is original_queue  # Should not recreate
 
+    @pytest.mark.asyncio
+    async def test_consumer_uses_configurable_timeout(self, tmp_path, monkeypatch):
+        # The completion-consumer budget must come from config, not a hardcoded
+        # 60s — Stage 4/5 debate completion processing is slow-but-finite and a
+        # tight cap wedges the run (issue #103). Drive the loop with a handler
+        # slower than a tiny configured timeout and confirm the TimeoutError
+        # branch fires (logs + invokes recovery) rather than completing.
+        monkeypatch.setattr(
+            "onemancompany.core.vessel.COMPLETION_CONSUMER_TIMEOUT_S", 0.05
+        )
+        _tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        entry = ScheduleEntry(node_id=root.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+
+        async def _slow_inner(*_a, **_k):
+            await asyncio.sleep(0.5)
+
+        with patch.object(mgr, "_on_child_complete_inner", side_effect=_slow_inner), \
+             patch.object(mgr, "_requeue_node_after_timeout") as mock_requeue, \
+             patch("onemancompany.core.vessel.logger") as mock_logger:
+            mgr._ensure_completion_queue()
+            done = asyncio.Event()
+            await mgr._completion_queue.put(("emp01", entry, "proj1", done))
+            await asyncio.wait_for(done.wait(), timeout=2.0)
+
+        # TimeoutError branch logged an error (not a silent skip) and kicked
+        # the recovery path with the timed-out entry.
+        assert mock_logger.error.called
+        mock_requeue.assert_called_once_with(entry)
+
+        mgr._completion_consumer.cancel()
+        try:
+            await mgr._completion_consumer
+        except asyncio.CancelledError:
+            pass
+
+    def test_requeue_redispatches_schedulable_node(self, tmp_path):
+        # On timeout the run must advance WITHOUT a restart: a PENDING node whose
+        # deps are resolved (the next step the interrupted propagation never
+        # dispatched) must be scheduled AND its employee kicked via
+        # _schedule_next — flipping disk status alone is not enough because
+        # recover_schedule_from_trees only runs at startup (issue #103).
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        child = tree.add_child(parent_id=root.id, employee_id="e1",
+                               description="next step", acceptance_criteria=[])
+        # child is PENDING with no deps → schedulable
+        tree.save(tree_path)
+        entry = ScheduleEntry(node_id=child.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        with patch.object(mgr, "schedule_node") as mock_sched, \
+             patch.object(mgr, "_schedule_next") as mock_next:
+            mgr._requeue_node_after_timeout(entry)
+
+        mock_sched.assert_any_call("e1", child.id, str(tree_path))
+        mock_next.assert_called_once_with("e1")
+
+    def test_requeue_leaves_processing_nodes_untouched(self, tmp_path):
+        # Actively-running nodes (PROCESSING, live task in _running_tasks) must
+        # NOT be reset or rescheduled — doing so clobbers in-flight work and
+        # causes duplicate execution on the next restart.
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        entry = ScheduleEntry(node_id=root.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        with patch.object(mgr, "schedule_node") as mock_sched, \
+             patch.object(mgr, "_schedule_next") as mock_next:
+            mgr._requeue_node_after_timeout(entry)
+
+        mock_sched.assert_not_called()
+        mock_next.assert_not_called()
+        # Disk status of the running node is left as PROCESSING.
+        from onemancompany.core.task_tree import get_tree
+        reloaded = get_tree(Path(tree_path))
+        assert reloaded.get_node(root.id).status == TaskPhase.PROCESSING.value
+
+    def test_requeue_missing_tree_noops(self, tmp_path):
+        mgr = EmployeeManager()
+        entry = ScheduleEntry(node_id="x", tree_path=str(tmp_path / "gone.yaml"))
+        with patch.object(mgr, "schedule_node") as mock_sched:
+            mgr._requeue_node_after_timeout(entry)  # must not raise
+        mock_sched.assert_not_called()
+
 
 # =====================================================================
 # _get_role

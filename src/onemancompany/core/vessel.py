@@ -35,6 +35,7 @@ from langgraph.errors import GraphRecursionError
 
 from onemancompany.agents.base import BaseAgentRunner, make_llm
 from onemancompany.core.config import (
+    COMPLETION_CONSUMER_TIMEOUT_S,
     EMPLOYEES_DIR,
     ENCODING_UTF8,
     LAUNCH_SH_FILENAME,
@@ -2267,6 +2268,15 @@ class EmployeeManager:
         return format_workspace_context(str(worktree_path), product.get("name", slug), file_count)
 
     def _get_project_history_context(self, project_id: str) -> str:
+        # System-generated projects (_sys_ debate sub-agents, _auto_ projects)
+        # are not real projects — they carry no iteration history worth
+        # injecting, and Stage 4/5 debates spawn many _sys_ ones. Scanning the
+        # archive (load_named_project + list_project_files filesystem walk) for
+        # each on the completion path is pure overhead that helps overrun the
+        # completion-consumer budget (issue #103). Short-circuit before any I/O.
+        if is_system_project_id(project_id):
+            return ""
+
         from onemancompany.core.project_archive import (
             _is_iteration, _find_project_for_iteration,
             _split_qualified_iter,
@@ -2572,15 +2582,19 @@ class EmployeeManager:
                 with lock:
                     await asyncio.wait_for(
                         self._on_child_complete_inner(employee_id, entry, project_id),
-                        timeout=60.0,
+                        timeout=COMPLETION_CONSUMER_TIMEOUT_S,
                     )
             except asyncio.TimeoutError:
+                # Don't silently skip — that leaves the tree half-processed and
+                # wedges the run until a manual restart (issue #103). Re-dispatch
+                # any node left schedulable by the interrupted propagation so the
+                # run advances without a restart.
                 logger.error(
-                    "Completion consumer TIMEOUT (60s) for node {} tree={} — "
-                    "skipping to unblock queue. Tree may be in inconsistent state; "
-                    "restart will re-evaluate via recover_schedule_from_trees.",
-                    entry.node_id, entry.tree_path,
+                    "Completion consumer TIMEOUT ({}s) for node {} tree={} — "
+                    "re-dispatching schedulable nodes to recover.",
+                    COMPLETION_CONSUMER_TIMEOUT_S, entry.node_id, entry.tree_path,
                 )
+                self._requeue_node_after_timeout(entry)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -2588,6 +2602,57 @@ class EmployeeManager:
             finally:
                 done_event.set()
                 self._completion_queue.task_done()
+
+    def _requeue_node_after_timeout(self, entry: ScheduleEntry) -> None:
+        """Re-dispatch schedulable nodes in the timed-out tree, now.
+
+        When the completion handler overruns its budget the tree is left
+        half-processed: a node that was about to be dispatched (the next stage,
+        a spawned review, or a dependent unblocked by the just-completed child)
+        never made it into the in-memory schedule, so nothing advances the run
+        — it wedges until a manual restart (issue #103).
+
+        Rather than only flipping disk status (which restart-recovery picks up,
+        but no live scheduler pass does — schedule_node is the sole disk→
+        schedule bridge), this performs the schedulable half of
+        recover_schedule_from_trees inline: any PENDING node whose deps are
+        resolved, or any HOLDING node, is (re)scheduled and its employee kicked
+        via _schedule_next. Both schedule_node (skips duplicates) and
+        _schedule_next (no-ops if a task is already running) are idempotent, so
+        this never double-dispatches an actively-running node — which is also
+        why we deliberately do NOT touch PROCESSING nodes: those have a live
+        task and resetting them would clobber in-flight work.
+        """
+        from onemancompany.core.task_tree import get_tree
+
+        tree_file = Path(entry.tree_path)
+        if not tree_file.exists():
+            return
+        try:
+            tree = get_tree(tree_file)
+        except Exception as e:
+            logger.error("Timeout requeue: failed to load tree {}: {}", entry.tree_path, e)
+            return
+
+        kicked: set[str] = set()
+        for node in tree._nodes.values():
+            if node.is_ceo_node:
+                continue  # containers, not executable tasks
+            schedulable = (
+                (node.status == TaskPhase.PENDING.value and tree.all_deps_resolved(node.id))
+                or node.status == TaskPhase.HOLDING.value
+            )
+            if not schedulable:
+                continue
+            logger.debug(
+                "[TIMEOUT REQUEUE] re-scheduling node={} employee={} status={}",
+                node.id, node.employee_id, node.status,
+            )
+            self.schedule_node(node.employee_id, node.id, entry.tree_path)
+            kicked.add(node.employee_id)
+
+        for employee_id in kicked:
+            self._schedule_next(employee_id)
 
     async def _on_child_complete(self, employee_id: str, entry: ScheduleEntry, project_id: str = "") -> None:
         """Enqueue a child-complete event and wait for serial processing."""
