@@ -6288,6 +6288,36 @@ async def sales_protocol() -> dict:
     }
 
 
+# ── ENV Management panel ─────────────────────────────────
+@router.get("/api/env")
+async def env_list() -> dict:
+    """Snapshot of every known env var for the ENV Management panel.
+
+    The frontend renders one row per entry; pending rows are the ones
+    an agent is currently blocked on (or carried over from a previous
+    session via ``__OMC_PENDING__`` markers in ``.env``)."""
+    from onemancompany.core.env_manager import list_env
+    return {"rows": list_env()}
+
+
+@router.post("/api/env")
+async def env_save(request: Request) -> dict:
+    """Persist user-supplied env vars and unblock any waiting agent.
+
+    Body: ``{"FOO_KEY": "value", "BAR_KEY": "value", ...}``. Values are
+    validated by ``env_manager.save_env`` (no newlines, no placeholder
+    marker, non-empty key)."""
+    from onemancompany.core.env_manager import save_env
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a dict of key→value")
+    try:
+        save_env({str(k): str(v) for k, v in body.items()})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok", "saved": list(body.keys())}
+
+
 # ── Generic credentials endpoint ────────────────────────
 @router.post("/api/credentials/{service_name}")
 async def submit_credentials(service_name: str, request: Request) -> dict:
