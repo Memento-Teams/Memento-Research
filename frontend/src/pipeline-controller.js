@@ -98,6 +98,13 @@ export class PipelineController {
     } else {
       updateProducer(cardId, message);
     }
+
+    // Live activity ticker under the stage head — one-line summary of
+    // what the agent is doing right now, so the user sees motion even
+    // when the long body text scrolls past.
+    if (typeof setStageActivity === 'function') {
+      setStageActivity(cardId, message);
+    }
   }
 
   handleStageReviewing({ stageId }) {
@@ -132,6 +139,7 @@ export class PipelineController {
     setStage(sid, 'done');
     delete this.stageRuntime[sid];
     this._renderEta(sid);
+    if (typeof clearStageActivity === 'function') clearStageActivity(cardId);
   }
 
   handleStageFailed({ stageId, confidence, reason }) {
@@ -151,6 +159,7 @@ export class PipelineController {
     setStage(sid, 'failed');
     delete this.stageRuntime[sid];
     this._renderEta(sid);
+    if (typeof clearStageActivity === 'function') clearStageActivity(cardId);
   }
 
   handleDirectorAction({ phase, message }) {

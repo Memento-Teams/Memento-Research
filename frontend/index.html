@@ -237,6 +237,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
 .sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
 .sc-badge.badge-reviewing{background:var(--gold-subtle);color:#8B7332;animation:pulse-badge 1.5s ease-in-out infinite}
+.sc-activity{display:none;align-items:center;gap:8px;padding:6px 16px;border-bottom:1px solid var(--border-light);background:var(--bg);font-family:var(--mono);font-size:.66rem;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-activity.show{display:flex}
+.sc-activity::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
+.sc-activity .sc-activity-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-style:italic}
 @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.6}}
 .sc-revert-btn{padding:4px 10px;border-radius:var(--pill);border:1px solid var(--border);background:var(--white);color:var(--text2);font-size:.7rem;font-weight:500;cursor:pointer;margin-right:6px;transition:all .15s}
 .sc-revert-btn:hover{background:var(--green-subtle);color:var(--green);border-color:var(--green)}
@@ -1492,6 +1496,9 @@ function getStageCard(id, title, agentName, agentInitials) {
       <button class="sc-revert-btn" type="button" data-card="${id}" style="display:none" title="Fork from this stage with new instructions">↺ 回到这里</button>
       <span class="sc-badge badge-running">Running</span>
     </div>
+    <div class="sc-activity" id="sc-activity-${id}">
+      <span class="sc-activity-text"></span>
+    </div>
     <div class="sc-body">
       <div class="sc-section" id="sc-prod-${id}">
         <div class="sc-section-label lbl-producer"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${agentName}</div>
@@ -1559,6 +1566,53 @@ function updateCritic(cardId, content) {
   if (el) el.innerHTML = _renderMd(_clean(content));
   _scroll();
 }
+
+// Live activity line under the stage card head — shows a one-line
+// summary of what the agent is doing right now (latest tool call /
+// thinking chunk). Cleared when the stage transitions to done/failed.
+function setStageActivity(cardId, text) {
+  const row = document.getElementById('sc-activity-' + cardId);
+  if (!row) return;
+  const span = row.querySelector('.sc-activity-text');
+  if (!span) return;
+  const clean = _summarizeActivity(text);
+  if (!clean) {
+    row.classList.remove('show');
+    span.textContent = '';
+    return;
+  }
+  span.textContent = clean;
+  row.classList.add('show');
+}
+
+function clearStageActivity(cardId) {
+  const row = document.getElementById('sc-activity-' + cardId);
+  if (!row) return;
+  row.classList.remove('show');
+  const span = row.querySelector('.sc-activity-text');
+  if (span) span.textContent = '';
+}
+
+// Boil a (possibly multi-line, markdown-tagged) agent message down to
+// a single ~120-char ticker line. Strips code fences, bullet markers,
+// and collapses whitespace. Preserves a leading ``[tool_name]`` tag
+// (already added by the event adapter) since that's the most
+// useful "what's it doing" cue.
+function _summarizeActivity(text) {
+  if (!text) return '';
+  const collapsed = String(text)
+    .replace(/```[\s\S]*?```/g, ' ')           // strip code fences
+    .replace(/`([^`]+)`/g, '$1')               // unwrap inline code
+    .replace(/^[#>*\-\s]+/gm, '')              // strip md markers
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!collapsed) return '';
+  const MAX = 120;
+  return collapsed.length <= MAX ? collapsed : collapsed.slice(0, MAX - 1) + '…';
+}
+
+window.setStageActivity = setStageActivity;
+window.clearStageActivity = clearStageActivity;
 
 // Set card status badge
 function setCardStatus(cardId, status) {
