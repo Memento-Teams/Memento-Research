@@ -615,6 +615,13 @@ class Settings(BaseSettings):
     custom_chat_class: str = "openai"  # "openai" | "anthropic" — API format for custom provider
     default_llm_model: str = "google/gemini-3.1-flash-lite-preview"
 
+    # --- Stage Eval Agent (advisory per-stage checklist reports) ---
+    # When true, a dedicated ``eval-agent`` employee is dispatched after each
+    # AutoResearch pipeline stage to write an advisory ``stageN_eval_report.md``.
+    # Advisory only — it never gates the pipeline. Set STAGE_EVAL_ENABLED=false
+    # to turn the feature (and its per-stage LLM cost) off.
+    stage_eval_enabled: bool = True
+
     # FastSkills MCP
     skillsmp_api_key: str = ""
 

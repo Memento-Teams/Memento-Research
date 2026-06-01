@@ -729,6 +729,11 @@ async def lifespan(app: FastAPI):
     from onemancompany.core.product_triggers import register_product_triggers
     _product_trigger_task = register_product_triggers()
 
+    # Register advisory stage-eval triggers (writes a per-stage checklist
+    # report after each pipeline stage; advisory only, never gates).
+    from onemancompany.core.eval_triggers import register_eval_triggers
+    _eval_trigger_task = register_eval_triggers()
+
     # Start background WebSocket event broadcaster
     broadcaster_task = asyncio.create_task(ws_manager.event_broadcaster())
 

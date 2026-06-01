@@ -103,6 +103,10 @@ _SKILL_REQUIRED_RUNBOOKS: dict[str, list[str]] = {
     # So only methodology_designer needs the runbook injected;
     # paper_writer just references stage4_framework_figure.png by path.
     "methodology_designer": ["paper-framework-figure"],
+    # The advisory eval-agent (Stage Eval Agent) carries the per-stage
+    # checklist runbook. Dispatched after each stage by
+    # ``core/eval_triggers.py`` to write an advisory report.
+    "stage_eval": ["stage-eval"],
 }
 
 

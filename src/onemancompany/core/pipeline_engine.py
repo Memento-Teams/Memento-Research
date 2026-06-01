@@ -1764,6 +1764,7 @@ class PipelineEngine:
             "employee_name": employee_name,
             "employee_id": employee_id,
             "project_id": self.project_id,
+            "project_dir": self.project_dir,
             "pipeline_managed": True,
         }
         if confidence is not None:

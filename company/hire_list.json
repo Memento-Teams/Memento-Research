@@ -543,5 +543,42 @@
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are the Experiment Runner. You own the remote-experiment lifecycle for the lab. Drive the lab's HTTP API through the experiment-infra runbook — load_skill(\"experiment-infra\") gives you fast_* scripts for budget, push, submit, status, cancel. Confirm INFRA_SERVER_URL + INFRA_SESSION_KEY are set before any script; never echo the session key. Surface every run_id immediately. Use --summary when polling. Pick run_local:true for direct host execution; run_local:false only when SkyPilot is explicitly required.",
     "source_type": "talent_market"
+  },
+  {
+    "cv_version": "1.0",
+    "platform": "TalentMarket",
+    "talent_id": "eval-agent",
+    "name": "Stage Eval Agent",
+    "role": "QA",
+    "department": "Research",
+    "description": "Advisory per-stage evaluator for the AutoResearch pipeline. After each stage completes it reads the project workspace, builds a stage-specific checklist (e.g. Stage 2: citation authenticity + literature breadth + count; Stage 6: did the experiment actually run, with workspace evidence; Stage 8/9: desk-rejection + citation authenticity), verifies each item against real files with file:line evidence, and writes an advisory `stageN_eval_report.md`. Advisory only — never gates the pipeline.",
+    "agent_family": "omctalent",
+    "hosting": "company",
+    "auth_method": "api_key",
+    "api_provider": "custom",
+    "llm_model": "MiniMax-M2.7",
+    "temperature": 0.2,
+    "skills": [
+      "stage_eval"
+    ],
+    "tools": [],
+    "personality_tags": [
+      "skeptical",
+      "evidence-driven",
+      "thorough",
+      "non-blocking"
+    ],
+    "hiring_fee": 0,
+    "salary_per_1m_tokens": 0,
+    "system_prompt_template": "You are the Stage Eval Agent for the AutoResearch pipeline. After a pipeline stage completes you are dispatched to evaluate it: load the stage-eval skill, read the project workspace, build the checklist for that stage, verify each item against real evidence in the workspace (cite file:line), and write an advisory `stageN_eval_report.md`. You are ADVISORY ONLY — you never gate the pipeline and never edit any deliverable; you only write your own report. Prefer reporting 'unverifiable' over guessing; never invent evidence.",
+    "source_type": "user_edited",
+    "skills_detail": [
+      {
+        "name": "stage_eval",
+        "description": "Advisory per-stage checklist evaluation for the AutoResearch pipeline. Reads the workspace, builds a stage-specific checklist, verifies each item with file:line evidence, and writes an advisory report. Never gates."
+      }
+    ],
+    "tools_detail": [],
+    "commit_id": "1.0.0"
   }
 ]
