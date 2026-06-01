@@ -2017,42 +2017,97 @@ def _setup_stage8(tmp_path, monkeypatch):
     return engine, dispatched
 
 
-def test_stage8_dispatch_default_markdown(tmp_path, monkeypatch):
+def test_stage8_dispatch_starts_with_sub_step_1(tmp_path, monkeypatch):
+    """Stage 8 is chunked; the first dispatch is sub-step 8.1 (Argument Design),
+    NOT a monolithic dispatch of the whole runbook. The OUTPUT FORMAT
+    DIRECTIVE lives in sub-step 8.8 (assembly) — see the dedicated tests
+    below."""
     engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
     engine._dispatch_producer()
+    title = dispatched[0][2]
     desc = dispatched[0][1]
-    # Output-format directive line is "output_format=markdown" with no
-    # trailing " venue=…" appended — that branch only fires for latex/both.
-    assert "output_format=markdown\n" in desc
-    assert "stage4_framework_figure.png" in desc
+    assert title == "Stage 8.1: Argument Design"
+    assert "Stage 8 chunk 1 of 8" in desc
+    assert "stage8_scratchpad.json" in desc
+    assert engine.state.get("sub_step_idx") == 0
 
 
-def test_stage8_dispatch_latex_uses_default_venue(tmp_path, monkeypatch):
+def _stage8_directive_line(desc: str) -> str:
+    """Extract the rendered ``output_format=…`` directive (i.e. the string
+    substituted into ``{paper_directive}``) from a sub-step 8.8 description.
+    The template body contains documentation lines like
+    ``fetch_latex_template(venue=…)`` which would false-match a naive
+    ``"venue=" in desc`` check; this helper isolates just the directive
+    that was actually formatted in for this dispatch."""
+    marker = "OUTPUT FORMAT DIRECTIVE:"
+    idx = desc.find(marker)
+    if idx == -1:
+        return ""
+    tail = desc[idx + len(marker):].lstrip()
+    # The directive is the text up to the next newline.
+    return tail.split("\n", 1)[0].strip()
+
+
+def test_stage8_assembly_sub_step_default_markdown(tmp_path, monkeypatch):
+    """Sub-step 8.8 carries the OUTPUT FORMAT DIRECTIVE. With no
+    paper_config set, the directive resolves to ``output_format=markdown``
+    with no trailing venue."""
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    # Jump to the final sub-step (0-indexed 7 = 8.8 Assembly + Dispatch).
+    engine._dispatch_sub_step(7)
+    directive = _stage8_directive_line(dispatched[0][1])
+    assert directive == "output_format=markdown"
+
+
+def test_stage8_assembly_sub_step_latex_uses_default_venue(tmp_path, monkeypatch):
     engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
     engine.state["paper_config"] = {"output_format": "latex"}
-    engine._dispatch_producer()
-    desc = dispatched[0][1]
-    assert "output_format=latex" in desc
-    assert "venue=iclr2026" in desc
+    engine._dispatch_sub_step(7)
+    directive = _stage8_directive_line(dispatched[0][1])
+    assert directive == "output_format=latex venue=iclr2026"
 
 
-def test_stage8_dispatch_both_with_explicit_venue(tmp_path, monkeypatch):
+def test_stage8_assembly_sub_step_both_with_explicit_venue(tmp_path, monkeypatch):
     engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
     engine.state["paper_config"] = {"output_format": "both", "venue": "neurips2025"}
-    engine._dispatch_producer()
-    desc = dispatched[0][1]
-    assert "output_format=both" in desc
-    assert "venue=neurips2025" in desc
+    engine._dispatch_sub_step(7)
+    directive = _stage8_directive_line(dispatched[0][1])
+    assert directive == "output_format=both venue=neurips2025"
 
 
-def test_stage8_dispatch_docx_skips_venue(tmp_path, monkeypatch):
+def test_stage8_assembly_sub_step_docx_skips_venue(tmp_path, monkeypatch):
+    """docx skips the venue branch — even when paper_config sets a venue,
+    the rendered directive line ends without a venue suffix."""
     engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
     engine.state["paper_config"] = {"output_format": "docx", "venue": "iclr2026"}
+    engine._dispatch_sub_step(7)
+    directive = _stage8_directive_line(dispatched[0][1])
+    assert directive == "output_format=docx"
+
+
+def test_stage8_sub_steps_advance_then_dispatch_critic(tmp_path, monkeypatch):
+    """Smoke-test the full chunked producer loop: ``on_task_complete`` fires
+    7 sub-step advances then transitions to the critic. Each intermediate
+    sub-step's result is informational; only the final sub-step's deliverable
+    becomes ``stage_results[8]``."""
+    engine, dispatched = _setup_stage8(tmp_path, monkeypatch)
+    # Bypass the critic dispatch — we just want to confirm transition happens.
+    critic_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, result: critic_dispatched.append(result),
+    )
+    # Kick off the chunked dispatch.
     engine._dispatch_producer()
-    desc = dispatched[0][1]
-    # docx skips the venue branch — even if venue is set in paper_config,
-    # the rendered directive line must end without a " venue=…" suffix.
-    assert "output_format=docx\n" in desc
+    assert engine.state["sub_step_idx"] == 0
+    # Simulate each sub-step completing in turn.
+    for sub_idx in range(len(pe.STAGE_8_SUB_STEPS)):
+        engine.on_task_complete("emp-pw", f"node-{sub_idx}", f"sub-step {sub_idx} done")
+    # After the last sub-step, the engine should have dispatched the critic.
+    assert len(critic_dispatched) == 1
+    # The sub-step counter resets so subsequent retries (after critic reject)
+    # would start from sub-step 1, not pick up from 8.
+    assert engine.state["sub_step_idx"] == 0
 
 
 # ---------------------------------------------------------------------------

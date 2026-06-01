@@ -33,12 +33,244 @@ STAGES = [
     {"id": 5, "skill": "experiment_designer",   "name": "Experiment Design"},
     {"id": 6, "skill": "experimentalist",       "name": "Auto Experiment"},
     {"id": 7, "skill": "result_analyst",        "name": "Result Analysis"},
-    {"id": 8, "skill": "paper_writer",          "name": "Paper Generation"},
+    {"id": 8, "skill": "paper_writer",          "name": "Paper Generation",
+     "sub_steps_ref": "STAGE_8_SUB_STEPS"},
     {"id": 9, "skill": "peer_reviewer",         "name": "Self-Review"},
 ]
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
+
+
+def _stage_sub_steps(stage: dict) -> list | None:
+    """Resolve a stage's ``sub_steps_ref`` to the actual list, or ``None``.
+
+    Stages declare chunked-dispatch sub-steps via a string reference
+    (``sub_steps_ref``) to a module-level list defined further down in the
+    file (Python evaluates dict literals top-down, so a direct reference
+    would NameError). Returns ``None`` for stages without sub-steps.
+    """
+    ref = stage.get("sub_steps_ref")
+    if not ref:
+        return None
+    return globals().get(ref)
+
+# ---------------------------------------------------------------------------
+# Stage 8 sub-steps (chunked producer dispatch)
+# ---------------------------------------------------------------------------
+#
+# Stage 8 (Paper Generation) is the heaviest dispatch in the pipeline — its
+# producer must synthesise ~18k words of Stage 1-7 deliverables into a
+# ~7k-word paper across 11 mandatory sections. Some deployments route LLM
+# traffic through gateways that close idle/long-running connections (e.g.
+# alibaba-ga in front of LiteLLM proxies caps single LLM responses at
+# roughly 7 minutes). A monolithic Stage 8 dispatch reliably hits that cap
+# when the agent's first big "plan everything" thought response exceeds it,
+# and the producer never reaches its first ``write()`` tool call.
+#
+# Resolution: split Stage 8 producer into a sequence of small sub-steps,
+# each scoped to write one short artefact (typically <2k output tokens).
+# Sub-steps share state via files in the project workspace. The state
+# machine stays in ``phase == "producer"`` and tracks progress via
+# ``state["sub_step_idx"]``. When the last sub-step's task completes,
+# ``on_task_complete`` transitions to the critic exactly like a regular
+# stage. Retries (stub-result, hard-gate) re-dispatch the CURRENT sub-step
+# rather than restarting from sub-step 1, so intermediate work is not lost.
+#
+# Stages without ``sub_steps`` (everything except Stage 8) behave exactly
+# as before — the new code paths are no-ops for them.
+STAGE_8_SUB_STEPS = [
+    {
+        "id": "8.1",
+        "name": "Argument Design",
+        "out_file": "stage8_scratchpad.json",
+        "task_template": (
+            "Stage 8 chunk 1 of 8 — Argument Design (paper_writer Step 2).\n\n"
+            "Do NOT write the paper body in this chunk. Produce only the seven-item argument design as JSON.\n\n"
+            "1. read() these three files from the workspace:\n"
+            "   - stage1_topic_refiner.md\n"
+            "   - stage2_literature_surveyor.md\n"
+            "   - stage3_idea_generator.md\n"
+            "2. Produce the 7 sub-items below and write() them as a single JSON file to "
+            "stage8_scratchpad.json (in the same workspace). The JSON shape MUST be:\n\n"
+            "{\n"
+            "  \"contribution_one_sentence\": \"... (concrete mechanism + measurable claim; "
+            "banned words: novel/significant/robust/efficient/comprehensive/state-of-the-art)\",\n"
+            "  \"mechanism_gap\": \"... (mechanism-level — which method, under which condition, "
+            "exhibits which phenomenon, because of which mechanism)\",\n"
+            "  \"core_insight\": \"... (non-obvious observation that motivates the method; why-before-what, one sentence)\",\n"
+            "  \"closest_prior_works\": [\n"
+            "    {\"cite\": \"[Author, Year]\", \"what_they_do\": \"...\", \"difference\": \"...\"}\n"
+            "  ],\n"
+            "  \"contributions\": [\"contribution 1\", \"contribution 2\", \"contribution 3\"],\n"
+            "  \"research_questions\": [\"RQ1: ...\", \"RQ2: ...\", \"RQ3: ...\"],\n"
+            "  \"citation_plan\": [\n"
+            "    {\"cite\": \"[Author, Year]\", \"arxiv\": \"NNNN.NNNNN\", "
+            "\"section\": \"4.1 ...\", \"purpose\": \"one clause\"}\n"
+            "  ]\n"
+            "}\n\n"
+            "3. CRITICAL: every paper surveyed in Stage 2 must appear in citation_plan. "
+            "Use [Author, Year] SQUARE BRACKETS, never (parens).\n"
+            "4. submit_result() with one line: 'Stage 8.1 done. citation_plan length X, Stage 2 corpus size Y.'"
+        ),
+    },
+    {
+        "id": "8.2",
+        "name": "Title + Introduction + Related Work",
+        "out_file": "stage8_part_intro.md",
+        "task_template": (
+            "Stage 8 chunk 2 of 8 — Title + Introduction + Related Work.\n\n"
+            "1. read() stage8_scratchpad.json (chunk 1's output) and stage2_literature_surveyor.md from the workspace.\n"
+            "2. write() to stage8_part_intro.md a section containing:\n"
+            "   - Line 1: '# <Title>' — title describes the contribution, not the field. No banned adjectives.\n"
+            "   - '## 3 Introduction' — McKeown 5 paragraphs in order: (1) problem and why it matters; (2) state of the art "
+            "and its mechanism-level gap (from scratchpad.mechanism_gap); (3) core insight FIRST then method overview "
+            "(from scratchpad.core_insight); (4) contributions in continuous prose (from scratchpad.contributions); "
+            "(5) result preview. End the Intro with: ![Figure 1: <self-contained caption>](stage4_framework_figure.png)\n"
+            "   - '## 4 Related Work' — 2-4 thematic subsections (### 4.1 ..., ### 4.2 ...), each with what-they-do / "
+            "common-limitation / how-we-differ. End with '### 4.5 Positioning' that cites the closest_prior_works.\n"
+            "3. Citation format: [Author, Year] SQUARE BRACKETS. Cite every paper in scratchpad.citation_plan that targets "
+            "Related Work or Introduction. Mention=cite: any paper/framework name in body must have inline [Author, Year] "
+            "on first mention.\n"
+            "4. No banned adjectives (novel/significant/robust/extensive/comprehensive) when describing OUR work — only "
+            "allowed as technical terms (e.g. 'semantic novelty', 'novelty detection').\n"
+            "5. submit_result() with: 'Stage 8.2 done. word count X, distinct [Author, Year] cites Y.'"
+        ),
+    },
+    {
+        "id": "8.3",
+        "name": "Methodology",
+        "out_file": "stage8_part_method.md",
+        "task_template": (
+            "Stage 8 chunk 3 of 8 — Methodology.\n\n"
+            "1. read() stage8_scratchpad.json and stage4_methodology_designer.md from the workspace.\n"
+            "2. write() to stage8_part_method.md a Section 5 Methodology with subsections:\n"
+            "   - '# 5 Methodology'\n"
+            "   - '## 5.1 Preliminaries / Problem Formulation' — formal definitions, notation. Preserve all LaTeX/math "
+            "notation ($...$, $$...$$) from Stage 4 verbatim.\n"
+            "   - '## 5.2 Method Overview' — short forest-before-trees paragraph; text reference to Figure 1 "
+            "(DO NOT re-embed the image; Intro already did).\n"
+            "   - '## 5.3 Component-by-Component' — for each design decision, answer what + why-this-not-that.\n"
+            "   - '## 5.4 Algorithm' — pseudocode in a numbered block with inputs/outputs declared.\n"
+            "3. Each equation gets one sentence of intuition adjacent ('intuitively, this term encourages ...').\n"
+            "4. Citations: [Author, Year] brackets for foundational works cited from Stage 4.\n"
+            "5. submit_result() with: 'Stage 8.3 done. word count X, equations Y.'"
+        ),
+    },
+    {
+        "id": "8.4",
+        "name": "Experimental Setup",
+        "out_file": "stage8_part_setup.md",
+        "task_template": (
+            "Stage 8 chunk 4 of 8 — Experimental Setup.\n\n"
+            "1. read() stage8_scratchpad.json (for RQs), stage5_experiment_designer.md, stage6_experimentalist.md.\n"
+            "2. write() to stage8_part_setup.md a Section 6 Experimental Setup that opens with: "
+            "'Our experiments answer the following questions: RQ1 ...; RQ2 ...; RQ3 ...' (verbatim from scratchpad.research_questions).\n"
+            "3. Subsections:\n"
+            "   - '### 6.1 Datasets' — name, scale, split protocol (verbatim from Stage 5).\n"
+            "   - '### 6.2 Baselines' — strong + fair. Each baseline gets [Author, Year] inline cite on first mention.\n"
+            "   - '### 6.3 Metrics' — name, direction (UP / DOWN), source.\n"
+            "   - '### 6.4 Implementation Details' — model, hyper-parameters, hardware, seed count.\n"
+            "4. [Author, Year] brackets.\n"
+            "5. submit_result() with: 'Stage 8.4 done. word count X, baselines Y.'"
+        ),
+    },
+    {
+        "id": "8.5",
+        "name": "Results",
+        "out_file": "stage8_part_results.md",
+        "task_template": (
+            "Stage 8 chunk 5 of 8 — Results.\n\n"
+            "1. read() stage8_scratchpad.json (RQs), stage6_experimentalist.md, stage7_result_analyst.md.\n"
+            "2. write() to stage8_part_results.md a Section 7 Results with subsections mapping 1:1 to the RQs from scratchpad:\n"
+            "   - '# 7 Results'\n"
+            "   - '## 7.1 RQ1: ...', '## 7.2 RQ2: ...', '## 7.3 RQ3: ...'\n"
+            "3. Each RQ subsection follows the three-move structure:\n"
+            "   a. Headline: one-sentence claim with a specific number ('RQ1 is answered affirmatively: hybrid beats best singleton by N pp on TSR, p < 0.05.').\n"
+            "   b. Evidence: markdown pipe-table with bold best value per row, decimals aligned, columns labelled UP/DOWN, mean +/- std reported.\n"
+            "   c. Analysis: WHY result holds and WHEN it fails.\n"
+            "4. Add '## 7.4 Ablation Study' if Stage 6/7 has ablation data (drop component A -> delta; drop B -> delta).\n"
+            "5. Anti-overclaim discipline: if method wins only in some settings, say so explicitly.\n"
+            "6. [Author, Year] brackets for any baseline reference.\n"
+            "7. submit_result() with: 'Stage 8.5 done. word count X, tables Y, ablation present Z (yes/no).'"
+        ),
+    },
+    {
+        "id": "8.6",
+        "name": "Discussion + Limitations + Conclusion",
+        "out_file": "stage8_part_tail.md",
+        "task_template": (
+            "Stage 8 chunk 6 of 8 — Discussion + Limitations + Conclusion.\n\n"
+            "1. read() stage8_part_results.md, stage8_part_intro.md, stage7_result_analyst.md.\n"
+            "2. write() to stage8_part_tail.md three sections in order:\n"
+            "   - '## 8 Discussion' (~300 words) — interpret main RQ results, separate evidence from speculation. "
+            "Hedge speculation: 'we conjecture', 'this suggests, though not directly tested, that ...'.\n"
+            "   - '## 9 Limitations' (~200 words) — scope, dataset bias, baseline coverage, compute cost, reproducibility caveats.\n"
+            "   - '## 10 Conclusion' (~150 words) — restate the core contribution in DIFFERENT WORDS from the Intro "
+            "(no copy-paste). 1-2 sentences of substantive future work (a direction, not a TODO list).\n"
+            "3. [Author, Year] brackets where applicable.\n"
+            "4. submit_result() with: 'Stage 8.6 done. discussion X words, limitations Y words, conclusion Z words.'"
+        ),
+    },
+    {
+        "id": "8.7",
+        "name": "References + Abstract",
+        "out_file": "stage8_part_abstract_refs.md",
+        "task_template": (
+            "Stage 8 chunk 7 of 8 — References + Abstract (Abstract written LAST).\n\n"
+            "1. read() stage8_scratchpad.json (citation_plan + numbers), stage8_part_intro.md, stage8_part_results.md.\n"
+            "2. write() to stage8_part_abstract_refs.md in this order:\n"
+            "   - '## 11 References' — sorted alphabetically by first-author surname, then year. One entry per line. "
+            "Format: 'Author, A. and Author, B. (Year). Title. Venue or arXiv:NNNN.NNNNN.'. "
+            "Generated from scratchpad.citation_plan. Every entry must mirror an inline [Author, Year] cite already in "
+            "stage8_part_intro.md or stage8_part_results.md.\n"
+            "   - '## 2 Abstract' (write LAST so it summarises material already in body) — 5-part structure, 150-250 words:\n"
+            "     (1) Context (1-2 sentences): what the field is doing.\n"
+            "     (2) Gap (1-2 sentences): the specific mechanism-level unsolved problem (from scratchpad.mechanism_gap).\n"
+            "     (3) What we propose (2 sentences): we propose X, the core mechanism is Y.\n"
+            "     (4) Key results with VERBATIM numbers from stage8_part_results.md (never round).\n"
+            "     (5) Significance (1 sentence).\n"
+            "3. [Author, Year] brackets.\n"
+            "4. submit_result() with: 'Stage 8.7 done. references count X, abstract word count Y.'"
+        ),
+    },
+    {
+        "id": "8.8",
+        "name": "Assembly + Format Dispatch",
+        "out_file": "stage8_paper_writer.md",
+        "task_template": (
+            "Stage 8 chunk 8 of 8 — Assembly + Format Dispatch (final).\n\n"
+            "1. read() these files in order: stage8_part_intro.md, stage8_part_method.md, stage8_part_setup.md, "
+            "stage8_part_results.md, stage8_part_tail.md, stage8_part_abstract_refs.md.\n\n"
+            "2. Assemble the eleven mandatory sections in correct order and write() to stage8_paper_writer.md:\n"
+            "   - Title (first line of stage8_part_intro.md)\n"
+            "   - Section 2 Abstract (extract from stage8_part_abstract_refs.md)\n"
+            "   - Section 3 Introduction (from stage8_part_intro.md, after the title line)\n"
+            "   - Section 4 Related Work (from stage8_part_intro.md)\n"
+            "   - Section 5 Methodology (from stage8_part_method.md)\n"
+            "   - Section 6 Experimental Setup (from stage8_part_setup.md)\n"
+            "   - Section 7 Results (from stage8_part_results.md)\n"
+            "   - Section 8 Discussion (from stage8_part_tail.md)\n"
+            "   - Section 9 Limitations (from stage8_part_tail.md)\n"
+            "   - Section 10 Conclusion (from stage8_part_tail.md)\n"
+            "   - Section 11 References (from stage8_part_abstract_refs.md)\n\n"
+            "3. OUTPUT FORMAT DIRECTIVE: {paper_directive}\n"
+            "4. If output_format is markdown, you are done after step 2.\n"
+            "   If output_format is latex / pdf / both, additionally call fetch_latex_template(venue=..., "
+            "dest_dir=<workspace>/stage8_paper) and translate the assembled paper into main.tex following the v2.0.0 "
+            "paper_writer SKILL.md Step 9b rules. For pdf, then call compile_latex(project_dir=<dest_dir>).\n"
+            "   If output_format is docx, call render_docx(...) with the section dict + figures=[...].\n\n"
+            "5. submit_result() with a one-paragraph audit:\n"
+            "   - output_path of the final deliverable\n"
+            "   - total_words of stage8_paper_writer.md\n"
+            "   - distinct_inline_cites (count of [Author, Year] in body)\n"
+            "   - stage2_corpus_size (from scratchpad.citation_plan length)\n"
+            "   - coverage_percent = distinct_inline_cites / stage2_corpus_size\n"
+            "   - confirm figure embedded once in body\n"
+            "   - any [TODO: ...] markers and which section"
+        ),
+    },
+]
 
 # Canonical default employee per stage, sourced from company/hire_list.json.
 # When multiple hired employees share the same skill, the one originating
@@ -732,8 +964,24 @@ class PipelineEngine:
         return text
 
     def _dispatch_producer(self, feedback: str = ""):
-        """Dispatch the current stage's producer. Uses user assignment if set."""
+        """Dispatch the current stage's producer. Uses user assignment if set.
+
+        Stages declaring ``sub_steps`` (currently only Stage 8) delegate to
+        :func:`_dispatch_sub_step` to fire the first sub-step. ``on_task_complete``
+        then advances through the remaining sub-steps before transitioning to
+        the critic. The state stays in ``phase == "producer"`` throughout —
+        sub-step progress is tracked via ``state["sub_step_idx"]``.
+        """
         stage = self._stage_def()
+        # Chunked dispatch path — Stage 8 splits the producer into a sequence
+        # of small sub-tasks so each LLM call stays under any upstream gateway
+        # timeout. The state machine still completes ``producer → critic`` once
+        # all sub-steps finish.
+        if _stage_sub_steps(stage):
+            self.state["sub_step_idx"] = 0
+            self._save()
+            self._dispatch_sub_step(0, feedback=feedback)
+            return
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage["id"]))
@@ -891,6 +1139,114 @@ class PipelineEngine:
         if employee_id in configs:
             emp_name = configs[employee_id].name
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
+
+    def _dispatch_sub_step(self, sub_idx: int, feedback: str = ""):
+        """Dispatch one sub-step of a chunked producer (currently Stage 8).
+
+        Sub-step lookup uses ``_stage_sub_steps(stage)``. The state machine
+        stays in ``phase == "producer"`` while sub-steps progress; only
+        ``state["sub_step_idx"]`` changes. ``on_task_complete`` advances
+        to the next sub-step or, after the last one, transitions to the
+        critic phase.
+
+        Retries (stub-result, hard-gate) re-dispatch the CURRENT sub-step
+        instead of restarting from sub-step 1, so prior sub-step outputs
+        on disk are preserved.
+        """
+        stage = self._stage_def()
+        sub_steps = _stage_sub_steps(stage)
+        if not sub_steps:
+            logger.error(
+                "[PIPELINE] _dispatch_sub_step called for stage {} which has no sub_steps",
+                stage["id"],
+            )
+            return
+        if sub_idx < 0 or sub_idx >= len(sub_steps):
+            logger.error(
+                "[PIPELINE] sub_idx {} out of bounds for stage {} (have {} sub-steps)",
+                sub_idx, stage["id"], len(sub_steps),
+            )
+            return
+        sub = sub_steps[sub_idx]
+
+        # Employee assignment same as monolithic dispatch — CEO-set assignment
+        # wins, otherwise canonical employee for the stage's primary skill.
+        assignments = self.state.get("stage_assignments", {})
+        assigned = assignments.get(str(stage["id"]))
+        employee_id = assigned if assigned else _find_employee_for_stage(stage["id"], stage["skill"])
+        if not employee_id:
+            logger.error("[PIPELINE] No employee with skill '{}' for stage {}", stage["skill"], stage["id"])
+            self.state["phase"] = "failed"
+            self._save()
+            return
+
+        # Build the per-sub-step task description. Top-of-task includes the
+        # global research context + memory guidance so the agent has the
+        # same backdrop each sub-step regardless of fresh-session resets.
+        context = self._build_context()
+        memory_guidance = self._retrieve_memory_guidance(stage, context, feedback)
+        desc = (
+            f"Stage {stage['id']}.{sub_idx + 1}: {sub['name']}\n\n"
+            f"{context}\n"
+        )
+        if memory_guidance:
+            desc += f"\n--- Retrieved Research Memory ---\n{memory_guidance}\n"
+        if feedback:
+            desc += f"\nFeedback from previous attempt:\n{feedback}\n"
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
+
+        # Format the sub-step template. The final sub-step (assembly) accepts
+        # a {paper_directive} placeholder for the OUTPUT FORMAT DIRECTIVE
+        # derived from state["paper_config"].
+        template = sub.get("task_template", "")
+        if "{paper_directive}" in template:
+            _paper_cfg = self.state.get("paper_config") or {}
+            _fmt = (_paper_cfg.get("output_format") or "markdown").strip().lower()
+            _venue = (_paper_cfg.get("venue") or "").strip().lower()
+            directive = f"output_format={_fmt}"
+            if _fmt in ("latex", "both", "pdf"):
+                directive += f" venue={_venue or 'iclr2026'}"
+            template = template.replace("{paper_directive}", directive)
+        desc += "\n" + template
+
+        # Tie the sub-step output file to the stage so the agent does not have
+        # to guess. Some sub-steps already encode the output filename in their
+        # template, but the agent is more reliable when it appears at the tail
+        # of the task description too.
+        out_file = sub.get("out_file")
+        if out_file:
+            desc += (
+                f"\n\nYour deliverable for this sub-step: write() the result to {out_file} "
+                "in the project workspace, then call submit_result() with the one-line summary "
+                "described above."
+            )
+
+        self.state["phase"] = "producer"
+        self.state["sub_step_idx"] = sub_idx
+        self._save()
+        self._dispatch_to_employee(
+            employee_id,
+            desc,
+            f"Stage {stage['id']}.{sub_idx + 1}: {sub['name']}",
+        )
+
+        emp_name = employee_id
+        configs = load_employee_configs()
+        if employee_id in configs:
+            emp_name = configs[employee_id].name
+        # Only emit stage_start once (sub-step 1); later sub-steps emit a
+        # quieter "stage_progress" so the frontend stage card does not flicker
+        # back to the start state.
+        if sub_idx == 0:
+            self._emit_stage_event(
+                "stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id,
+            )
+        else:
+            self._emit_stage_event(
+                "stage_progress", stage["id"], employee_name=emp_name, employee_id=employee_id,
+            )
 
     def _dispatch_producer_b(self, feedback: str = ""):
         """Dispatch Stage 6b — the experiment runner. Runs after Stage 6a
@@ -1134,6 +1490,11 @@ class PipelineEngine:
                     self._emit_stage_event("stage_failed", stage["id"])
                     if self.phase == "producer_b":
                         self._dispatch_producer_b(feedback=feedback)
+                    elif _stage_sub_steps(stage):
+                        # Chunked producer: re-dispatch the CURRENT sub-step
+                        # (do not restart from sub-step 0; intermediate files
+                        # from earlier sub-steps stay on disk).
+                        self._dispatch_sub_step(self.state.get("sub_step_idx", 0), feedback=feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
                     return
@@ -1148,6 +1509,51 @@ class PipelineEngine:
 
         if self.phase == "producer":
             stage = self._stage_def()
+
+            # Chunked sub-step producer (Stage 8): advance to the next
+            # sub-step until the last one completes. Each intermediate
+            # sub-step's submit_result is informational — the canonical
+            # stage deliverable is the final sub-step's file (typically
+            # stage8_paper_writer.md, assembled in sub-step 8.8).
+            sub_steps = _stage_sub_steps(stage)
+            if sub_steps:
+                cur_idx = self.state.get("sub_step_idx", 0)
+                # Persist intermediate sub-step result for debugging / resume
+                self.state.setdefault("sub_step_results", {})[str(cur_idx)] = result
+                if cur_idx + 1 < len(sub_steps):
+                    next_idx = cur_idx + 1
+                    next_sub = sub_steps[next_idx]
+                    logger.info(
+                        "[PIPELINE] Stage {} sub-step {} complete, dispatching {}",
+                        stage["id"], sub_steps[cur_idx]["id"], next_sub["id"],
+                    )
+                    self._save()
+                    self._dispatch_sub_step(next_idx)
+                    return
+                # Last sub-step done — load the canonical deliverable
+                # (typically a markdown paper) and proceed to critic exactly
+                # like a regular stage.
+                final_path = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
+                if final_path.exists():
+                    try:
+                        result = final_path.read_text(encoding="utf-8").strip() or result
+                    except Exception as exc:
+                        logger.warning(
+                            "[PIPELINE] Stage {} failed to read final deliverable {}: {}",
+                            stage["id"], final_path, exc,
+                        )
+                self.state["stage_results"][str(stage["id"])] = result
+                # Reset sub-step counter for any future retry / revert.
+                self.state["sub_step_idx"] = 0
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage {} all {} sub-steps complete, dispatching critic",
+                    stage["id"], len(sub_steps),
+                )
+                self._emit_stage_event("stage_reviewing", stage["id"])
+                self._dispatch_critic(result)
+                return
+
             # Stage 6 has a 2-step producer: 6a (code_implementer) then 6b
             # (experiment_runner). The first dispatch maps to 6a; on
             # completion we hand off to 6b instead of going straight to
@@ -1375,6 +1781,13 @@ class PipelineEngine:
             self._emit_stage_event("stage_failed", stage["id"])
             if current_phase == "producer_b":
                 self._dispatch_producer_b(feedback=failure_feedback)
+            elif _stage_sub_steps(stage):
+                # Chunked producer: re-dispatch the CURRENT sub-step rather
+                # than restart the whole sequence — earlier sub-step files
+                # are still on disk and can be reused.
+                self._dispatch_sub_step(
+                    self.state.get("sub_step_idx", 0), feedback=failure_feedback,
+                )
             else:
                 self._dispatch_producer(feedback=failure_feedback)
         else:
