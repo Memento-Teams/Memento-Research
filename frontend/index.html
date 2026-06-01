@@ -665,13 +665,30 @@ async function hydrateProjectFromBackend(pid) {
     .map(s => parseInt(s, 10))
     .filter(n => !Number.isNaN(n))
     .sort((a, b) => a - b);
-  if (!completedIds.length) return;
 
   const currentStage = status.current_stage || completedIds[completedIds.length - 1];
   const phase = status.phase;
 
+  // Include the currently-running stage even when it has no entry in
+  // ``stage_results`` yet (e.g. Stage 2 producer mid-flight with no
+  // prior completion in this iteration). Without this card, the
+  // ``agent_thinking`` / ``agent_log`` WebSocket stream has nothing
+  // to attach to — neither the producer body nor the live activity
+  // ticker (PR #86 follow-up) updates after a page refresh.
+  const stageIdsToRender = [...completedIds];
+  if (
+    currentStage &&
+    phase &&
+    phase !== 'done' &&
+    !stageIdsToRender.includes(currentStage)
+  ) {
+    stageIdsToRender.push(currentStage);
+    stageIdsToRender.sort((a, b) => a - b);
+  }
+  if (!stageIdsToRender.length) return;
+
   const topic = status.topic || '';
-  completedIds.forEach(sid => {
+  stageIdsToRender.forEach(sid => {
     const meta = STAGES.find(s => s.id === sid);
     if (!meta) return;
     const cardId = `stage${sid}`;  // match pipeline-controller._ensureCard
