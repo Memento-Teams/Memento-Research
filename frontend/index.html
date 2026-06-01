@@ -1128,9 +1128,17 @@ function getStageAssignments(){return null;}
 const _wsFiles = new Map(); // fileName → {path, size, type, time, fullPath}
 
 function addWorkspaceFile(data) {
-  const name = data.file_name || data.fileName || 'unknown';
+  const basename = data.file_name || data.fileName || 'unknown';
+  const path = data.file_path || basename;
+  // Key by relative path, not basename — two files with the same
+  // basename in different subdirs (e.g. stage8_paper/main.pdf and
+  // upstream/main.py) must appear as distinct rows. Basename keying
+  // silently overwrote whichever arrived second, which is how
+  // stage8_paper/main.pdf went missing from the sidebar.
+  const key = path;
   const fileInfo = {
-    path: data.file_path || '',
+    name: basename,
+    path: path,
     fullPath: data.full_path || '',
     size: data.size || 0,
     content: data.content || '',
@@ -1138,14 +1146,13 @@ function addWorkspaceFile(data) {
     time: _time(),
     employee: data.employee_id || '',
   };
-  // Add to global (current view) and project-specific store
-  _wsFiles.set(name, fileInfo);
+  _wsFiles.set(key, fileInfo);
   if (_activeProjectId) {
     const proj = _getProject(_activeProjectId);
-    proj.wsFiles.set(name, fileInfo);
+    proj.wsFiles.set(key, fileInfo);
   }
   _renderWorkspace();
-  const el = document.getElementById('ws-' + _cssId(name));
+  const el = document.getElementById('ws-' + _cssId(key));
   if (el) { el.style.background = 'var(--gold-subtle)'; setTimeout(() => el.style.background = '', 1200); }
 }
 
@@ -1174,22 +1181,31 @@ function _renderWorkspace() {
   if (_wsFiles.size === 0) { empty.style.display = ''; list.innerHTML = ''; return; }
   empty.style.display = 'none';
   list.innerHTML = '';
-  for (const [name, info] of _wsFiles) {
-    const [iconText, iconClass] = _fileIcon(name);
+  for (const [key, info] of _wsFiles) {
+    // ``key`` is the relative path (e.g. ``stage8_paper/main.pdf``);
+    // show the basename as the headline and the parent dir below it
+    // so the user can disambiguate same-name files at a glance.
+    const basename = info.name || key.split('/').pop();
+    const parentDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
+    const [iconText, iconClass] = _fileIcon(basename);
     const badge = info.type === 'create'
       ? '<span class="ws-file-badge new">new</span>'
       : '<span class="ws-file-badge updated">updated</span>';
     const el = document.createElement('div');
     el.className = 'ws-file';
-    el.id = 'ws-' + _cssId(name);
+    el.id = 'ws-' + _cssId(key);
+    const dirLabel = parentDir
+      ? `<div class="ws-file-dir" style="font-size:6px;opacity:0.6;">${_escHtml(parentDir)}/</div>`
+      : '';
     el.innerHTML = `
       <div class="ws-file-icon ${iconClass}">${iconText}</div>
       <div class="ws-file-info">
-        <div class="ws-file-name">${name}</div>
+        ${dirLabel}
+        <div class="ws-file-name">${_escHtml(basename)}</div>
         <div class="ws-file-meta"><span>${_fmtSize(info.size)}</span><span>${info.time}</span></div>
       </div>
       ${badge}`;
-    el.onclick = () => _previewFile(name, info);
+    el.onclick = () => _previewFile(basename, info);
     list.appendChild(el);
   }
 }
