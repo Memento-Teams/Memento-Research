@@ -1140,7 +1140,27 @@ class PipelineEngine:
                         # runner would try to re-submit completed runs.
                         self._dispatch_producer_b_finalize()
                     elif self.phase == "producer_b":
-                        self._dispatch_producer_b(feedback=feedback)
+                        # #20: a 6b-runner stub means the runner couldn't
+                        # produce a usable report — almost always because the
+                        # experiment code/entrypoint is broken (e.g. the
+                        # runnable command in the receipt hits an argparse /
+                        # import error), so the runner thrashes on re-submits
+                        # and runs out of steps. Re-running the SAME runner on
+                        # the SAME broken code just stubs again (observed 3× in
+                        # run 3f644a5996bb → total failure). Route back to 6a to
+                        # rebuild the code; 6a's completion re-dispatches a
+                        # fresh 6b, so a transient runner hiccup also recovers.
+                        rebuild_feedback = (
+                            "Stage 6b runner produced no usable report (stub result), "
+                            "which usually means the experiment could not be run cleanly — "
+                            "e.g. the runnable command in stage6_implementation_receipt.md "
+                            "hits an argparse/import/attribute error, or the entrypoint flags "
+                            "don't match what benchmark.py actually accepts. Re-verify the "
+                            "EXACT runnable entrypoint works (run it locally / dry-run the "
+                            "args), fix any CLI/import mismatch, re-commit, and rewrite the "
+                            "receipt with the corrected command.\n\n" + feedback
+                        )
+                        self._dispatch_producer(feedback=rebuild_feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
                     return

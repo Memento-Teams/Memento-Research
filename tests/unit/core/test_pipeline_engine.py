@@ -2520,23 +2520,23 @@ def test_find_employee_for_stage_6_code_implementer_preference_wins(monkeypatch)
     assert pe._find_stage_6b_employee() == "emp-runner"
 
 
-def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
-    """A stub return from Stage 6b (producer_b phase) must retry 6b
-    (not 6a). The stub gate branches on ``self.phase`` to pick the
-    right dispatcher."""
+def test_producer_b_stub_routes_to_6a_rebuild(tmp_path, monkeypatch):
+    """UPDATED for #20: a stub return from Stage 6b (producer_b phase) routes
+    back to 6a (``_dispatch_producer``) to REBUILD the code, NOT re-run the
+    same runner on the same (usually broken) code. Re-running the runner on a
+    stub just stubs again — observed 3× → total failure in run 3f644a5996bb.
+    6a's completion re-dispatches a fresh 6b, so transient runner hiccups
+    also recover."""
     redispatched = []
-
-    def _capture_b(self, feedback=""):
-        redispatched.append(("b", feedback))
-
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: "emp-runner" if skill == "experiment_runner" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
-    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
-                        lambda self, *args: None)
-    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
-                        lambda self, *args, **kwargs: None)
-    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", _capture_b)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": redispatched.append(("a", feedback)))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b",
+                        lambda self, feedback="": redispatched.append(("b", feedback)))
 
     engine = pe.PipelineEngine("p", str(tmp_path), "topic")
     engine.state["current_stage"] = 6
@@ -2544,8 +2544,8 @@ def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
 
     engine.on_task_complete("emp", "n1", "Executed: bash")
 
-    assert redispatched and redispatched[0][0] == "b", (
-        f"Stub at producer_b must retry via _dispatch_producer_b, got {redispatched!r}"
+    assert redispatched and redispatched[0][0] == "a", (
+        f"Stub at producer_b must route to 6a (rebuild), got {redispatched!r}"
     )
     assert "stub" in redispatched[0][1].lower()
 
@@ -3170,3 +3170,32 @@ def test_data_gate_stage7_still_fails_pure_not_tested(tmp_path):
     )
     ok, reason = pe.PipelineEngine._data_gate_stage7(report)
     assert ok is False
+
+
+def test_producer_b_stub_routes_to_6a_rebuild_not_runner_rerun(tmp_path, monkeypatch):
+    """REGRESSION (#20, caught by 4→9 run 3f644a5996bb): the 6b runner
+    thrashed on a broken entrypoint ('--output-dir' the 6a code didn't
+    accept), burned its step budget, and returned a 14-char stub. Re-running
+    the SAME runner on the SAME broken code just stubs again (observed 3×) →
+    exhausted → whole run dies.
+
+    A producer_b stub means the runner couldn't produce a usable report —
+    usually because the experiment code/entrypoint is broken. Route the retry
+    back to 6a (rebuild code) rather than re-running the runner."""
+    to_6a = []
+    to_6b = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": to_6a.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": to_6b.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    engine.on_task_complete("00025", "node", "Executed: bash")  # 14-char runner stub
+
+    assert to_6a, "producer_b stub must route to 6a (rebuild), not re-run the runner"
+    assert to_6b == [], "must NOT re-dispatch the same runner on a stub"
+    assert engine.state["retries"] == 1
+    # feedback should hint the code/entrypoint is the suspect
+    assert "entrypoint" in to_6a[0].lower() or "runner" in to_6a[0].lower()
