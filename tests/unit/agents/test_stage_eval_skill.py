@@ -119,10 +119,23 @@ class TestHireListEntry:
             "find it via _find_employee_by_skill"
         )
 
-    def test_eval_agent_has_cspaper_tool(self):
+    def test_eval_agent_declares_no_talent_market_tools(self):
+        """The CV ``tools`` array means Talent-Market tool packages (each needs
+        a repo clone — see routes._do_cv_hire). cspaper_review is a LOCAL asset
+        tool (company/assets/tools/), available to employees by default, so it
+        must NOT be listed here — otherwise the eval-agent becomes a
+        repo-requiring talent and fails to hire when the Talent Market is
+        offline."""
         roster = json.loads(HIRE_LIST.read_text(encoding="utf-8"))
         evals = [t for t in roster if t.get("talent_id") == "eval-agent"]
-        assert "cspaper_review" in evals[0].get("tools", []), (
-            "eval-agent must be granted the cspaper_review tool for the "
-            "optional Stage 8/9 external review"
+        assert evals[0].get("tools", []) == [], (
+            "eval-agent must declare no Talent-Market tools; it reaches "
+            "cspaper_review as a local asset tool"
         )
+
+    def test_cspaper_is_an_asset_tool(self):
+        """cspaper_review must exist as a local asset tool (so it is available
+        without a Talent-Market dependency)."""
+        tool_dir = REPO_ROOT / "company" / "assets" / "tools" / "cspaper_review"
+        assert (tool_dir / "tool.yaml").exists()
+        assert (tool_dir / "cspaper_review.py").exists()

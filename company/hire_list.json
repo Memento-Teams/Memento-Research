@@ -561,9 +561,7 @@
     "skills": [
       "stage_eval"
     ],
-    "tools": [
-      "cspaper_review"
-    ],
+    "tools": [],
     "personality_tags": [
       "skeptical",
       "evidence-driven",
