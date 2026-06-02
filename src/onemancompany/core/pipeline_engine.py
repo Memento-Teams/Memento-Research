@@ -2067,31 +2067,49 @@ class PipelineEngine:
             return False, f"no run succeeded ({statuses})"
         return True, ""
 
-    # A Stage 7 hypothesis counts as real confirmatory data only if its
-    # decision is one of these (i.e. an actual statistical test was run).
-    # ``NOT TESTED`` / ``INCONCLUSIVE`` do not clear the gate.
+    # Capture the value after a ``Decision:`` / ``Verdict:`` label (the
+    # leading word(s), e.g. "NOT SUPPORTED", "PASS", "NOT TESTED",
+    # "INCONCLUSIVE_DUE_TO_COVERAGE"). ``[\w ]+`` grabs word chars + spaces;
+    # it stops at a dash / period / digit-start, which is where the
+    # explanatory clause begins.
     _HYPOTHESIS_DECISION_RE = re.compile(
-        r"decision\s*[:=]\s*\**\s*(SUPPORTED|REJECTED|CONFIRMED|NOT[\s_]*TESTED|INCONCLUSIVE)",
+        r"(?:decision|verdict)\b\W*?[:：]\s*\*{0,2}\s*([A-Za-z][\w ]*)",
         re.IGNORECASE,
     )
-    _STAGE7_DATA_DECISIONS = ("supported", "rejected", "confirmed")
+    # Decisions that mean "the experiment did NOT produce data for this
+    # hypothesis". Everything else (SUPPORTED, NOT SUPPORTED, REJECTED,
+    # CONFIRMED, PASS, FAIL, INCONCLUSIVE, …) means a test actually ran —
+    # including null results, which ARE data. Normalised: upper, underscores
+    # and runs of spaces collapsed to single spaces.
+    _STAGE7_NO_DATA_DECISIONS = (
+        "NOT TESTED",
+        "INCONCLUSIVE DUE TO COVERAGE",
+        "BLOCKED",
+        "NO DATA",
+    )
+
+    @staticmethod
+    def _normalise_decision(raw: str) -> str:
+        return re.sub(r"[\s_]+", " ", raw).strip().upper()
 
     @classmethod
     def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
-        """Stage 7 passes only if ≥1 hypothesis has a real confirmatory
-        decision (SUPPORTED / REJECTED / CONFIRMED). All-NOT-TESTED →
-        no data → FAIL."""
+        """Stage 7 passes if ≥1 hypothesis/check has a decision indicating a
+        test actually ran. The gate blocks "no experiment ran" (every
+        decision is NOT TESTED / INCONCLUSIVE_DUE_TO_COVERAGE / BLOCKED), NOT
+        "effect not found" — a ``NOT SUPPORTED`` / null result IS data and
+        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e)."""
         decisions = [
-            m.group(1).lower().replace(" ", "").replace("_", "")
+            cls._normalise_decision(m.group(1))
             for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
         ]
         if not decisions:
-            return False, "no hypothesis decision lines found in result analysis"
-        tested = [d for d in decisions if d in cls._STAGE7_DATA_DECISIONS]
+            return False, "no hypothesis/check decision lines found in result analysis"
+        tested = [d for d in decisions if d not in cls._STAGE7_NO_DATA_DECISIONS]
         if not tested:
             return False, (
-                f"all {len(decisions)} hypotheses NOT TESTED / INCONCLUSIVE — "
-                "no confirmatory data"
+                f"all {len(decisions)} decisions are no-data markers "
+                f"({', '.join(sorted(set(decisions)))}) — no experiment ran"
             )
         return True, ""
 
@@ -2215,24 +2233,47 @@ class PipelineEngine:
             emp_name = configs[employee_id].name
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
-    @staticmethod
-    def _verdict_from_text(text: str) -> bool | None:
+    # A verdict is only recognised from a LABELED / structured signal — never
+    # an incidental occurrence of "pass"/"reject" (e.g. the rubric header
+    # "Auto-REJECT trigger check", or a per-dimension "| D10 | … | PASS |"
+    # row). #19 facet 2: a stray "Auto-REJECT" in an otherwise-PASS review
+    # was flipping the verdict to REJECT and killing a healthy stage.
+    _VERDICT_LABEL_RE = re.compile(
+        r"(?:decision|verdict|recommendation|gate\s+review[^\n:：—–-]*)"
+        r"\s*[:：—–-]\s*\*{0,2}\s*(PASS|REJECT)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _verdict_from_text(cls, text: str) -> bool | None:
         """Extract PASS (True) / REJECT (False) / ambiguous (None) from a
-        critic text blob. Handles table-format ``| Decision | PASS |`` and
-        conversational ``Decision: PASS`` / ``REJECT: ...`` forms."""
-        upper = (text or "").upper()
-        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``
-        # — strip markdown emphasis before checking.
+        critic text blob, using only LABELED/structured signals:
+        - table ``| Decision | PASS |`` (markdown emphasis stripped),
+        - labeled ``Decision: PASS`` / ``Verdict: REJECT`` /
+          ``Gate Review Complete — PASS``,
+        - a leading conversational ``PASS: …`` / ``REJECT: …``.
+
+        A bare mention of "pass"/"reject" elsewhere does NOT count — that
+        was the #19 false-verdict source (e.g. "Auto-REJECT trigger check")."""
+        if not text:
+            return None
+        upper = text.upper()
+        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
         compact = re.sub(r"[\s|*_]+", " ", upper)
         if " DECISION PASS " in compact:
             return True
         if " DECISION REJECT " in compact:
             return False
-        # Conversational form: prefer the FIRST explicit signal.
-        if "REJECT" in upper:
-            return False
-        if "PASS" in upper:
+        # Labeled verdict anywhere in the text.
+        m = cls._VERDICT_LABEL_RE.search(text)
+        if m:
+            return m.group(1).upper() == "PASS"
+        # Leading conversational verdict (``pass: …`` / ``reject: …``).
+        head = text.lstrip().lstrip("*# ").upper()
+        if head.startswith("PASS"):
             return True
+        if head.startswith("REJECT"):
+            return False
         return None
 
     def _parse_critic_pass(self, result: str) -> bool:

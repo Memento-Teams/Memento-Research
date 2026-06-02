@@ -3107,3 +3107,66 @@ def test_data_gate_reads_ondisk_deliverable_not_submit_result_summary(tmp_path, 
         "gate must read the on-disk report (which has real succeeded runs), "
         "not the unparseable submit_result summary"
     )
+
+
+def test_parse_critic_pass_ignores_incidental_reject_word(tmp_path):
+    """REGRESSION (#19 facet 2, caught by 4→9 run 6d188381963c at Stage 7):
+    the critic's submit_result was a clear PASS ('Gate Review Complete —
+    PASS (0.95)') but contained the rubric header 'Auto-REJECT trigger
+    check:'. The old bare-substring `if 'REJECT' in text` matched that
+    incidental word and returned REJECT, killing a PASSED stage.
+
+    A verdict must come from a LABELED/structured signal (Decision: X,
+    Verdict: X, Gate Review ... — X, | Decision | X |), not any stray
+    occurrence of the words pass/reject."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+
+    real_submit_result = (
+        "**Stage 7 Gate Review Complete — PASS (0.95 confidence).**\n\n"
+        "| D9 | Reproducibility | PASS |\n"
+        "| D10 | Language & Style | PASS |\n\n"
+        "**Auto-REJECT trigger check:**\n"
+        "- (a) HARKing: none detected\n"
+        "- (b) fabricated data: none\n"
+    )
+    assert engine._parse_critic_pass(real_submit_result) is True, (
+        "an incidental 'Auto-REJECT' rubric mention must not flip a PASS to REJECT"
+    )
+
+    # And a genuinely labeled REJECT still parses as REJECT.
+    assert engine._parse_critic_pass(
+        "Gate Review Complete — REJECT. The smoke run produced no data."
+    ) is False
+
+
+def test_data_gate_stage7_accepts_not_supported_null_result(tmp_path):
+    """REGRESSION (#27 Stage 7 gate too narrow, caught by 4→9 run
+    6d188381963c): a hypothesis decided 'NOT SUPPORTED — Δ=0.00 < 0.20' IS a
+    tested result with a real statistic (a null result), not 'no data'. The
+    gate's job is to block 'no experiment ran', not 'effect not found'. The
+    old regex only knew SUPPORTED/REJECTED/CONFIRMED/NOT TESTED and missed
+    'NOT SUPPORTED' + the 'Decision: PASS' manipulation-check style → wrongly
+    reported 'no decision lines'."""
+    report = (
+        "## G1 — Scaling criterion\n"
+        "**Decision:** **NOT SUPPORTED** — Δ = 0.00 < 0.20. Both at 100% accuracy.\n\n"
+        "## Manipulation check\n"
+        "**Decision:** **PASS** — cot_trace_nonempty_ratio = 1.0.\n\n"
+        "**No hypotheses are NOT TESTED.** All checks have full coverage.\n"
+        "**Overall verdict:** PARTIALLY CONFIRMED.\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate_stage7(report)
+    assert ok is True, f"NOT SUPPORTED is a tested null result — gate must pass. reason={reason}"
+
+
+def test_data_gate_stage7_still_fails_pure_not_tested(tmp_path):
+    """Control: a report where EVERY hypothesis is genuinely NOT TESTED /
+    INCONCLUSIVE_DUE_TO_COVERAGE (no experiment ran) must still FAIL."""
+    report = (
+        "### H1\n**Decision:** NOT TESTED — Stage 6 collected 0 observations.\n\n"
+        "### H2\n**Decision:** NOT TESTED.\n\n"
+        "**Overall verdict:** INCONCLUSIVE_DUE_TO_COVERAGE.\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate_stage7(report)
+    assert ok is False
