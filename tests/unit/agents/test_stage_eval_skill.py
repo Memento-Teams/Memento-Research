@@ -87,6 +87,17 @@ class TestRunbookBehaviour:
     def test_unverifiable_over_guessing(self):
         assert "UNVERIFIABLE" in RUNBOOK.read_text(encoding="utf-8")
 
+    def test_paper_review_template_bundled(self):
+        assert (RUNBOOK.parent / "review_template_en.md").exists(), (
+            "the conference-review fallback template must be bundled with the skill"
+        )
+
+    def test_paper_review_mentions_template_and_cspaper(self):
+        text = RUNBOOK.read_text(encoding="utf-8")
+        assert "review_template_en.md" in text, "must reference the fallback template"
+        assert "cspaper_review" in text, "must reference the optional cspaper tool"
+        assert "CSPAPER_API_KEY" in text, "must state the key gates the cspaper path"
+
 
 class TestOnboardingWiring:
     def test_stage_eval_skill_maps_to_runbook(self):
@@ -106,4 +117,12 @@ class TestHireListEntry:
         assert "stage_eval" in evals[0].get("skills", []), (
             "eval-agent must carry the stage_eval skill so the trigger can "
             "find it via _find_employee_by_skill"
+        )
+
+    def test_eval_agent_has_cspaper_tool(self):
+        roster = json.loads(HIRE_LIST.read_text(encoding="utf-8"))
+        evals = [t for t in roster if t.get("talent_id") == "eval-agent"]
+        assert "cspaper_review" in evals[0].get("tools", []), (
+            "eval-agent must be granted the cspaper_review tool for the "
+            "optional Stage 8/9 external review"
         )

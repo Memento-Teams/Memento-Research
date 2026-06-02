@@ -622,6 +622,17 @@ class Settings(BaseSettings):
     # to turn the feature (and its per-stage LLM cost) off.
     stage_eval_enabled: bool = True
 
+    # --- cspaper.org Agentic Review (optional Stage 8/9 external paper review) ---
+    # When CSPAPER_API_KEY is set, the Stage Eval Agent can submit the paper PDF
+    # to cspaper.org for a conference-style review; with no key it falls back to
+    # a review filled from review_template_en.md. The poll path is configurable
+    # because the cspaper "Check Results" endpoint is not publicly documented.
+    cspaper_api_key: str = ""
+    cspaper_base_url: str = "https://cspaper-frontend-prod.azurewebsites.net"
+    cspaper_submit_path: str = "/api/platform/review"
+    cspaper_poll_path: str = "/api/platform/review/{job_id}"
+    cspaper_agent_id: str = "NeurIPS_main_2025_1"
+
     # FastSkills MCP
     skillsmp_api_key: str = ""
 

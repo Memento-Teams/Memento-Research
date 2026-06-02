@@ -1,0 +1,13 @@
+id: cspaper_review
+name: CSPaper Agentic Review
+description: >
+  Get a conference-style peer review of a paper PDF from the cspaper.org
+  "Agentic Review" API (NeurIPS/ICML/ICLR-style: strengths, weaknesses,
+  missing related work, acceptance tips). Submits the PDF and polls until the
+  async review completes. REQUIRES CSPAPER_API_KEY — if it is not set the tool
+  returns status="disabled", and the Stage Eval Agent should fall back to
+  writing the review itself from review_template_en.md. Call
+  cspaper_review(file_path, agent_id) with a paper PDF path.
+added_by: CEO
+type: langchain_module
+sprite: desk_equipment

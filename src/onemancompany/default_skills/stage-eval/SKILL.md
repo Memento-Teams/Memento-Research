@@ -107,6 +107,9 @@ ground every verdict in evidence and label anything you cannot confirm as
   final reference list, which may differ from Stage 2).
 - C3 Every quantitative claim in the paper traces to Stage 6/7 evidence.
 - C4 Related work covers the literature; no obvious missing prior work.
+- C5 **Conference review** — attach a full conference-style review of the paper
+  (see "Paper review" below): fill `review_template_en.md`, or use the
+  `cspaper_review` tool when a key + PDF are available.
 
 ### Stage 9 — Self-Review
 - C1 **Evidence-grounded** — the peer review cites file:line, not generic praise/criticism.
@@ -114,6 +117,26 @@ ground every verdict in evidence and label anything you cannot confirm as
 - C3 **Verdict consistency** — the recommendation matches the audited evidence (no PASS over fatal flaws).
 - C4 **Coverage** — correctness, novelty, clarity, and reproducibility are each assessed.
 - C5 **Severity tiering** — weaknesses are tiered (blocking vs minor) so priorities are clear.
+
+## Paper review — template & optional cspaper (Stage 8 / 9)
+
+For the paper stages, in addition to the checklist, attach a full
+conference-style peer review:
+
+1. **Default (no key) — fill the template.** Write the review by completing
+   `review_template_en.md` (bundled next to this SKILL.md): Part I desk-reject
+   screen, Part II 7-dimension scoring, Part III missing related work, Part IV
+   overall 1–6, Part V strengths/weaknesses, Part VI comments. Ground every
+   score in evidence from the paper and the workspace.
+2. **Optional (key set) — cspaper.org.** If `CSPAPER_API_KEY` is configured
+   **and** a paper PDF exists in the workspace, call
+   `cspaper_review(file_path=<the PDF>, agent_id="<venue>")` for an external
+   second opinion and fold its verdict into your report. If the tool returns
+   `status` `disabled` / `error` / `timeout`, silently fall back to the
+   template review — never block on it.
+
+Either way the paper review is part of your **advisory** report; it is not a
+gate decision.
 
 ## Output Format
 
