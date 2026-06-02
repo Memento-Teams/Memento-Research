@@ -1247,6 +1247,11 @@ class PipelineEngine:
             # Producer finished → store result, dispatch critic
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
+            # Stage 2 only: deterministic citation-authenticity audit (ZERO
+            # LLM), run in the background and written as an advisory report —
+            # non-gating. See core/citation_verifier.py.
+            if stage["id"] == 2:
+                self._advisory_citation_check(stage, result)
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
@@ -1291,6 +1296,14 @@ class PipelineEngine:
                     self.on_runs_all_terminal()
                 return
             self._save()
+            # Deterministic run-authenticity gate (ZERO LLM): verify the
+            # claimed run_id(s) against infra's authoritative /api/status
+            # BEFORE the (token-spending, hallucination-prone) LLM critic. A
+            # fabricated / failed / still-running run is REJECTed here;
+            # unverifiable (local run, infra unreachable) falls through to the
+            # critic. See core/run_verifier.py.
+            if self._deterministic_run_gate(stage, result):
+                return
             logger.info("[PIPELINE] Stage 6b (runner) complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
@@ -1305,6 +1318,10 @@ class PipelineEngine:
             self.state.pop("pending_run_ids", None)
             self.state.pop("pending_waiting_started_at", None)
             self._save()
+            # Runs are now terminal — deterministic run-authenticity gate
+            # (ZERO LLM) before the critic, same as the fast path.
+            if self._deterministic_run_gate(stage, result):
+                return
             logger.info("[PIPELINE] Stage 6b finalize complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
@@ -1334,34 +1351,125 @@ class PipelineEngine:
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
                 self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
-                retries = self.state.get("retries", 0)
-                if retries < MAX_RETRIES:
-                    self._record_stage_memory(
-                        stage,
-                        producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
-                        critic_result=result,
-                        passed=False,
-                        confidence=confidence,
-                        outcome="critic_reject_retry",
-                    )
-                    self.state["retries"] = retries + 1
-                    self._save()
-                    logger.info("[PIPELINE] Stage {} REJECTED (retry {}/{})", stage["id"], retries + 1, MAX_RETRIES)
-                    self._emit_stage_event("stage_failed", stage["id"], confidence=confidence)
-                    self._dispatch_producer(feedback=result)
-                else:
-                    self._record_stage_memory(
-                        stage,
-                        producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
-                        critic_result=result,
-                        passed=False,
-                        confidence=confidence,
-                        outcome="critic_reject_exhausted",
-                    )
-                    logger.warning("[PIPELINE] Stage {} exhausted retries, holding for CEO", stage["id"])
-                    self.state["phase"] = "gate"
-                    self._save()
-                    self._emit_gate_event(stage["id"], confidence, exhausted=True)
+                self._reject_or_hold(
+                    stage,
+                    feedback=result,
+                    confidence=confidence,
+                    producer_result=self.state["stage_results"].get(str(stage["id"]), ""),
+                    outcome_prefix="critic_reject",
+                )
+
+    def _reject_or_hold(self, stage, *, feedback, confidence, producer_result, outcome_prefix):
+        """Single REJECT path shared by the LLM critic and the deterministic
+        gate: retry the producer with ``feedback`` while retries remain, else
+        hold the stage at the gate for CEO review."""
+        retries = self.state.get("retries", 0)
+        if retries < MAX_RETRIES:
+            self._record_stage_memory(
+                stage,
+                producer_result=producer_result,
+                critic_result=feedback,
+                passed=False,
+                confidence=confidence,
+                outcome=f"{outcome_prefix}_retry",
+            )
+            self.state["retries"] = retries + 1
+            self._save()
+            logger.info("[PIPELINE] Stage {} REJECTED (retry {}/{})", stage["id"], retries + 1, MAX_RETRIES)
+            self._emit_stage_event("stage_failed", stage["id"], confidence=confidence)
+            self._dispatch_producer(feedback=feedback)
+        else:
+            self._record_stage_memory(
+                stage,
+                producer_result=producer_result,
+                critic_result=feedback,
+                passed=False,
+                confidence=confidence,
+                outcome=f"{outcome_prefix}_exhausted",
+            )
+            logger.warning("[PIPELINE] Stage {} exhausted retries, holding for CEO", stage["id"])
+            self.state["phase"] = "gate"
+            self._save()
+            self._emit_gate_event(stage["id"], confidence, exhausted=True)
+
+    def _advisory_citation_check(self, stage, result):
+        """Stage 2 only: deterministic citation-authenticity audit (ZERO LLM).
+        Extracts arXiv IDs / DOIs and resolves them against the real arXiv /
+        Crossref APIs, then writes ``stage2_citation_report.md``. Runs in a
+        background daemon thread (network I/O) so it never blocks the pipeline,
+        and is advisory — it never gates. See core/citation_verifier.py."""
+        import threading
+
+        project_dir = self.project_dir
+        sid = stage["id"]
+        skill = stage.get("skill", "")
+
+        def _run():
+            try:
+                from onemancompany.core import citation_verifier
+
+                text = result or ""
+                deliverable = Path(project_dir) / f"stage{sid}_{skill}.md"
+                if deliverable.exists():
+                    text += "\n" + deliverable.read_text(encoding="utf-8")
+                report = citation_verifier.verify_text(text)
+                if report.total == 0:
+                    return
+                out = Path(project_dir) / f"stage{sid}_citation_report.md"
+                out.write_text(citation_verifier.render_report(report), encoding="utf-8")
+                logger.info("[PIPELINE] Stage {} citation audit: {}", sid, report.counts)
+            except Exception as exc:  # advisory — never disturb the pipeline
+                logger.warning("[PIPELINE] Stage {} citation audit failed: {}", sid, exc)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"cite-audit-s{sid}")
+        t.start()
+        return t  # returned for tests to join; callers ignore it
+
+    def _deterministic_run_gate(self, stage, result) -> bool:
+        """Stage 6 only: verify claimed run_id(s) against infra's authoritative
+        /api/status (deterministic, ZERO LLM). Returns True if the stage was
+        REJECTed here (caller must stop). A fabricated / failed / still-running
+        run is rejected; an unverifiable result (local run, infra unreachable)
+        returns False so the normal critic still runs."""
+        try:
+            from onemancompany.core import run_verifier
+
+            text = result or ""
+            deliverable = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
+            if deliverable.exists():
+                text += "\n" + deliverable.read_text(encoding="utf-8")
+            verdict = run_verifier.verify_text(text)
+        except Exception as exc:  # never let the gate crash the pipeline
+            logger.warning("[PIPELINE] run-authenticity gate skipped (error): {}", exc)
+            return False
+
+        if verdict.failed:
+            logger.warning("[PIPELINE] Stage {} run-authenticity REJECT: {}", stage["id"], verdict.reason)
+            self._emit_critic_result(
+                stage["id"],
+                f"Deterministic run-authenticity check FAILED: {verdict.reason}",
+                False,
+                None,
+            )
+            feedback = (
+                "A deterministic infra check REJECTED this stage: the claimed run_id(s) "
+                f"did not verify on the experiment infra — {verdict.reason}. Re-run the "
+                "experiment and report only real, succeeded run_ids (with matching metrics)."
+            )
+            self._reject_or_hold(
+                stage,
+                feedback=feedback,
+                confidence=None,
+                producer_result=result,
+                outcome_prefix="run_verify_reject",
+            )
+            return True
+
+        logger.info(
+            "[PIPELINE] Stage {} run-authenticity: {} ({})",
+            stage["id"], verdict.verdict, verdict.reason,
+        )
+        return False
 
     def on_task_failed(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task fails (the agent
