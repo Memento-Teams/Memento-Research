@@ -3199,3 +3199,165 @@ def test_producer_b_stub_routes_to_6a_rebuild_not_runner_rerun(tmp_path, monkeyp
     assert engine.state["retries"] == 1
     # feedback should hint the code/entrypoint is the suspect
     assert "entrypoint" in to_6a[0].lower() or "runner" in to_6a[0].lower()
+
+
+# ===========================================================================
+# Result-driven loop (#40): result-reviewer routes back to 4/5/6 or advances
+# ===========================================================================
+
+
+def test_parse_result_route_advance():
+    """Reviewer says the result is sound → advance (no revert target)."""
+    txt = "RESULT REVIEW\nReasonableness: REASONABLE\nAction: ADVANCE\nReason: solid."
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "advance"
+    assert target is None
+
+
+def test_parse_result_route_revert_to_code():
+    """Reviewer judges it a code bug → revert to Stage 6, with the stage it gave."""
+    txt = ("RESULT REVIEW\nReasonableness: UNREASONABLE\nAction: REVERT\n"
+           "Revert to stage: 6\nReason: direct accuracy 0.0 across all problems — "
+           "extraction is almost certainly broken.")
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "revert"
+    assert target == 6
+    assert "extraction" in reason.lower()
+
+
+def test_parse_result_route_revert_to_methodology():
+    """Reviewer judges the design too weak → revert to Stage 4."""
+    txt = ("Action: REVERT\nRevert to stage: 4\n"
+           "Reason: n=7 with no baseline cannot support the causal claim.")
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "revert"
+    assert target == 4
+
+
+def test_parse_result_route_table_form_and_aliases():
+    """Tolerate decorated / aliased phrasings the LLM may emit."""
+    assert pe.PipelineEngine._parse_result_route(
+        "| **Decision** | **REVERT** |\n| Revert-to-stage | 5 |")[1] == 5
+    assert pe.PipelineEngine._parse_result_route(
+        "verdict: advance — results look reasonable")[0] == "advance"
+
+
+def test_parse_result_route_ambiguous_defaults_to_advance():
+    """If the reviewer says REVERT but gives no parseable target stage, do NOT
+    guess a stage — treat as advance (don't loop on a malformed review)."""
+    action, target, reason = pe.PipelineEngine._parse_result_route(
+        "Action: REVERT\nReason: something feels off but I won't say where")
+    assert action == "advance"
+    assert target is None
+
+
+def test_parse_result_route_rejects_out_of_range_target():
+    """Only 4/5/6 are valid revert targets for the result loop."""
+    action, target, _ = pe.PipelineEngine._parse_result_route(
+        "Action: REVERT\nRevert to stage: 2")
+    assert action == "advance"  # 2 is not a valid result-loop target → no-op
+
+
+def test_result_review_advance_proceeds_to_next_stage(tmp_path, monkeypatch):
+    """result_review verdict ADVANCE → normal advance (via _on_critic_pass)."""
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: advanced.append(result))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+
+    engine.on_task_complete("critic", "n", "Action: ADVANCE\nReason: sound result.")
+
+    assert advanced == ["analysis"], "ADVANCE must proceed via _on_critic_pass"
+
+
+def test_result_review_revert_schedules_revert_and_counts_loop(tmp_path, monkeypatch):
+    """REVERT to 6 → schedule revert_to_stage(6) and bump that stage's loop count."""
+    reverts = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: reverts.append("ADVANCED"))
+    monkeypatch.setattr(pe.PipelineEngine, "_schedule_result_revert",
+                        lambda self, stage, reason: reverts.append((stage, reason)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+
+    engine.on_task_complete("critic", "n",
+        "Action: REVERT\nRevert to stage: 6\nReason: accuracy 0.0 — extraction broken.")
+
+    assert reverts and reverts[0][0] == 6, f"must schedule revert to 6, got {reverts}"
+    assert engine.state["result_loops"]["6"] == 1
+    assert "ADVANCED" not in reverts
+
+
+def test_result_review_revert_budget_exhausted_advances_with_caveat(tmp_path, monkeypatch):
+    """When a target's loop budget is spent, stop looping → advance instead."""
+    calls = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: calls.append("ADVANCED"))
+    monkeypatch.setattr(pe.PipelineEngine, "_schedule_result_revert",
+                        lambda self, stage, reason: calls.append(("REVERT", stage)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+    engine.state["result_loops"] = {"6": pe.MAX_RESULT_LOOPS}  # already exhausted
+
+    engine.on_task_complete("critic", "n",
+        "Action: REVERT\nRevert to stage: 6\nReason: still looks broken.")
+
+    assert calls == ["ADVANCED"], f"exhausted budget must advance, got {calls}"
+
+
+def test_stage7_pass_dispatches_result_reviewer_not_straight_to_paper(tmp_path, monkeypatch):
+    """Stage 7 critic PASS must go through the result-reviewer (phase
+    result_review), NOT advance straight to Stage 8."""
+    reviewer = []
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_stage_data_gate", lambda self, sid, d: (True, ""))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_result_reviewer", lambda self, conf=None: reviewer.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: advanced.append(True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {"7": "### H1\nDecision: SUPPORTED\n"}
+
+    engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
+
+    assert reviewer == [True], "Stage 7 pass must dispatch the result-reviewer"
+    assert advanced == [], "Stage 7 pass must NOT call _on_critic_pass directly"
+
+
+def test_stage6_pass_still_advances_normally_not_via_reviewer(tmp_path, monkeypatch):
+    """Control: only Stage 7 triggers the result-reviewer. Stage 6 pass keeps
+    its normal advance path."""
+    reviewer = []
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_stage_data_gate", lambda self, sid, d: (True, ""))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_result_reviewer", lambda self, conf=None: reviewer.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: advanced.append(True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {"6": "- run_id: r1\n- status: succeeded\n"}
+
+    engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
+
+    assert advanced == [True] and reviewer == [], "Stage 6 keeps normal advance"

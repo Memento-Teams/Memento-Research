@@ -40,6 +40,12 @@ STAGES = [
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
 
+# Result-driven loop (#40): max times the result-reviewer may send the
+# pipeline back to a given earlier stage (4/5/6) before we stop looping and
+# proceed with the best result (written up honestly with its limitations).
+# Per-target so a code-fix loop and a redesign loop don't share a budget.
+MAX_RESULT_LOOPS = 2
+
 # Canonical default employee per stage, sourced from company/hire_list.json.
 # When multiple hired employees share the same skill, the one originating
 # from the canonical talent_id wins. Falls back to skill-based lookup if
@@ -1071,6 +1077,57 @@ class PipelineEngine:
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
+    def _dispatch_result_reviewer(self, confidence: float = None):
+        """Result-driven loop (#40): after Stage 7 passes its critic + data
+        gate, ask a reviewer whether the experiment RESULT is scientifically
+        sound — and if not, which earlier stage to loop back to. The reviewer
+        gives the target; the engine executes it.
+
+        Falls back to advancing (normal Stage 7 → 8) if no reviewer employee
+        exists, so the loop is additive and never strands the pipeline.
+        """
+        reviewer_id = _find_employee_by_skill(CRITIC_SKILL)
+        if not reviewer_id:
+            logger.info("[PIPELINE] No reviewer for result-loop; advancing Stage 7 → 8")
+            self._on_critic_pass(self.state["stage_results"].get("7", ""), confidence)
+            return
+
+        loops = self.state.get("result_loops", {}) or {}
+        results = self.state.get("stage_results", {}) or {}
+        stage6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        stage7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        ctx = self._cap_for_critic(
+            f"--- Stage 6 experiment evidence ---\n{stage6}\n\n"
+            f"--- Stage 7 result analysis ---\n{stage7}\n",
+            stage_id=7,
+        )
+        desc = (
+            "Result Review (Stage 7 → routing decision)\n\n"
+            "Stage 7 passed its quality critic. Before writing the paper, judge "
+            "whether the experiment's RESULT is scientifically SOUND and worth "
+            "writing up — not whether the report is well-formatted.\n\n"
+            "Decide ONE of:\n"
+            "  - ADVANCE — the result is sound and supports a real finding; proceed to the paper.\n"
+            "  - REVERT to stage 6 (code) — the numbers look like an implementation bug, "
+            "not science: e.g. accuracy exactly 0% or 100% across all conditions, "
+            "below-random accuracy, extraction yield < 100%, NaN/identical outputs.\n"
+            "  - REVERT to stage 5 (experiment design) — the result is real but the design "
+            "is too weak to conclude: n below the power analysis, confidence intervals too "
+            "wide, missing baseline/control, no variance estimate (single seed).\n"
+            "  - REVERT to stage 4 (methodology) — a conceptual flaw: wrong hypothesis, "
+            "uncontrolled confound, the claim cannot be tested by this design.\n\n"
+            f"Loop budget already used per stage: {loops} (max {MAX_RESULT_LOOPS} each — "
+            "if a target is exhausted, prefer ADVANCE and note the limitation).\n\n"
+            "Output EXACTLY these lines:\n"
+            "Action: ADVANCE | REVERT\n"
+            "Revert to stage: <4|5|6>   (only if REVERT)\n"
+            "Reason: <one paragraph naming the specific metric/design flaw>\n\n"
+            f"{ctx}"
+        )
+        self.state["phase"] = "result_review"
+        self._save()
+        self._dispatch_to_employee(reviewer_id, desc, "Result Review: Stage 7")
+
     # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
     # ≈ 20K tokens, comfortably under the smaller-window critic models
     # (Kimi-K2.6: 262K, MiniMax-M2.7: 128K-ish, Claude-Sonnet: 200K) while
@@ -1329,6 +1386,36 @@ class PipelineEngine:
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
 
+        elif self.phase == "result_review":
+            # Result-driven loop (#40). The result-reviewer judged whether the
+            # Stage 7 RESULT (not its report) is scientifically sound and, if
+            # not, named the stage to loop back to (4 methodology / 5 design /
+            # 6 code). Route on its verdict; the LLM gives the target, the
+            # engine executes it (reusing revert_to_stage).
+            self.state["result_review_result"] = result
+            action, target, reason = self._parse_result_route(result)
+            if action == "revert" and target is not None:
+                loops = self.state.setdefault("result_loops", {})
+                used = int(loops.get(str(target), 0))
+                if used < MAX_RESULT_LOOPS:
+                    loops[str(target)] = used + 1
+                    self._save()
+                    logger.warning(
+                        "[PIPELINE] Result-loop: reverting to stage {} ({}/{}). Reason: {}",
+                        target, used + 1, MAX_RESULT_LOOPS, reason[:200],
+                    )
+                    self._schedule_result_revert(target, reason)
+                    return
+                logger.warning(
+                    "[PIPELINE] Result-loop budget for stage {} exhausted ({}x) — "
+                    "proceeding to paper with documented limitation. Reason: {}",
+                    target, MAX_RESULT_LOOPS, reason[:200],
+                )
+            # ADVANCE, or revert-budget exhausted → proceed to Stage 8 as if
+            # Stage 7 passed normally (the analysis is already stored).
+            stage7_result = (self.state.get("stage_results") or {}).get("7", result)
+            self._on_critic_pass(stage7_result, confidence=None)
+
         elif self.phase == "critic":
             # Critic finished → parse decision
             self.state["critic_result"] = result
@@ -1400,7 +1487,15 @@ class PipelineEngine:
                 )
                 self._save()
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
-                self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
+                # Result-driven loop (#40): when Stage 7 (Result Analysis)
+                # passes its critic + data gate, don't advance straight to the
+                # paper. First ask the result-reviewer whether the RESULT is
+                # scientifically sound; it may route back to 4/5/6. Only Stage
+                # 7 triggers this (it's where real metrics first exist).
+                if stage["id"] == 7:
+                    self._dispatch_result_reviewer(confidence)
+                else:
+                    self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
                 retries = self.state.get("retries", 0)
                 if retries < MAX_RETRIES:
@@ -1611,6 +1706,43 @@ class PipelineEngine:
     # ------------------------------------------------------------------
     # Public API — revert to a previous stage with new instructions
     # ------------------------------------------------------------------
+
+    def _schedule_result_revert(self, stage: int, reason: str) -> None:
+        """Schedule an async ``revert_to_stage`` from the (sync) result-review
+        completion handler. The reviewer's reason becomes the producer's
+        instructions so the re-run targets exactly what was unsound.
+
+        Mirrors how ``_emit_gate_event`` schedules ``_auto_approve_gate`` —
+        we're inside a sync vessel callback with a running loop.
+        """
+        import asyncio
+        instructions = (
+            f"[Result-driven loop] The experiment result was judged unsound; "
+            f"this stage is being re-run to fix it. Reviewer's reason:\n{reason}"
+        )
+
+        async def _do_revert():
+            try:
+                await self.revert_to_stage(stage=stage, instructions=instructions)
+            except Exception as exc:  # noqa: BLE001 — never crash the callback
+                logger.warning(
+                    "[PIPELINE] result-loop revert_to_stage({}) failed: {} — "
+                    "advancing instead", stage, exc,
+                )
+                self._on_critic_pass(
+                    (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_revert())
+        except RuntimeError:
+            # No running loop (sync test / off-loop) — fall back to advancing
+            # so we never strand the pipeline. Tests stub this method out.
+            logger.debug("[PIPELINE] no running loop for result revert; advancing")
+            self._on_critic_pass(
+                (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+            )
 
     async def revert_to_stage(
         self, *, stage: int, instructions: str, branch_name: str | None = None,
@@ -2295,6 +2427,49 @@ class PipelineEngine:
         if head.startswith("REJECT"):
             return False
         return None
+
+    # Result-driven loop (#40): the result-reviewer routes the pipeline back
+    # to an earlier stage when the experiment's RESULT (not its report) is
+    # unsound. Only these stages are valid revert targets:
+    #   4 = methodology (conceptual: wrong hypothesis / missing control)
+    #   5 = experiment design (scale: n / seeds / power / baselines)
+    #   6 = code (implementation: extraction broken, 0%/NaN, etc.)
+    _RESULT_LOOP_TARGETS = (4, 5, 6)
+    _RESULT_REVERT_RE = re.compile(
+        r"revert[\s_-]*to[\s_-]*stage\b\W*?[:=|]\s*\*{0,2}\s*([4-6])",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_result_route(cls, text: str) -> tuple[str, "int | None", str]:
+        """Parse the result-reviewer's routing verdict.
+
+        Returns ``(action, target_stage, reason)``:
+        - ``("advance", None, reason)`` — result is sound, proceed to Stage 8.
+        - ``("revert", N, reason)`` — N ∈ {4,5,6}; loop back to that stage.
+
+        Fail-safe: a REVERT with no parseable in-range target stage degrades
+        to ``advance`` — we never guess which stage to loop back to, and we
+        don't loop on a malformed review."""
+        t = text or ""
+        # Match a line whose label is exactly "reason" (not "reasonableness").
+        rm = re.search(r"^\s*\**\s*reason\s*\**\s*[:：—-]\s*(.+)$", t,
+                       re.IGNORECASE | re.MULTILINE)
+        reason = rm.group(1).strip() if rm else t.strip()[:300]
+
+        m = cls._RESULT_REVERT_RE.search(t)
+        target = int(m.group(1)) if m else None
+
+        upper = t.upper()
+        compact = re.sub(r"[\s|*_]+", " ", upper)
+        wants_revert = (" ACTION REVERT " in f" {compact} "
+                        or " DECISION REVERT " in compact
+                        or "REVERT TO STAGE" in compact)
+
+        if wants_revert and target in cls._RESULT_LOOP_TARGETS:
+            return "revert", target, reason
+        # Anything else — explicit ADVANCE, ambiguous, or out-of-range target.
+        return "advance", None, reason
 
     def _parse_critic_pass(self, result: str) -> bool:
         """Parse the critic's PASS/REJECT verdict.
