@@ -2215,41 +2215,13 @@ class PipelineEngine:
             emp_name = configs[employee_id].name
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
-    def _parse_critic_pass(self, result: str) -> bool:
-        """Parse the critic's PASS/REJECT verdict.
-
-        Robustness improvements (#60 fix 4 / #63 fix 4):
-        - If the critic's ``submit_result`` was a stub (e.g. ``"Executed: bash"``
-          from a context-window-truncated review), fall back to reading the
-          on-disk ``stage{N}_gate_review.md`` the critic was told to write.
-        - Support table-format verdicts (``| Decision | PASS |``) as well as
-          the conversational ``"Decision: PASS"`` form.
-        - Default to REJECT on ambiguity (no PASS, no REJECT signal). The old
-          default-to-PASS branch was the auto-approve-empty-stage loophole.
-        """
-        text = result or ""
-        # Stub → reach for the gate-review file on disk.
-        if self._is_stub_result(text):
-            stage_id = self.current_stage
-            gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
-            if gate_review.exists():
-                try:
-                    text = gate_review.read_text(encoding="utf-8")
-                    logger.info(
-                        "[PIPELINE] Critic submit_result was a stub — falling back to {} ({} bytes)",
-                        gate_review.name, len(text),
-                    )
-                except OSError as exc:
-                    logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
-                    text = result  # restore original
-            else:
-                logger.warning(
-                    "[PIPELINE] Critic submit_result is a stub and no {} file found on disk — defaulting to REJECT",
-                    gate_review.name,
-                )
-
-        upper = text.upper()
-        # Explicit table-format ``| Decision | PASS |`` and ``| **Decision** | **PASS** |``
+    @staticmethod
+    def _verdict_from_text(text: str) -> bool | None:
+        """Extract PASS (True) / REJECT (False) / ambiguous (None) from a
+        critic text blob. Handles table-format ``| Decision | PASS |`` and
+        conversational ``Decision: PASS`` / ``REJECT: ...`` forms."""
+        upper = (text or "").upper()
+        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``
         # — strip markdown emphasis before checking.
         compact = re.sub(r"[\s|*_]+", " ", upper)
         if " DECISION PASS " in compact:
@@ -2261,11 +2233,50 @@ class PipelineEngine:
             return False
         if "PASS" in upper:
             return True
-        # Ambiguous → safer default is REJECT (auto-pass on empty stages was
-        # the #63 / #60 root cause).
+        return None
+
+    def _parse_critic_pass(self, result: str) -> bool:
+        """Parse the critic's PASS/REJECT verdict.
+
+        Robustness (#60 fix 4 / #63 fix 4 / #19):
+        - An explicit verdict in ``result`` (the critic's submit_result text)
+          wins — table-format ``| Decision | PASS |`` or conversational.
+        - Otherwise, the verdict is AMBIGUOUS. This happens when the
+          submit_result was a stub (``"Executed: bash"``) OR a long
+          tool-result echo (``"Executed: write\\nwrite → {'path': ...}"``,
+          which slips past the short-stub heuristic — #19, seen in the 4→9
+          e2e). In BOTH cases the real verdict lives in the on-disk
+          ``stage{N}_gate_review.md`` the critic was told to write — consult
+          it before giving up.
+        - Default to REJECT only when neither the text nor the file yields a
+          signal. (The old default-to-PASS branch was the #60/#63
+          auto-approve-empty-stage loophole.)
+        """
+        verdict = self._verdict_from_text(result or "")
+        if verdict is not None:
+            return verdict
+
+        # Ambiguous submit_result → the verdict is in the file on disk.
+        stage_id = self.current_stage
+        gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
+        if gate_review.exists():
+            try:
+                file_text = gate_review.read_text(encoding="utf-8")
+                file_verdict = self._verdict_from_text(file_text)
+                if file_verdict is not None:
+                    logger.info(
+                        "[PIPELINE] Critic submit_result had no verdict — resolved {} "
+                        "from {} ({} bytes)",
+                        "PASS" if file_verdict else "REJECT", gate_review.name, len(file_text),
+                    )
+                    return file_verdict
+            except OSError as exc:
+                logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+
+        # Neither text nor file yielded a verdict → safer default is REJECT.
         logger.warning(
-            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT signal, len={}) — defaulting to REJECT",
-            len(text),
+            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT in submit_result "
+            "or {}) — defaulting to REJECT", gate_review.name,
         )
         return False
 
