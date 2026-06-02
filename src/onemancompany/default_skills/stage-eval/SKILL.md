@@ -40,9 +40,11 @@ ground every verdict in evidence and label anything you cannot confirm as
 ## Per-stage checklists
 
 ### Stage 1 — Topic Refinement
-- C1 A single, testable research question (not a topic area)?
-- C2 Scope boundaries + assumptions stated?
-- C3 At least one falsifiable hypothesis (H1) named?
+- C1 **Single testable question** — one precise research question, not a topic area or a bundle of questions.
+- C2 **Scope & assumptions** — what is in / out of scope and the key assumptions are stated explicitly.
+- C3 **Falsifiable hypothesis** — at least one H1 named that could be shown false.
+- C4 **Significance** — why the question matters / which gap it targets is stated.
+- C5 **Answerability** — the question is answerable within the stated scope (not unbounded).
 
 ### Stage 2 — Literature Survey
 - C1 **Citation authenticity** — each reference is real (resolvable
@@ -55,20 +57,28 @@ ground every verdict in evidence and label anything you cannot confirm as
 - C5 Every claim about a paper traces to a fetched source, not memory.
 
 ### Stage 3 — Idea Generation
-- C1 Ideas address the Stage 2 gaps (not generic)?
-- C2 Novelty argued against the surveyed prior work?
-- C3 Each idea is concrete enough to design a method around?
+- C1 **Grounded in gaps** — each idea maps to a specific Stage 2 gap / open question (cite it), not generic.
+- C2 **Novelty argued** — differentiated from the surveyed prior work, not a restatement of an existing method.
+- C3 **Concreteness** — each idea is specific enough that a methodology could be designed from it.
+- C4 **Feasibility** — rough feasibility / required resources considered, not pure blue-sky.
+- C5 **Diversity & selection** — ideas are genuinely distinct (not minor variants); the chosen idea has a stated rationale.
 
 ### Stage 4 — Methodology Design
-- C1 Method operationalises a specific Stage 3 idea?
-- C2 Each construct defined with a measurement procedure?
-- C3 Framework figure present and referenced?
+- C1 **Operationalises an idea** — the method realises a specific Stage 3 idea (traceable).
+- C2 **Constructs defined** — each construct/variable has a measurement procedure (raw → formula → unit).
+- C3 **Procedure specified** — described step-by-step enough to be reproducible in principle.
+- C4 **Framework figure** — present and referenced with a numbered caption.
+- C5 **Assumptions & limitations** — stated, not hidden.
+- C6 **Novelty preserved** — the Stage 3 novelty survives into the method (not diluted to a known baseline).
 
 ### Stage 5 — Experiment Design
-- C1 Objective tied to H1; single bounded scope?
-- C2 Variables, metrics, and statistical test specified?
-- C3 Sample size / power justified (not a naked n)?
-- C4 Assignments table → every executable task has an owner + acceptance.
+- C1 **Objective** — tied to H1, single bounded scope (no smuggled-in extra objectives).
+- C2 **Variables & metrics** — IV / DV / controls operationalised; a singular primary metric named.
+- C3 **Statistical test** — named, with multiple-comparison handling where relevant.
+- C4 **Sample size / power** — justified with the math, not a naked `n`.
+- C5 **Baselines & ablations** — comparison conditions / ablations planned.
+- C6 **Assignments table** — every executable task has an owner + a verifiable acceptance criterion.
+- C7 **Pre-registration** — primary metric, exclusion rules, and analysis plan are locked.
 
 ### Stage 6 — Auto Experiment (did it ACTUALLY run?)
 - C1 **Real run evidence** — logs/results exist in the workspace
@@ -83,9 +93,12 @@ ground every verdict in evidence and label anything you cannot confirm as
   deliverable actually exist in the workspace code.
 
 ### Stage 7 — Result Analysis
-- C1 Analysis uses the metrics/tests locked in Stage 4/5 (no HARKing)?
-- C2 Every conclusion is within what Stage 6 evidence supports?
-- C3 Exploratory vs confirmatory claims separated?
+- C1 **Contract fidelity** — uses the metrics/tests locked in Stage 4/5; no HARKing (no hypotheses invented after seeing results).
+- C2 **Within evidence** — every conclusion is supported by Stage 6 evidence; nothing concluded beyond what was run.
+- C3 **Confirmatory vs exploratory** — the two are labelled separately.
+- C4 **Uncertainty reported** — effect sizes + CIs / variance, not just point estimates or bare p-values.
+- C5 **Honest negatives** — null / negative / failed results are reported, not buried.
+- C6 **Traceable numbers** — every reported number traces to a Stage 6 artifact (log / results file).
 
 ### Stage 8 — Paper Generation
 - C1 **Desk-rejection screen** — required sections present, length/topic
@@ -96,9 +109,11 @@ ground every verdict in evidence and label anything you cannot confirm as
 - C4 Related work covers the literature; no obvious missing prior work.
 
 ### Stage 9 — Self-Review
-- C1 The peer review is evidence-grounded (file:line, not generic)?
-- C2 Weaknesses are paired with concrete fixes?
-- C3 The review's verdict is consistent with the audited evidence?
+- C1 **Evidence-grounded** — the peer review cites file:line, not generic praise/criticism.
+- C2 **Fixes attached** — every weakness is paired with a concrete, actionable fix.
+- C3 **Verdict consistency** — the recommendation matches the audited evidence (no PASS over fatal flaws).
+- C4 **Coverage** — correctness, novelty, clarity, and reproducibility are each assessed.
+- C5 **Severity tiering** — weaknesses are tiered (blocking vs minor) so priorities are clear.
 
 ## Output Format
 

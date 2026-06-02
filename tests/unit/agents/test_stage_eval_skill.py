@@ -58,6 +58,18 @@ class TestRunbookBehaviour:
         for label in ("Stage 2", "Stage 6", "Stage 8"):
             assert label in text, f"Runbook must define a checklist for {label}"
 
+    def test_every_stage_has_a_checklist(self):
+        """All 9 pipeline stages must have a checklist section with at least
+        two concrete (C1/C2...) items — no stage left with a thin stub."""
+        text = RUNBOOK.read_text(encoding="utf-8")
+        for n in range(1, 10):
+            header = f"### Stage {n} "
+            assert header in text, f"missing checklist section for Stage {n}"
+            section = text.split(header, 1)[1].split("### Stage ", 1)[0]
+            assert section.count("- C") >= 2, (
+                f"Stage {n} checklist must have >= 2 concrete items"
+            )
+
     def test_literature_stage_checks_authenticity_breadth_count(self):
         lowered = RUNBOOK.read_text(encoding="utf-8").lower()
         assert "authenticit" in lowered  # authenticity / authentic
