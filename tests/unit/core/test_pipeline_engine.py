@@ -1081,6 +1081,52 @@ def test_parse_critic_pass_stub_falls_back_to_disk(tmp_path):
     )
 
 
+def test_parse_critic_pass_long_toolresult_stub_falls_back_to_disk(tmp_path):
+    """REGRESSION (#19, caught by the 4→9 e2e, project 5232b74836ee): the
+    critic wrote a perfect gate_review.md ('| Decision | PASS |') but its
+    submit_result was a ~867-char tool-result echo:
+
+        Executed: write
+        write → {'status': 'ok', 'path': '.../stage6_gate_review.md', 'type': ...}
+
+    This is LONGER than the 300-char stub threshold, so _is_stub_result
+    didn't flag it, the on-disk fallback never fired, and the parser saw a
+    long blob with no PASS/REJECT → defaulted to REJECT → 3 retries → the
+    whole run died at Stage 6 even though the critic had PASSED.
+
+    The verdict lives in the FILE; when the submit_result text carries no
+    clear PASS/REJECT signal, the parser MUST consult the on-disk
+    gate_review before defaulting to REJECT — regardless of stub length."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    # Neutral path text (no 'pass'/'reject' substring) so the parser can't
+    # accidentally pattern-match a verdict out of the tool echo itself.
+    long_toolresult_stub = (
+        "Executed: write\n"
+        "write → {'status': 'ok', 'path': '/work/stage6_gate_review.md', "
+        "'type': 'file', 'bytes': 3125, 'note': '" + ("x" * 700) + "'}"
+    )
+    assert len(long_toolresult_stub) > 300  # NOT caught by the short-stub heuristic
+    assert "PASS" not in long_toolresult_stub.upper()
+    assert "REJECT" not in long_toolresult_stub.upper()
+
+    gate_review = tmp_path / "stage6_gate_review.md"
+    gate_review.write_text("# Gate Review\n\n| **Decision** | **PASS** |\n| Confidence | 0.58 |")
+    assert engine._parse_critic_pass(long_toolresult_stub) is True, (
+        "long tool-result stub + on-disk PASS must resolve to PASS via file fallback"
+    )
+
+    gate_review.write_text("# Gate Review\n\n| **Decision** | **REJECT** |\nNo data.")
+    assert engine._parse_critic_pass(long_toolresult_stub) is False
+
+    # A real conversational verdict in the text still wins without touching disk.
+    gate_review.write_text("| Decision | PASS |")  # stale file says PASS...
+    assert engine._parse_critic_pass("REJECT: the smoke run failed") is False, (
+        "an explicit in-text verdict must take precedence over the on-disk file"
+    )
+
+
 def test_cap_for_critic_trims_oversized_producer_output():
     """#62: critic's input must stay under a soft budget so late-stage
     runs don't blow Kimi-K2.6's 262K context window. Cap keeps head +
