@@ -29,7 +29,7 @@ def _engine(tmp_path):
 
 def test_run_gate_rejects_on_failed_verdict(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
-    monkeypatch.setattr(rv, "verify_text", lambda *a, **k: rv.RunVerdict(rv.FAIL, reason="ghost not found"))
+    monkeypatch.setattr(rv, "verify",lambda *a, **k: rv.RunVerdict(rv.FAIL, reason="ghost not found"))
     calls = []
     monkeypatch.setattr(eng, "_reject_or_hold", lambda *a, **k: calls.append(k))
     handled = eng._deterministic_run_gate(STAGE6, "- run_id: ghost")
@@ -39,14 +39,14 @@ def test_run_gate_rejects_on_failed_verdict(tmp_path, monkeypatch):
 
 def test_run_gate_passes_through_on_unverifiable(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
-    monkeypatch.setattr(rv, "verify_text", lambda *a, **k: rv.RunVerdict(rv.UNVERIFIABLE, reason="no infra"))
+    monkeypatch.setattr(rv, "verify",lambda *a, **k: rv.RunVerdict(rv.UNVERIFIABLE, reason="no infra"))
     monkeypatch.setattr(eng, "_reject_or_hold", lambda *a, **k: pytest.fail("must not reject when unverifiable"))
     assert eng._deterministic_run_gate(STAGE6, "ran locally") is False
 
 
 def test_run_gate_passes_through_on_pass(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
-    monkeypatch.setattr(rv, "verify_text", lambda *a, **k: rv.RunVerdict(rv.PASS, reason="ok"))
+    monkeypatch.setattr(rv, "verify",lambda *a, **k: rv.RunVerdict(rv.PASS, reason="ok"))
     monkeypatch.setattr(eng, "_reject_or_hold", lambda *a, **k: pytest.fail("must not reject on pass"))
     assert eng._deterministic_run_gate(STAGE6, "- run_id: r1") is False
 
@@ -55,7 +55,7 @@ def test_run_gate_never_crashes_pipeline(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
     def boom(*a, **k):
         raise RuntimeError("infra client exploded")
-    monkeypatch.setattr(rv, "verify_text", boom)
+    monkeypatch.setattr(rv, "verify",boom)
     # An error in the gate must degrade to "proceed", never raise.
     assert eng._deterministic_run_gate(STAGE6, "x") is False
 

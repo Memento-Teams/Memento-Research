@@ -563,6 +563,10 @@ def test_producer_b_complete_with_all_terminal_dispatches_critic(tmp_path, monke
         "- **status**: succeeded\n"
     )
 
+    # This test exercises the producer_b → critic flow, not the deterministic
+    # run-authenticity gate (added separately); stub it to pass-through so it
+    # neither hits infra nor false-rejects the synthetic run_ids.
+    monkeypatch.setattr(engine, "_deterministic_run_gate", lambda *a, **k: False)
     engine.on_task_complete("00025", "nodeB", report)
 
     assert len(dispatched_critic) == 1, "Critic must dispatch when all runs terminal"
@@ -647,6 +651,8 @@ def test_producer_b_finalize_complete_dispatches_critic_and_clears_pending(tmp_p
     engine.state["pending_run_ids"] = ["run_long_a"]
     engine.state["pending_waiting_started_at"] = "2026-06-01T17:00:00Z"
 
+    # Gate is exercised in its own tests; pass-through here (no infra hit).
+    monkeypatch.setattr(engine, "_deterministic_run_gate", lambda *a, **k: False)
     engine.on_task_complete("00025", "nodeB-final", "## Final report\n\n- run_id: run_long_a\n- status: succeeded")
 
     assert len(dispatched_critic) == 1

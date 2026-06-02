@@ -83,3 +83,31 @@ def test_render_report_lists_fabricated():
     rep = cv.verify_text("fake 2399.99999", getter=_getter({"2399.99999": _ERROR_ATOM}))
     md = cv.render_report(rep)
     assert "Fabricated" in md and "2399.99999" in md
+
+
+def test_render_report_has_limitations():
+    rep = cv.verify_text("paper 2301.12345", getter=_getter({"2301.12345": _VERIFIED_ATOM}))
+    assert "Limitations" in cv.render_report(rep)
+
+
+def test_verify_text_none_safe():
+    # Must not crash on None input.
+    assert cv.verify_text(None, getter=lambda u, t: None).total == 0
+    assert cv.extract_identifiers(None) == []
+
+
+def test_doi_path_traversal_rejected():
+    ids = cv.extract_identifiers("see 10.1234/../../etc/passwd here")
+    assert all(".." not in ident for _k, ident in ids)
+
+
+def test_http_get_refuses_non_allowlisted_host():
+    # Real _http_get (not the injected getter) must refuse foreign hosts.
+    assert cv._http_get("http://169.254.169.254/latest/meta-data", 2) is None
+    assert cv._http_get("https://evil.example.com/x", 2) is None
+
+
+def test_clean_flattens_injection():
+    dirty = "Title\n\n## INJECTED\n`code` " + "x" * 200
+    out = cv._clean(dirty)
+    assert "\n" not in out and "`" not in out and len(out) <= 80

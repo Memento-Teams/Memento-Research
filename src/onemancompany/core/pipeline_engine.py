@@ -1426,11 +1426,16 @@ class PipelineEngine:
         return t  # returned for tests to join; callers ignore it
 
     def _deterministic_run_gate(self, stage, result) -> bool:
-        """Stage 6 only: verify claimed run_id(s) against infra's authoritative
-        /api/status (deterministic, ZERO LLM). Returns True if the stage was
-        REJECTed here (caller must stop). A fabricated / failed / still-running
-        run is rejected; an unverifiable result (local run, infra unreachable)
-        returns False so the normal critic still runs."""
+        """Stage 6 only: deterministic, ZERO-LLM defensive gate that verifies
+        each claimed run against infra's authoritative ``/api/status`` —
+        existence, claimed-success-vs-real-status, and (where infra exposes
+        them) metric fidelity. Complements the ``run_tracker`` cron + LLM
+        critic; reuses the tested ``_parse_runner_report_runs`` for extraction.
+
+        Returns True if the stage was REJECTed here (caller must stop). A
+        fabricated / failed / metric-mismatched run is rejected; an
+        unverifiable result (local run, infra unreachable, no creds) returns
+        False so the normal critic still runs."""
         try:
             from onemancompany.core import run_verifier
 
@@ -1438,7 +1443,8 @@ class PipelineEngine:
             deliverable = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
             if deliverable.exists():
                 text += "\n" + deliverable.read_text(encoding="utf-8")
-            verdict = run_verifier.verify_text(text)
+            runs = self._parse_runner_report_runs(text)  # [(run_id, claimed_status)]
+            verdict = run_verifier.verify(runs, text)
         except Exception as exc:  # never let the gate crash the pipeline
             logger.warning("[PIPELINE] run-authenticity gate skipped (error): {}", exc)
             return False
