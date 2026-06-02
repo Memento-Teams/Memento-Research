@@ -1278,9 +1278,8 @@ class TestEmployeeManagerProjectHistoryContext:
     def test_skips_system_projects(self):
         # System-generated projects (_sys_ debate sub-agents, _auto_ projects)
         # carry no useful history and the _sys_ ones are numerous during Stage
-        # 4/5 debates — scanning them on the completion path is what overruns
-        # the completion-consumer budget (issue #103). Must short-circuit before
-        # touching the archive at all.
+        # 4/5 debates — scanning them while building a prompt is pure overhead
+        # (issue #103). Must short-circuit before touching the archive at all.
         mgr = EmployeeManager()
         for pid in ("_sys_a1b2c3d4", "_auto_12345"):
             with patch("onemancompany.core.project_archive.load_named_project") as mock_load:

@@ -39,6 +39,65 @@ def _tasks_dir(employee_id: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Orphan recovery (shared by restart recovery and completion-timeout recovery)
+# ---------------------------------------------------------------------------
+
+def recover_orphaned_completed_nodes(tree, tree_path) -> list:
+    """Auto-finish COMPLETED nodes orphaned by an interrupted completion.
+
+    A node left COMPLETED whose parent is already RESOLVED never had its status
+    propagated upward — the completion consumer was interrupted (server restart,
+    or a completion handler that overran its timeout). Auto-accept + finish each
+    so ``is_subtree_resolved()`` sees it resolved; then, if that makes the whole
+    project complete, advance the CEO_PROMPT root to COMPLETED so the completion
+    flow can finalize it on the next heartbeat / confirmation cycle.
+
+    Single source of truth for orphan recovery — called both on restart
+    (``recover_schedule_from_trees``) and inline when a completion handler times
+    out (``EmployeeManager._requeue_node_after_timeout``). Returns the nodes that
+    were auto-finished so callers can re-resolve their dependents.
+    """
+    from onemancompany.core.task_tree import save_tree_async
+
+    finished = []
+    for node in tree._nodes.values():
+        if node.status != TaskPhase.COMPLETED.value:
+            continue
+        parent = tree.get_node(node.parent_id) if node.parent_id else None
+        if parent and TaskPhase(parent.status) in RESOLVED:
+            node.set_status(TaskPhase.ACCEPTED)
+            node.acceptance_result = {"passed": True, "notes": "Auto-accepted on recovery: parent already resolved."}
+            node.set_status(TaskPhase.FINISHED)
+            finished.append(node)
+            logger.info(
+                "Auto-finished orphaned COMPLETED node {} (parent {} is {})",
+                node.id, parent.id, parent.status,
+            )
+    if not finished:
+        return finished
+
+    save_tree_async(tree_path)
+
+    # After orphan cleanup, check if the project is now fully complete. If so,
+    # advance CEO_PROMPT from PENDING → COMPLETED so the completion flow can pick
+    # it up on the next heartbeat or confirmation cycle.
+    if tree.is_project_complete():
+        ea_node = tree.get_ea_node()
+        if ea_node:
+            ceo_root = tree.get_node(ea_node.parent_id) if ea_node.parent_id else None
+            if ceo_root and ceo_root.node_type in (NodeType.CEO_PROMPT, NodeType.CEO_PROMPT.value):
+                if ceo_root.status == TaskPhase.PENDING.value:
+                    ceo_root.set_status(TaskPhase.PROCESSING)
+                    ceo_root.set_status(TaskPhase.COMPLETED)
+                    logger.info(
+                        "[RECOVERY] Project complete after orphan cleanup — "
+                        "CEO root {} → COMPLETED", ceo_root.id,
+                    )
+                    save_tree_async(tree_path)
+    return finished
+
+
+# ---------------------------------------------------------------------------
 # Tree-based schedule recovery
 # ---------------------------------------------------------------------------
 
@@ -93,42 +152,10 @@ def recover_schedule_from_trees(
                         node.employee_id, node.id, str(tree_path),
                     )
 
-            # 1b. Auto-finish orphaned COMPLETED nodes whose parent is already RESOLVED.
-            # These nodes were left behind when the server restarted before the
-            # completion consumer could propagate their status upward.
-            orphan_modified = False
-            for node in tree._nodes.values():
-                if node.status != TaskPhase.COMPLETED.value:
-                    continue
-                parent = tree.get_node(node.parent_id) if node.parent_id else None
-                if parent and TaskPhase(parent.status) in RESOLVED:
-                    node.set_status(TaskPhase.ACCEPTED)
-                    node.acceptance_result = {"passed": True, "notes": "Auto-accepted on recovery: parent already resolved."}
-                    node.set_status(TaskPhase.FINISHED)
-                    orphan_modified = True
-                    logger.info(
-                        "Auto-finished orphaned COMPLETED node {} (parent {} is {})",
-                        node.id, parent.id, parent.status,
-                    )
-            if orphan_modified:
-                save_tree_async(tree_path)
-
-            # 1c. After orphan cleanup, check if the project is now fully complete.
-            # If so, advance CEO_PROMPT from PENDING → COMPLETED so the completion
-            # flow can pick it up on the next heartbeat or confirmation cycle.
-            if orphan_modified and tree.is_project_complete():
-                ea_node = tree.get_ea_node()
-                if ea_node:
-                    ceo_root = tree.get_node(ea_node.parent_id) if ea_node.parent_id else None
-                    if ceo_root and ceo_root.node_type in (NodeType.CEO_PROMPT, NodeType.CEO_PROMPT.value):
-                        if ceo_root.status == TaskPhase.PENDING.value:
-                            ceo_root.set_status(TaskPhase.PROCESSING)
-                            ceo_root.set_status(TaskPhase.COMPLETED)
-                            logger.info(
-                                "[RECOVERY] Project complete after orphan cleanup — "
-                                "CEO root {} → COMPLETED", ceo_root.id,
-                            )
-                            save_tree_async(tree_path)
+            # 1b/1c. Auto-finish orphaned COMPLETED nodes (parent already
+            # RESOLVED) and advance CEO_PROMPT if the project is now complete.
+            # Shared with the completion-timeout recovery path (SSOT).
+            recover_orphaned_completed_nodes(tree, tree_path)
 
     # 2. Scan system task trees (legacy system_tasks.yaml)
     if employees_dir.exists():

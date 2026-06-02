@@ -2309,6 +2309,60 @@ class TestCompletionQueue:
             mgr._requeue_node_after_timeout(entry)  # must not raise
         mock_sched.assert_not_called()
 
+    def test_requeue_schedules_holding_node(self, tmp_path):
+        # HOLDING nodes must be (re)scheduled so resume_held_task() can find them
+        # — recover_schedule_from_trees does this and the requeue must mirror it.
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        held = tree.add_child(parent_id=root.id, employee_id="e2",
+                              description="held step", acceptance_criteria=[])
+        held.set_status(TaskPhase.HOLDING)
+        tree.save(tree_path)
+        entry = ScheduleEntry(node_id=held.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        with patch.object(mgr, "schedule_node") as mock_sched, \
+             patch.object(mgr, "_schedule_next"):
+            mgr._requeue_node_after_timeout(entry)
+
+        mock_sched.assert_any_call("e2", held.id, str(tree_path))
+
+    def test_requeue_gives_up_after_max_retries(self, tmp_path):
+        # Persistent completion timeouts must NOT re-dispatch forever — after a
+        # bounded number of consecutive timeouts for the same (tree, node) the
+        # requeue gives up so a genuinely stuck run fails loudly (issue #103).
+        from onemancompany.core.config import COMPLETION_TIMEOUT_MAX_RETRIES
+
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        child = tree.add_child(parent_id=root.id, employee_id="e1",
+                               description="next step", acceptance_criteria=[])
+        tree.save(tree_path)
+        entry = ScheduleEntry(node_id=child.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        with patch.object(mgr, "schedule_node") as mock_sched, \
+             patch.object(mgr, "_schedule_next"):
+            # First N calls recover (schedule the schedulable child)...
+            for _ in range(COMPLETION_TIMEOUT_MAX_RETRIES):
+                mgr._requeue_node_after_timeout(entry)
+            assert mock_sched.call_count == COMPLETION_TIMEOUT_MAX_RETRIES
+            # ...the (N+1)th call gives up and does NOT re-dispatch.
+            mgr._requeue_node_after_timeout(entry)
+            assert mock_sched.call_count == COMPLETION_TIMEOUT_MAX_RETRIES
+
+    def test_requeue_resets_giveup_counter_on_success(self, tmp_path):
+        # A successful completion clears the consecutive-timeout counter so an
+        # occasional slow completion never accumulates toward the give-up bound.
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        child = tree.add_child(parent_id=root.id, employee_id="e1",
+                               description="next step", acceptance_criteria=[])
+        tree.save(tree_path)
+        entry = ScheduleEntry(node_id=child.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        mgr._completion_timeout_counts[(str(tree_path), child.id)] = 99
+        mgr._clear_completion_timeout(entry)
+        assert (str(tree_path), child.id) not in mgr._completion_timeout_counts
+
 
 # =====================================================================
 # _get_role

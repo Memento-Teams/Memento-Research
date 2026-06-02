@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import ClassVar
@@ -142,20 +143,27 @@ IS_DEBUG = os.environ.get(ENV_OMC_DEBUG, "0") == "1"
 
 # Completion-consumer timeout (seconds). The serial tree-completion consumer
 # wraps each child-complete handler in a timeout. Stage 4/5 multi-agent debates
-# create slow-but-finite completion processing (history lookups over many
-# ephemeral _sys_ debate projects, next-stage dispatch + memory retrieval) that
-# overruns a tight cap; cutting it off mid-processing leaves the task tree
-# inconsistent and wedges the run. Default 300s gives debate completion room to
-# finish; override via env for slower/faster deployments. See issue #103.
+# make completion processing slow-but-finite (next-stage dispatch + memory
+# retrieval, plus prompt work over many ephemeral _sys_ debate projects) and a
+# tight cap cuts it off mid-processing, leaving the task tree inconsistent and
+# wedging the run. Default 300s gives debate completion room to finish; override
+# via env for slower/faster deployments. See issue #103.
 ENV_OMC_COMPLETION_CONSUMER_TIMEOUT = "OMC_COMPLETION_CONSUMER_TIMEOUT"
 try:
     COMPLETION_CONSUMER_TIMEOUT_S = float(
         os.environ.get(ENV_OMC_COMPLETION_CONSUMER_TIMEOUT, "300")
     )
-    if COMPLETION_CONSUMER_TIMEOUT_S <= 0:
+    # Reject non-finite (nan would make every wait_for "time out", inf would
+    # disable the cap) and non-positive values — fall back to the safe default.
+    if not math.isfinite(COMPLETION_CONSUMER_TIMEOUT_S) or COMPLETION_CONSUMER_TIMEOUT_S <= 0:
         COMPLETION_CONSUMER_TIMEOUT_S = 300.0
 except (TypeError, ValueError):
     COMPLETION_CONSUMER_TIMEOUT_S = 300.0
+
+# Max consecutive completion-consumer timeouts to auto-recover from for the same
+# (tree, node) before giving up. Bounds the re-dispatch loop so a genuinely
+# stuck run fails loudly in the logs instead of re-dispatching forever (#103).
+COMPLETION_TIMEOUT_MAX_RETRIES = 3
 ENV_OMC_EMPLOYEE_ID = "OMC_EMPLOYEE_ID"
 ENV_OMC_TASK_ID = "OMC_TASK_ID"
 ENV_OMC_PROJECT_ID = "OMC_PROJECT_ID"
