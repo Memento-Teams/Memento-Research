@@ -1326,9 +1326,14 @@ class PipelineEngine:
             # "I couldn't run / NOT TESTED" report and the empty stage
             # advanced to an INCONCLUSIVE paper.
             if is_pass:
-                # Gate the PRODUCER's stored deliverable, not the critic's
-                # verdict text — the data lives in the stage's own report.
-                producer_deliverable = (self.state.get("stage_results") or {}).get(str(stage["id"]), "")
+                # Gate the PRODUCER's deliverable, not the critic's verdict
+                # text — the data lives in the stage's own report. Prefer the
+                # on-disk stage{N}_{skill}.md (the canonical evidence) over the
+                # stored submit_result, which is often a prose summary that
+                # points at the file without carrying parseable run/hypothesis
+                # lines (regression caught by the 4→9 e2e).
+                stored = (self.state.get("stage_results") or {}).get(str(stage["id"]), "")
+                producer_deliverable = self._read_stage_deliverable(stage["id"], fallback=stored)
                 if stage["id"] == 9:
                     # Stage 9 is terminal: it can't be blocked/retried like
                     # 6/7/8. When the pipeline has no real data, clamp an
@@ -1962,6 +1967,29 @@ class PipelineEngine:
             return cls._data_gate_stage7(result)
         return True, ""
 
+    def _read_stage_deliverable(self, stage_id: int, fallback: str = "") -> str:
+        """Return the canonical on-disk deliverable for a stage, falling back
+        to ``fallback`` (usually the stored ``stage_results`` entry).
+
+        The producer's ``submit_result`` is often a prose *summary* that
+        points at the file ("see stage6_experimentalist.md") and does not
+        itself carry the machine-parseable evidence (run_id/status lines,
+        hypothesis decisions). The real artifact is the ``stage{N}_{skill}.md``
+        file the producer wrote. The data gate must inspect that file, not
+        the summary — otherwise it gates the wrong text. Mirrors the existing
+        Stage 3 file-content fallback.
+        """
+        try:
+            stage_def = self._stage_def(stage_id)
+            path = Path(self.project_dir) / f"stage{stage_id}_{stage_def.get('skill', '')}.md"
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except (OSError, ValueError) as exc:
+            logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
+        return fallback
+
     def _stage_data_gate(self, stage_id: int, result: str) -> tuple[bool, str]:
         """Instance-level gate orchestration used by ``on_task_complete``.
 
@@ -1976,7 +2004,7 @@ class PipelineEngine:
         if not ok:
             return ok, reason
         if stage_id == 8:
-            stage7 = (self.state.get("stage_results") or {}).get("7", "")
+            stage7 = self._read_stage_deliverable(7, fallback=(self.state.get("stage_results") or {}).get("7", ""))
             s7_ok, s7_reason = self._data_gate_stage7(stage7)
             if not s7_ok:
                 return False, f"upstream Stage 7 has no confirmatory data ({s7_reason})"
@@ -1985,10 +2013,13 @@ class PipelineEngine:
     def _pipeline_has_real_data(self) -> bool:
         """True iff the pipeline actually produced experimental data:
         Stage 6 had ≥1 succeeded run AND Stage 7 had ≥1 tested hypothesis.
-        Used by the Stage 9 verdict clamp (#94)."""
+        Reads the on-disk deliverables (canonical evidence), not the
+        submit_result summaries. Used by the Stage 9 verdict clamp (#94)."""
         results = self.state.get("stage_results") or {}
-        s6_ok, _ = self._data_gate_stage6(results.get("6", ""))
-        s7_ok, _ = self._data_gate_stage7(results.get("7", ""))
+        s6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        s7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        s6_ok, _ = self._data_gate_stage6(s6)
+        s7_ok, _ = self._data_gate_stage7(s7)
         return s6_ok and s7_ok
 
     # Stage 9 review verdicts that imply the paper is acceptable. When no

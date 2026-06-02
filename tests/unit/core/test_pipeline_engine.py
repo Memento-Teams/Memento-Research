@@ -3026,3 +3026,38 @@ async def test_data_gate_fail_exhausts_to_autofail_under_auto_approve(tmp_path, 
     await engine._auto_approve_gate(stage_id=6, exhausted=True)
     assert engine.state["phase"] == "failed"
     assert failed == [(6, "retries_exhausted")]
+
+
+def test_data_gate_reads_ondisk_deliverable_not_submit_result_summary(tmp_path, monkeypatch):
+    """REGRESSION (caught by the 4→9 e2e, project 538372e68022): the runner's
+    submit_result is a PROSE SUMMARY ("Smoke run: `run_x` — succeeded") whose
+    run_id/status share a line — _parse_runner_report_runs finds 0 runs in it.
+    The canonical evidence is the on-disk stage6_experimentalist.md (proper
+    `- run_id:` / `- status:` lines). The gate MUST read the file, else it
+    wrongly fails a healthy Stage 6 and (via #106) kills the whole run."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    # On-disk canonical evidence file with real, parseable runs.
+    (tmp_path / "stage6_experimentalist.md").write_text(
+        "### T2 — Smoke\n- run_id: run_914f8929b927\n- status: succeeded\n\n"
+        "### T3 — Full\n- run_id: run_131741e1d009\n- status: succeeded\n"
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    # The stored deliverable is the runner's PROSE summary — does NOT parse.
+    engine.state["stage_results"] = {
+        "6": "The deliverable stage6_experimentalist.md exists. "
+             "Smoke run: `run_914f8929b927` — `succeeded`, $0.00.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    assert getattr(engine, "_passed", False) is True, (
+        "gate must read the on-disk report (which has real succeeded runs), "
+        "not the unparseable submit_result summary"
+    )
