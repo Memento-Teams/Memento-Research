@@ -18,7 +18,7 @@ def clear_registry():
 
 
 STAGE6 = {"id": 6, "skill": "experimentalist", "name": "Auto Experiment"}
-STAGE2 = {"id": 2, "skill": "literature_surveyor", "name": "Literature Survey"}
+STAGE8 = {"id": 8, "skill": "paper_writer", "name": "Paper Generation"}
 
 
 def _engine(tmp_path):
@@ -88,7 +88,7 @@ def test_reject_or_hold_holds_gate_when_exhausted(tmp_path, monkeypatch):
     assert held["exhausted"] is True
 
 
-# --- Stage 2 advisory citation audit ------------------------------------
+# --- Stage 8 final-paper advisory citation audit ------------------------
 
 def test_advisory_citation_writes_report(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
@@ -97,9 +97,9 @@ def test_advisory_citation_writes_report(tmp_path, monkeypatch):
         cv.CitationCheck("2301.12345", "arxiv", cv.VERIFIED, "ok"),
     ])
     monkeypatch.setattr(cv, "verify_text", lambda *a, **k: rep)
-    t = eng._advisory_citation_check(STAGE2, "survey citing 2399.99999 and 2301.12345")
+    t = eng._advisory_citation_check(STAGE8, "paper citing 2399.99999 and 2301.12345")
     t.join(timeout=5)
-    out = tmp_path / "stage2_citation_report.md"
+    out = tmp_path / "stage8_citation_report.md"
     assert out.exists()
     body = out.read_text(encoding="utf-8")
     assert "2399.99999" in body and "Fabricated" in body
@@ -108,6 +108,20 @@ def test_advisory_citation_writes_report(tmp_path, monkeypatch):
 def test_advisory_citation_never_raises(tmp_path, monkeypatch):
     eng = _engine(tmp_path)
     monkeypatch.setattr(cv, "verify_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    t = eng._advisory_citation_check(STAGE2, "text")
+    t = eng._advisory_citation_check(STAGE8, "text")
     t.join(timeout=5)  # thread swallows the error; no report, no crash
-    assert not (tmp_path / "stage2_citation_report.md").exists()
+    assert not (tmp_path / "stage8_citation_report.md").exists()
+
+
+def test_advisory_reads_latex_bib(tmp_path, monkeypatch):
+    # LaTeX output: cites live in stage8_paper/*.bib — the audit must harvest them.
+    eng = _engine(tmp_path)
+    latex = tmp_path / "stage8_paper"
+    latex.mkdir()
+    (latex / "refs.bib").write_text(
+        "@article{x, title={A}, eprint={2301.12345}, archivePrefix={arXiv}}", encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(cv, "verify_text",
+                        lambda text, *a, **k: seen.update(text=text) or cv.CitationReport())
+    eng._advisory_citation_check(STAGE8, "see refs").join(timeout=5)
+    assert "2301.12345" in seen.get("text", "")

@@ -1247,10 +1247,13 @@ class PipelineEngine:
             # Producer finished → store result, dispatch critic
             self.state["stage_results"][str(stage["id"])] = result
             self._save()
-            # Stage 2 only: deterministic citation-authenticity audit (ZERO
-            # LLM), run in the background and written as an advisory report —
-            # non-gating. See core/citation_verifier.py.
-            if stage["id"] == 2:
+            # Stage 8 (final paper) only: deterministic citation-authenticity
+            # audit (ZERO LLM), run in the background as an advisory report.
+            # Fills a real gap — the Stage 2 surveyor verifies the SURVEY's
+            # cites (its own verify_citations tool), but NOTHING verifies the
+            # FINAL paper's bibliography, which paper_writer can alter/introduce.
+            # See core/citation_verifier.py.
+            if stage["id"] == 8:
                 self._advisory_citation_check(stage, result)
             logger.info("[PIPELINE] Stage {} producer complete, dispatching critic", stage["id"])
             self._emit_stage_event("stage_reviewing", stage["id"])
@@ -1393,11 +1396,13 @@ class PipelineEngine:
             self._emit_gate_event(stage["id"], confidence, exhausted=True)
 
     def _advisory_citation_check(self, stage, result):
-        """Stage 2 only: deterministic citation-authenticity audit (ZERO LLM).
-        Extracts arXiv IDs / DOIs and resolves them against the real arXiv /
-        Crossref APIs, then writes ``stage2_citation_report.md``. Runs in a
-        background daemon thread (network I/O) so it never blocks the pipeline,
-        and is advisory — it never gates. See core/citation_verifier.py."""
+        """Stage 8 (final paper) deterministic citation-authenticity audit
+        (ZERO LLM). Extracts arXiv IDs / DOIs from the final paper — the
+        Markdown deliverable ``stage8_paper_writer.md`` and, for LaTeX output,
+        the ``stage8_paper/`` ``.bib``/``.tex`` sources — resolves each against
+        the real arXiv / Crossref APIs, and writes ``stage8_citation_report.md``.
+        Runs in a background daemon thread (network I/O) so it never blocks the
+        pipeline, and is advisory — it never gates. See core/citation_verifier.py."""
         import threading
 
         project_dir = self.project_dir
@@ -1412,6 +1417,14 @@ class PipelineEngine:
                 deliverable = Path(project_dir) / f"stage{sid}_{skill}.md"
                 if deliverable.exists():
                     text += "\n" + deliverable.read_text(encoding="utf-8")
+                # LaTeX output carrier: harvest cites from the .bib/.tex sources.
+                latex_dir = Path(project_dir) / f"stage{sid}_paper"
+                if latex_dir.is_dir():
+                    for src in list(latex_dir.rglob("*.bib")) + list(latex_dir.rglob("*.tex")):
+                        try:
+                            text += "\n" + src.read_text(encoding="utf-8")
+                        except Exception:
+                            logger.debug("[PIPELINE] could not read {}", src)
                 report = citation_verifier.verify_text(text)
                 if report.total == 0:
                     return
