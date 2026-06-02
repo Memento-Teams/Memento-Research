@@ -2794,3 +2794,235 @@ def test_dispatch_producer_b_injects_feedback_and_user_feedback(tmp_path, monkey
     assert "ceo direct guidance" in desc
     # Pending user feedback is consumed.
     assert engine.state.get("pending_user_feedback", "") == ""
+
+
+# ===========================================================================
+# #27 Hard data gate — deterministic post-critic check (closes #96 A+C, #94)
+# ===========================================================================
+
+
+def test_data_gate_stage6_fails_when_no_run_succeeded():
+    """Stage 6 data gate: a runner report whose every run is non-succeeded
+    (still_running / blocked / failed) has no usable experimental data —
+    the gate must FAIL even if the critic graded the report well-written."""
+    report = (
+        "## Tasks executed\n\n"
+        "- run_id: run_a\n- status: still_running\n\n"
+        "- run_id: run_b\n- status: blocked\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(6, report)
+    assert ok is False
+    assert "succeed" in reason.lower() or "run" in reason.lower()
+
+
+def test_data_gate_stage6_passes_when_one_run_succeeded():
+    """Stage 6 gate passes as soon as one run is succeeded, even if others
+    are still_running (the long-running waiter already finalized the rest)."""
+    report = (
+        "- run_id: run_a\n- status: succeeded\n\n"
+        "- run_id: run_b\n- status: still_running\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(6, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_fails_when_all_hypotheses_not_tested():
+    """Stage 7 gate: if every hypothesis row is NOT TESTED, there is no
+    confirmatory result — the gate FAILs regardless of how polished the
+    analysis prose is (the 70cb46f4e26a INCONCLUSIVE-paper failure mode)."""
+    report = (
+        "## Hypotheses\n\n"
+        "### H1\nDecision: NOT TESTED\n\n"
+        "### H2\nDecision: NOT TESTED\n\n"
+        "### H3\nDecision: NOT TESTED\n\n"
+        "Overall: INCONCLUSIVE_DUE_TO_COVERAGE\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
+    assert "tested" in reason.lower() or "hypothes" in reason.lower()
+
+
+def test_data_gate_stage7_passes_with_one_supported_hypothesis():
+    """One SUPPORTED/REJECTED hypothesis with a real decision is enough to
+    clear the Stage 7 gate."""
+    report = (
+        "### H1\nTest result: t=3.2 (95% CI [1.1, 5.3]), effect size: 0.6\n"
+        "Decision: SUPPORTED\n\n"
+        "### H2\nDecision: NOT TESTED\n\n"
+        "Overall: PARTIALLY CONFIRMED\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_blocks_stage6_advance_when_critic_passed_but_no_data(tmp_path, monkeypatch):
+    """The flagship #27 behavior: critic votes PASS on a well-written Stage 6
+    report, but every run is still_running (no real data). The data gate must
+    override the PASS — the stage does NOT advance to gate; it routes to the
+    critic-reject retry path (which #106 then auto-fails on exhaustion)."""
+    redispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": redispatched.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: still_running\n",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    # Did NOT advance to gate — the gate override turned PASS into a reject.
+    assert engine.phase != "gate", f"must not advance; phase={engine.phase}"
+    assert engine.state["retries"] == 1
+    assert redispatched, "must re-dispatch (reject path)"
+    assert "DATA_GATE_FAIL" in redispatched[0]
+
+
+def test_data_gate_allows_stage6_advance_when_data_present(tmp_path, monkeypatch):
+    """Control: a Stage 6 report WITH a succeeded run passes the gate and
+    advances to the CEO gate exactly as before (no regression)."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: succeeded\n",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    assert getattr(engine, "_passed", False) is True, "must call _on_critic_pass when data present"
+
+
+def test_data_gate_stage8_fails_when_upstream_stage7_has_no_data(tmp_path, monkeypatch):
+    """Stage 8 (paper writing) must not advance if the upstream Stage 7
+    result analysis had no confirmatory data — the paper would be written
+    about nothing (#96 Failure C)."""
+    redispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "7": "### H1\nDecision: NOT TESTED\n\n### H2\nDecision: NOT TESTED\n",
+        "8": "# Paper\n\nSome well-written abstract and intro.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.98")
+
+    assert engine.phase != "gate", f"must not advance; phase={engine.phase}"
+    assert redispatched, "must re-dispatch (reject path)"
+    assert "Stage 7" in redispatched[0]
+
+
+def test_data_gate_stage8_passes_when_upstream_stage7_has_data(tmp_path, monkeypatch):
+    """Control: Stage 8 advances when Stage 7 carried a real tested hypothesis."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "7": "### H1\nTest result: t=3.2\nDecision: SUPPORTED\n",
+        "8": "# Paper\n\nResults show H1 supported.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    assert getattr(engine, "_passed", False) is True
+
+
+def test_stage9_verdict_clamped_to_major_revision_when_no_data(tmp_path, monkeypatch):
+    """Stage 9 (self-review) is terminal — it can't be blocked/retried like
+    6/7/8. Instead, when the pipeline has no real experimental data, an
+    acceptance-class verdict must be CLAMPED to MAJOR REVISION. A paper that
+    never ran its experiments cannot be ACCEPT (#94)."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 9
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: blocked\n",      # no data
+        "7": "### H1\nDecision: NOT TESTED\n",             # no data
+        "9": "## Review\n\nVerdict: ACCEPT\n\nStrong methodology.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    clamped = engine.state["stage_results"]["9"]
+    assert "ACCEPT" not in clamped.split("clamp")[0] or "MAJOR REVISION" in clamped, clamped
+    assert "MAJOR REVISION" in clamped, "verdict must be clamped to MAJOR REVISION"
+    # Stage 9 still completes (terminal) — not routed to reject/retry.
+    assert getattr(engine, "_passed", False) is True
+
+
+def test_stage9_verdict_preserved_when_data_present(tmp_path, monkeypatch):
+    """Control: with real data upstream, Stage 9's ACCEPT verdict is left
+    untouched."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 9
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: succeeded\n",
+        "7": "### H1\nDecision: SUPPORTED\n",
+        "9": "## Review\n\nVerdict: ACCEPT\n\nStrong methodology.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    assert "Verdict: ACCEPT" in engine.state["stage_results"]["9"]
+    assert "MAJOR REVISION" not in engine.state["stage_results"]["9"]
+    assert getattr(engine, "_passed", False) is True
+
+
+@pytest.mark.asyncio
+async def test_data_gate_fail_exhausts_to_autofail_under_auto_approve(tmp_path, monkeypatch):
+    """End-to-end reuse: a Stage 6 data-gate fail routes through the existing
+    critic-reject retry path; after MAX_RETRIES it opens an exhausted gate,
+    which under auto_approve (the #106 fix) marks the pipeline failed rather
+    than silently advancing an empty stage."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": None)
+    failed = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_failed", lambda self, sid, reason: failed.append((sid, reason)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["auto_approve"] = True
+    engine.state["retries"] = pe.MAX_RETRIES  # already at the cap
+    engine.state["stage_results"] = {"6": "- run_id: run_a\n- status: still_running\n"}
+
+    # Critic says PASS, but gate fails → reject → exhausted (retries==MAX) → gate
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+    assert engine.phase == "gate"
+
+    # auto-approve fires on the exhausted gate → #106 refuses → failed
+    await engine._auto_approve_gate(stage_id=6, exhausted=True)
+    assert engine.state["phase"] == "failed"
+    assert failed == [(6, "retries_exhausted")]

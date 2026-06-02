@@ -1318,6 +1318,49 @@ class PipelineEngine:
 
             stage = self._stage_def()
 
+            # #27 Hard data gate: a deterministic check that runs even when
+            # the critic voted PASS, and overrides it. The critic grades
+            # report *quality*; this gate verifies *real data exists* in the
+            # upstream artifact. The LLM cannot vote its way past it. Closes
+            # the #96/#94 failure mode where every critic accepted an honest
+            # "I couldn't run / NOT TESTED" report and the empty stage
+            # advanced to an INCONCLUSIVE paper.
+            if is_pass:
+                # Gate the PRODUCER's stored deliverable, not the critic's
+                # verdict text — the data lives in the stage's own report.
+                producer_deliverable = (self.state.get("stage_results") or {}).get(str(stage["id"]), "")
+                if stage["id"] == 9:
+                    # Stage 9 is terminal: it can't be blocked/retried like
+                    # 6/7/8. When the pipeline has no real data, clamp an
+                    # acceptance-class verdict to MAJOR REVISION instead of
+                    # letting an unearned ACCEPT stand (#94). The stage still
+                    # "passes" (the review itself is valid) — only the verdict
+                    # is bounded by the existence of results.
+                    if not self._pipeline_has_real_data():
+                        clamped, changed = self._clamp_review_verdict(producer_deliverable)
+                        if changed:
+                            logger.warning(
+                                "[PIPELINE] Stage 9 verdict clamped to MAJOR REVISION "
+                                "— pipeline has no experimental data (#94)"
+                            )
+                            self.state["stage_results"]["9"] = clamped
+                            self._save()
+                else:
+                    data_ok, gate_reason = self._stage_data_gate(stage["id"], producer_deliverable)
+                    if not data_ok:
+                        logger.warning(
+                            "[PIPELINE] Stage {} data-gate FAIL despite critic PASS: {}",
+                            stage["id"], gate_reason,
+                        )
+                        is_pass = False
+                        result = (
+                            f"DATA_GATE_FAIL: {gate_reason}\n\n"
+                            "The deliverable was graded PASS for quality but contains no "
+                            "real experimental data, so the stage cannot advance. Produce "
+                            "a deliverable backed by actual run data.\n\n"
+                            f"--- original critic verdict ---\n{result}"
+                        )
+
             # Emit critic result to frontend so it shows in the stage card
             self._emit_critic_result(stage["id"], result, is_pass, confidence)
 
@@ -1895,6 +1938,131 @@ class PipelineEngine:
             if entry.get("status") not in cls._RUN_TERMINAL_STATUSES:
                 return False
         return True
+
+    # ------------------------------------------------------------------
+    # #27 Hard data gate — deterministic post-critic data-existence check
+    # ------------------------------------------------------------------
+    # Runs AFTER the critic votes PASS and can override it. The critic
+    # grades report *quality*; this gate checks *real data exists*. The
+    # LLM cannot vote its way past it (closes #96 A+C, #94).
+
+    # A Stage 6 run only counts as real data if it actually finished.
+    _RUN_DATA_OK_STATUSES = ("succeeded", "partial_success")
+
+    @classmethod
+    def _data_gate(cls, stage_id: int, result: str) -> tuple[bool, str]:
+        """Deterministic check that a stage's own deliverable (``result``)
+        contains real experimental data. Pure / classmethod — depends only
+        on the report text. Returns ``(ok, reason)``. ``ok=True`` for any
+        stage without an own-result rule (1-5), so the gate is a no-op there.
+        """
+        if stage_id == 6:
+            return cls._data_gate_stage6(result)
+        if stage_id == 7:
+            return cls._data_gate_stage7(result)
+        return True, ""
+
+    def _stage_data_gate(self, stage_id: int, result: str) -> tuple[bool, str]:
+        """Instance-level gate orchestration used by ``on_task_complete``.
+
+        Delegates to the pure ``_data_gate`` for stages whose rule depends
+        only on their own ``result`` (6, 7). Stage 8 has no own-result rule
+        but requires the UPSTREAM Stage 7 artifact to have carried real data
+        — otherwise the paper-writer is writing about nothing. We enforce
+        that by re-running the Stage 7 gate against the stored Stage 7
+        result (#96 Failure C).
+        """
+        ok, reason = self._data_gate(stage_id, result)
+        if not ok:
+            return ok, reason
+        if stage_id == 8:
+            stage7 = (self.state.get("stage_results") or {}).get("7", "")
+            s7_ok, s7_reason = self._data_gate_stage7(stage7)
+            if not s7_ok:
+                return False, f"upstream Stage 7 has no confirmatory data ({s7_reason})"
+        return True, ""
+
+    def _pipeline_has_real_data(self) -> bool:
+        """True iff the pipeline actually produced experimental data:
+        Stage 6 had ≥1 succeeded run AND Stage 7 had ≥1 tested hypothesis.
+        Used by the Stage 9 verdict clamp (#94)."""
+        results = self.state.get("stage_results") or {}
+        s6_ok, _ = self._data_gate_stage6(results.get("6", ""))
+        s7_ok, _ = self._data_gate_stage7(results.get("7", ""))
+        return s6_ok and s7_ok
+
+    # Stage 9 review verdicts that imply the paper is acceptable. When no
+    # experimental data exists, none of these may stand — clamp to
+    # MAJOR REVISION. REJECT / MAJOR REVISION are already non-acceptance,
+    # so they pass through unchanged.
+    _ACCEPTANCE_VERDICT_RE = re.compile(
+        r"((?:verdict|recommendation|decision)\s*[:=]\s*\**\s*)"
+        r"(weak\s+accept|accept|minor\s+revision)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _clamp_review_verdict(cls, review_text: str) -> tuple[str, bool]:
+        """Rewrite an acceptance-class verdict to MAJOR REVISION. Returns
+        ``(new_text, changed)``. Idempotent: if no acceptance verdict is
+        present (already REJECT / MAJOR REVISION / not found), returns the
+        text unchanged with ``changed=False``."""
+        if not review_text:
+            return review_text, False
+        m = cls._ACCEPTANCE_VERDICT_RE.search(review_text)
+        if not m:
+            return review_text, False
+        new_text = cls._ACCEPTANCE_VERDICT_RE.sub(
+            lambda mm: f"{mm.group(1)}MAJOR REVISION", review_text, count=1
+        )
+        new_text += (
+            "\n\n> [engine data-gate clamp] Verdict downgraded to MAJOR REVISION: "
+            "the pipeline produced no real experimental data (no succeeded Stage 6 "
+            "run / no tested Stage 7 hypothesis), so the paper cannot be accepted "
+            "regardless of presentation quality (#94)."
+        )
+        return new_text, True
+
+    @classmethod
+    def _data_gate_stage6(cls, result: str) -> tuple[bool, str]:
+        """Stage 6 passes only if ≥1 submitted run reached a data-bearing
+        terminal status (succeeded / partial_success)."""
+        runs = cls._parse_runner_report_runs(result)
+        if not runs:
+            return False, "no run_ids found in runner report — zero experiments submitted"
+        ok_runs = [rid for rid, status in runs if status in cls._RUN_DATA_OK_STATUSES]
+        if not ok_runs:
+            statuses = ", ".join(f"{rid}={status}" for rid, status in runs[:5])
+            return False, f"no run succeeded ({statuses})"
+        return True, ""
+
+    # A Stage 7 hypothesis counts as real confirmatory data only if its
+    # decision is one of these (i.e. an actual statistical test was run).
+    # ``NOT TESTED`` / ``INCONCLUSIVE`` do not clear the gate.
+    _HYPOTHESIS_DECISION_RE = re.compile(
+        r"decision\s*[:=]\s*\**\s*(SUPPORTED|REJECTED|CONFIRMED|NOT[\s_]*TESTED|INCONCLUSIVE)",
+        re.IGNORECASE,
+    )
+    _STAGE7_DATA_DECISIONS = ("supported", "rejected", "confirmed")
+
+    @classmethod
+    def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
+        """Stage 7 passes only if ≥1 hypothesis has a real confirmatory
+        decision (SUPPORTED / REJECTED / CONFIRMED). All-NOT-TESTED →
+        no data → FAIL."""
+        decisions = [
+            m.group(1).lower().replace(" ", "").replace("_", "")
+            for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
+        ]
+        if not decisions:
+            return False, "no hypothesis decision lines found in result analysis"
+        tested = [d for d in decisions if d in cls._STAGE7_DATA_DECISIONS]
+        if not tested:
+            return False, (
+                f"all {len(decisions)} hypotheses NOT TESTED / INCONCLUSIVE — "
+                "no confirmatory data"
+            )
+        return True, ""
 
     def on_runs_wait_timeout(self, wait_seconds: int) -> None:
         """Called by ``run_tracker`` when a project has been parked in
