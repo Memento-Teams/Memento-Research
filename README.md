@@ -1,5 +1,7 @@
 # AutoResearch — OMC Research Lab
 
+> **贡献前必读 / Contributing:** 协作流程(怎么提 issue、谁负责、PR 怎么走、同步飞书)见 **[`TEAM_WORKFLOW.md`](TEAM_WORKFLOW.md)**;代码风格见 [`vibe-coding-guide.md`](vibe-coding-guide.md);agent / PR 的评估标准见 [`AGENT_EVALUATION_DESIGN.md`](AGENT_EVALUATION_DESIGN.md)。
+
 ## Prerequisites
 
 - Repo cloned locally
