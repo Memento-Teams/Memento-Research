@@ -182,7 +182,8 @@ def _iter_active_project_iter_dirs() -> list[tuple[str, str, "Path"]]:
                 continue
             try:
                 state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
-            except (yaml.YAMLError, OSError):
+            except (yaml.YAMLError, OSError) as exc:
+                logger.debug("[run_tracker] failed to read {}: {}", state_file, exc)
                 continue
             if not isinstance(state, dict):
                 continue
@@ -230,7 +231,8 @@ async def poll_active_projects() -> dict[str, int]:
         state_file = iter_dir / "pipeline_state.yaml"
         try:
             state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, OSError):
+        except (yaml.YAMLError, OSError) as exc:
+            logger.debug("[run_tracker] failed to read {}: {}", state_file, exc)
             continue
         if not isinstance(state, dict):
             continue
