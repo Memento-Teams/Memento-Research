@@ -12,6 +12,7 @@ task tree for node management, and WebSocket events for frontend updates.
 from __future__ import annotations
 
 import re
+import time
 import yaml
 from pathlib import Path
 from loguru import logger
@@ -39,6 +40,12 @@ STAGES = [
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
+
+# Result-driven loop (#40): max times the result-reviewer may send the
+# pipeline back to a given earlier stage (4/5/6) before we stop looping and
+# proceed with the best result (written up honestly with its limitations).
+# Per-target so a code-fix loop and a redesign loop don't share a budget.
+MAX_RESULT_LOOPS = 2
 
 # Canonical default employee per stage, sourced from company/hire_list.json.
 # When multiple hired employees share the same skill, the one originating
@@ -396,6 +403,7 @@ def get_or_load_pipeline(project_id: str, project_dir: str) -> "PipelineEngine |
     engine = PipelineEngine(project_id, project_dir, state.get("topic", ""))
     engine.state = state
     engine._ensure_memory_state()
+    engine._ensure_timing_state()
     _active_pipelines[project_id] = engine
     return engine
 
@@ -425,12 +433,17 @@ class PipelineEngine:
             "end_stage": 9,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
-            "phase": "producer",  # producer | producer_b | critic | gate | done | failed
+            "phase": "producer",  # producer | producer_b | producer_b_waiting | producer_b_finalize | critic | gate | done | failed
             "retries": 0,
             "stage_results": {},
             "critic_result": None,
             "active_node_id": None,  # current task node being executed
             "active_employee_id": None,
+            "active_task_started_at": None,
+            "attempt_timing": {
+                "producer_elapsed_seconds": None,
+                "critic_elapsed_seconds": None,
+            },
             "memory_retrievals": {},
             "memory_episodes": {},
             "memory_feedback": {},
@@ -447,12 +460,22 @@ class PipelineEngine:
 
     def _save(self):
         self._ensure_memory_state()
+        self._ensure_timing_state()
         _save_state(self.project_dir, self.state)
 
     def _ensure_memory_state(self):
         self.state.setdefault("memory_retrievals", {})
         self.state.setdefault("memory_episodes", {})
         self.state.setdefault("memory_feedback", {})
+
+    def _ensure_timing_state(self):
+        self.state.setdefault("active_task_started_at", None)
+        timing = self.state.setdefault("attempt_timing", {})
+        if not isinstance(timing, dict):
+            timing = {}
+            self.state["attempt_timing"] = timing
+        timing.setdefault("producer_elapsed_seconds", None)
+        timing.setdefault("critic_elapsed_seconds", None)
 
     def _stage_def(self, stage_id: int = None) -> dict:
         sid = stage_id or self.current_stage
@@ -502,6 +525,7 @@ class PipelineEngine:
 
         self.state["active_node_id"] = node.id
         self.state["active_employee_id"] = employee_id
+        self.state["active_task_started_at"] = time.time()
         self._save()
 
         # Start each pipeline stage with a FRESH Claude conversation. The
@@ -572,6 +596,8 @@ class PipelineEngine:
         passed: bool,
         confidence: float | None,
         outcome: str,
+        producer_elapsed_seconds: float | None = None,
+        critic_elapsed_seconds: float | None = None,
     ) -> str | None:
         self._ensure_memory_state()
         stage_key = str(stage["id"])
@@ -594,6 +620,8 @@ class PipelineEngine:
                 reward=reward,
                 retrieved_memory_ids=retrieved_ids,
                 outcome=outcome,
+                producer_elapsed_seconds=producer_elapsed_seconds,
+                critic_elapsed_seconds=critic_elapsed_seconds,
             )
         except Exception as exc:
             logger.warning("[PIPELINE] Research memory write failed: {}", exc)
@@ -733,6 +761,8 @@ class PipelineEngine:
 
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
+        if self.phase != "critic":
+            self._reset_attempt_timing()
         stage = self._stage_def()
         # Check if user assigned a specific employee to this stage
         assignments = self.state.get("stage_assignments", {})
@@ -960,6 +990,8 @@ class PipelineEngine:
                 passed=True,
                 confidence=None,
                 outcome="auto_pass",
+                producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
             )
             self._on_critic_pass(producer_result)
             return
@@ -1071,6 +1103,57 @@ class PipelineEngine:
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
+    def _dispatch_result_reviewer(self, confidence: float = None):
+        """Result-driven loop (#40): after Stage 7 passes its critic + data
+        gate, ask a reviewer whether the experiment RESULT is scientifically
+        sound — and if not, which earlier stage to loop back to. The reviewer
+        gives the target; the engine executes it.
+
+        Falls back to advancing (normal Stage 7 → 8) if no reviewer employee
+        exists, so the loop is additive and never strands the pipeline.
+        """
+        reviewer_id = _find_employee_by_skill(CRITIC_SKILL)
+        if not reviewer_id:
+            logger.info("[PIPELINE] No reviewer for result-loop; advancing Stage 7 → 8")
+            self._on_critic_pass(self.state["stage_results"].get("7", ""), confidence)
+            return
+
+        loops = self.state.get("result_loops", {}) or {}
+        results = self.state.get("stage_results", {}) or {}
+        stage6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        stage7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        ctx = self._cap_for_critic(
+            f"--- Stage 6 experiment evidence ---\n{stage6}\n\n"
+            f"--- Stage 7 result analysis ---\n{stage7}\n",
+            stage_id=7,
+        )
+        desc = (
+            "Result Review (Stage 7 → routing decision)\n\n"
+            "Stage 7 passed its quality critic. Before writing the paper, judge "
+            "whether the experiment's RESULT is scientifically SOUND and worth "
+            "writing up — not whether the report is well-formatted.\n\n"
+            "Decide ONE of:\n"
+            "  - ADVANCE — the result is sound and supports a real finding; proceed to the paper.\n"
+            "  - REVERT to stage 6 (code) — the numbers look like an implementation bug, "
+            "not science: e.g. accuracy exactly 0% or 100% across all conditions, "
+            "below-random accuracy, extraction yield < 100%, NaN/identical outputs.\n"
+            "  - REVERT to stage 5 (experiment design) — the result is real but the design "
+            "is too weak to conclude: n below the power analysis, confidence intervals too "
+            "wide, missing baseline/control, no variance estimate (single seed).\n"
+            "  - REVERT to stage 4 (methodology) — a conceptual flaw: wrong hypothesis, "
+            "uncontrolled confound, the claim cannot be tested by this design.\n\n"
+            f"Loop budget already used per stage: {loops} (max {MAX_RESULT_LOOPS} each — "
+            "if a target is exhausted, prefer ADVANCE and note the limitation).\n\n"
+            "Output EXACTLY these lines:\n"
+            "Action: ADVANCE | REVERT\n"
+            "Revert to stage: <4|5|6>   (only if REVERT)\n"
+            "Reason: <one paragraph naming the specific metric/design flaw>\n\n"
+            f"{ctx}"
+        )
+        self.state["phase"] = "result_review"
+        self._save()
+        self._dispatch_to_employee(reviewer_id, desc, "Result Review: Stage 7")
+
     # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
     # ≈ 20K tokens, comfortably under the smaller-window critic models
     # (Kimi-K2.6: 262K, MiniMax-M2.7: 128K-ish, Claude-Sonnet: 200K) while
@@ -1106,7 +1189,8 @@ class PipelineEngine:
 
     def on_task_complete(self, employee_id: str, node_id: str, result: str):
         """Called by vessel when a pipeline-managed task completes."""
-        if self.phase in ("producer", "producer_b"):
+        self._record_active_phase_elapsed(self.phase)
+        if self.phase in ("producer", "producer_b", "producer_b_finalize"):
             stage = self._stage_def()
             # Stub-result gate (#60 fix 2): if the producer returned a
             # placeholder like ``"Executed: bash"`` (the agent runtime's
@@ -1132,8 +1216,35 @@ class PipelineEngine:
                         stage["id"], self.phase, len(result or ""), retries + 1, MAX_RETRIES,
                     )
                     self._emit_stage_event("stage_failed", stage["id"])
-                    if self.phase == "producer_b":
-                        self._dispatch_producer_b(feedback=feedback)
+                    if self.phase == "producer_b_finalize":
+                        # Stub during finalize: runs are still terminal, we
+                        # just need a written report. Re-dispatch the same
+                        # finalize task (with feedback prepended), NOT the
+                        # initial submit-and-run path — otherwise the
+                        # runner would try to re-submit completed runs.
+                        self._dispatch_producer_b_finalize()
+                    elif self.phase == "producer_b":
+                        # #20: a 6b-runner stub means the runner couldn't
+                        # produce a usable report — almost always because the
+                        # experiment code/entrypoint is broken (e.g. the
+                        # runnable command in the receipt hits an argparse /
+                        # import error), so the runner thrashes on re-submits
+                        # and runs out of steps. Re-running the SAME runner on
+                        # the SAME broken code just stubs again (observed 3× in
+                        # run 3f644a5996bb → total failure). Route back to 6a to
+                        # rebuild the code; 6a's completion re-dispatches a
+                        # fresh 6b, so a transient runner hiccup also recovers.
+                        rebuild_feedback = (
+                            "Stage 6b runner produced no usable report (stub result), "
+                            "which usually means the experiment could not be run cleanly — "
+                            "e.g. the runnable command in stage6_implementation_receipt.md "
+                            "hits an argparse/import/attribute error, or the entrypoint flags "
+                            "don't match what benchmark.py actually accepts. Re-verify the "
+                            "EXACT runnable entrypoint works (run it locally / dry-run the "
+                            "args), fix any CLI/import mismatch, re-commit, and rewrite the "
+                            "receipt with the corrected command.\n\n" + feedback
+                        )
+                        self._dispatch_producer(feedback=rebuild_feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
                     return
@@ -1245,14 +1356,92 @@ class PipelineEngine:
             self._dispatch_critic(result)
 
         elif self.phase == "producer_b":
-            # Stage 6b runner finished → store as canonical Stage 6 result,
-            # dispatch critic.
+            # Stage 6b runner finished. Two paths from here:
+            #
+            # Fast path (smoke / short experiments): the runner polled all
+            # submitted runs to terminal inside its own task budget. The
+            # report has no `status: still_running` rows → store result,
+            # dispatch critic immediately (matches pre-#93 behavior).
+            #
+            # Long-running path (#93): the runner submitted real
+            # experiments that exceed its agent-task time budget. The
+            # report carries `status: still_running` for one or more
+            # run_ids. Park in ``producer_b_waiting``; the
+            # ``run_tracker`` cron polls infra every 30 s and triggers
+            # ``on_runs_all_terminal`` when every pending run reaches
+            # terminal. Engine then re-dispatches the runner to write
+            # the FINAL report from the now-terminal run data.
             stage = self._stage_def()
             self.state["stage_results"][str(stage["id"])] = result
+            runs = self._parse_runner_report_runs(result)
+            pending = self._pending_run_ids_from(runs)
+            if pending:
+                from datetime import datetime, timezone
+                self.state["phase"] = "producer_b_waiting"
+                self.state["pending_run_ids"] = pending
+                self.state["pending_waiting_started_at"] = datetime.now(timezone.utc).isoformat()
+                self._save()
+                logger.info(
+                    "[PIPELINE] Stage 6b parked in producer_b_waiting: {} run_ids still active "
+                    "({}). run_tracker will fire on_runs_all_terminal when all reach terminal.",
+                    len(pending), ", ".join(pending[:5]) + ("..." if len(pending) > 5 else ""),
+                )
+                self._emit_stage_event("stage_waiting", stage["id"])
+                # Edge case: run_tracker already updated stage_6_runs before
+                # we got here (e.g. the runner's report was stale by the time
+                # the engine processed it). Check now so we don't wait
+                # uselessly for a poll cycle that has nothing left to do.
+                if self._all_pending_terminal(pending, self.state.get("stage_6_runs", {}) or {}):
+                    self.on_runs_all_terminal()
+                return
             self._save()
             logger.info("[PIPELINE] Stage 6b (runner) complete, dispatching critic")
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
+
+        elif self.phase == "producer_b_finalize":
+            # Finalization re-dispatch (after producer_b_waiting). The
+            # runner has re-read the now-terminal run metrics and produced
+            # the FINAL stage6_experimentalist.md. Clean up the pending-run
+            # bookkeeping and proceed to critic.
+            stage = self._stage_def()
+            self.state["stage_results"][str(stage["id"])] = result
+            self.state.pop("pending_run_ids", None)
+            self.state.pop("pending_waiting_started_at", None)
+            self._save()
+            logger.info("[PIPELINE] Stage 6b finalize complete, dispatching critic")
+            self._emit_stage_event("stage_reviewing", stage["id"])
+            self._dispatch_critic(result)
+
+        elif self.phase == "result_review":
+            # Result-driven loop (#40). The result-reviewer judged whether the
+            # Stage 7 RESULT (not its report) is scientifically sound and, if
+            # not, named the stage to loop back to (4 methodology / 5 design /
+            # 6 code). Route on its verdict; the LLM gives the target, the
+            # engine executes it (reusing revert_to_stage).
+            self.state["result_review_result"] = result
+            action, target, reason = self._parse_result_route(result)
+            if action == "revert" and target is not None:
+                loops = self.state.setdefault("result_loops", {})
+                used = int(loops.get(str(target), 0))
+                if used < MAX_RESULT_LOOPS:
+                    loops[str(target)] = used + 1
+                    self._save()
+                    logger.warning(
+                        "[PIPELINE] Result-loop: reverting to stage {} ({}/{}). Reason: {}",
+                        target, used + 1, MAX_RESULT_LOOPS, reason[:200],
+                    )
+                    self._schedule_result_revert(target, reason)
+                    return
+                logger.warning(
+                    "[PIPELINE] Result-loop budget for stage {} exhausted ({}x) — "
+                    "proceeding to paper with documented limitation. Reason: {}",
+                    target, MAX_RESULT_LOOPS, reason[:200],
+                )
+            # ADVANCE, or revert-budget exhausted → proceed to Stage 8 as if
+            # Stage 7 passed normally (the analysis is already stored).
+            stage7_result = (self.state.get("stage_results") or {}).get("7", result)
+            self._on_critic_pass(stage7_result, confidence=None)
 
         elif self.phase == "critic":
             # Critic finished → parse decision
@@ -1262,6 +1451,54 @@ class PipelineEngine:
             confidence = self._parse_confidence(result)
 
             stage = self._stage_def()
+
+            # #27 Hard data gate: a deterministic check that runs even when
+            # the critic voted PASS, and overrides it. The critic grades
+            # report *quality*; this gate verifies *real data exists* in the
+            # upstream artifact. The LLM cannot vote its way past it. Closes
+            # the #96/#94 failure mode where every critic accepted an honest
+            # "I couldn't run / NOT TESTED" report and the empty stage
+            # advanced to an INCONCLUSIVE paper.
+            if is_pass:
+                # Gate the PRODUCER's deliverable, not the critic's verdict
+                # text — the data lives in the stage's own report. Prefer the
+                # on-disk stage{N}_{skill}.md (the canonical evidence) over the
+                # stored submit_result, which is often a prose summary that
+                # points at the file without carrying parseable run/hypothesis
+                # lines (regression caught by the 4→9 e2e).
+                stored = (self.state.get("stage_results") or {}).get(str(stage["id"]), "")
+                producer_deliverable = self._read_stage_deliverable(stage["id"], fallback=stored)
+                if stage["id"] == 9:
+                    # Stage 9 is terminal: it can't be blocked/retried like
+                    # 6/7/8. When the pipeline has no real data, clamp an
+                    # acceptance-class verdict to MAJOR REVISION instead of
+                    # letting an unearned ACCEPT stand (#94). The stage still
+                    # "passes" (the review itself is valid) — only the verdict
+                    # is bounded by the existence of results.
+                    if not self._pipeline_has_real_data():
+                        clamped, changed = self._clamp_review_verdict(producer_deliverable)
+                        if changed:
+                            logger.warning(
+                                "[PIPELINE] Stage 9 verdict clamped to MAJOR REVISION "
+                                "— pipeline has no experimental data (#94)"
+                            )
+                            self.state["stage_results"]["9"] = clamped
+                            self._save()
+                else:
+                    data_ok, gate_reason = self._stage_data_gate(stage["id"], producer_deliverable)
+                    if not data_ok:
+                        logger.warning(
+                            "[PIPELINE] Stage {} data-gate FAIL despite critic PASS: {}",
+                            stage["id"], gate_reason,
+                        )
+                        is_pass = False
+                        result = (
+                            f"DATA_GATE_FAIL: {gate_reason}\n\n"
+                            "The deliverable was graded PASS for quality but contains no "
+                            "real experimental data, so the stage cannot advance. Produce "
+                            "a deliverable backed by actual run data.\n\n"
+                            f"--- original critic verdict ---\n{result}"
+                        )
 
             # Emit critic result to frontend so it shows in the stage card
             self._emit_critic_result(stage["id"], result, is_pass, confidence)
@@ -1274,10 +1511,20 @@ class PipelineEngine:
                     passed=True,
                     confidence=confidence,
                     outcome="critic_pass",
+                    producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                    critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                 )
                 self._save()
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
-                self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
+                # Result-driven loop (#40): when Stage 7 (Result Analysis)
+                # passes its critic + data gate, don't advance straight to the
+                # paper. First ask the result-reviewer whether the RESULT is
+                # scientifically sound; it may route back to 4/5/6. Only Stage
+                # 7 triggers this (it's where real metrics first exist).
+                if stage["id"] == 7:
+                    self._dispatch_result_reviewer(confidence)
+                else:
+                    self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
                 retries = self.state.get("retries", 0)
                 if retries < MAX_RETRIES:
@@ -1288,11 +1535,14 @@ class PipelineEngine:
                         passed=False,
                         confidence=confidence,
                         outcome="critic_reject_retry",
+                        producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                        critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                     )
                     self.state["retries"] = retries + 1
                     self._save()
                     logger.info("[PIPELINE] Stage {} REJECTED (retry {}/{})", stage["id"], retries + 1, MAX_RETRIES)
                     self._emit_stage_event("stage_failed", stage["id"], confidence=confidence)
+                    self._reset_attempt_timing()
                     self._dispatch_producer(feedback=result)
                 else:
                     self._record_stage_memory(
@@ -1302,6 +1552,8 @@ class PipelineEngine:
                         passed=False,
                         confidence=confidence,
                         outcome="critic_reject_exhausted",
+                        producer_elapsed_seconds=self.state.get("attempt_timing", {}).get("producer_elapsed_seconds"),
+                        critic_elapsed_seconds=self.state.get("attempt_timing", {}).get("critic_elapsed_seconds"),
                     )
                     logger.warning("[PIPELINE] Stage {} exhausted retries, holding for CEO", stage["id"])
                     self.state["phase"] = "gate"
@@ -1329,6 +1581,7 @@ class PipelineEngine:
         first-completed stage anchor for an EA orchestrator and declare
         the project complete.
         """
+        self._record_active_phase_elapsed(self.phase)
         stage = self._stage_def()
         current_phase = self.phase
 
@@ -1341,8 +1594,10 @@ class PipelineEngine:
             self._on_critic_pass(stored, confidence=None)
             return
 
-        if current_phase not in ("producer", "producer_b"):
-            # Should not happen — gate/done/failed phases mean no task is in flight.
+        if current_phase not in ("producer", "producer_b", "producer_b_finalize"):
+            # Should not happen — gate/done/failed/waiting phases mean no
+            # task is in flight (the waiter is driven by run_tracker, not
+            # by a dispatched LLM task).
             logger.warning(
                 "[PIPELINE] on_task_failed called in unexpected phase {} (stage {}); ignoring",
                 current_phase, stage["id"],
@@ -1350,10 +1605,16 @@ class PipelineEngine:
             return
 
         truncated = (result or "(no output)").strip()[:600]
-        # Differentiate 6a vs 6b failures so the retry feedback names the
-        # right sub-phase. A 6b failure (runner) does not retry 6a — the
-        # code is already on disk; only the runner pass is re-tried.
-        if current_phase == "producer_b":
+        # Differentiate 6a vs 6b vs 6b-finalize failures so the retry
+        # feedback + re-dispatch target the right sub-phase.
+        if current_phase == "producer_b_finalize":
+            failure_feedback = (
+                f"Stage 6b FINAL REPORT task failed without producing a deliverable. "
+                f"The submitted runs already reached terminal status — just "
+                f"re-fetch each run_id's evidence via fast_query_exp_status.sh "
+                f"and write the report. Failure context:\n{truncated}"
+            )
+        elif current_phase == "producer_b":
             failure_feedback = (
                 f"Stage 6b runner failed without producing a deliverable. "
                 f"Failure context:\n{truncated}"
@@ -1373,7 +1634,12 @@ class PipelineEngine:
                 stage["id"], current_phase, retries + 1, MAX_RETRIES,
             )
             self._emit_stage_event("stage_failed", stage["id"])
-            if current_phase == "producer_b":
+            if current_phase == "producer_b_finalize":
+                # Finalize failure → re-dispatch the same finalize task,
+                # NOT the initial submit-and-run task. Runs are terminal;
+                # we just need the report.
+                self._dispatch_producer_b_finalize()
+            elif current_phase == "producer_b":
                 self._dispatch_producer_b(feedback=failure_feedback)
             else:
                 self._dispatch_producer(feedback=failure_feedback)
@@ -1476,6 +1742,43 @@ class PipelineEngine:
     # Public API — revert to a previous stage with new instructions
     # ------------------------------------------------------------------
 
+    def _schedule_result_revert(self, stage: int, reason: str) -> None:
+        """Schedule an async ``revert_to_stage`` from the (sync) result-review
+        completion handler. The reviewer's reason becomes the producer's
+        instructions so the re-run targets exactly what was unsound.
+
+        Mirrors how ``_emit_gate_event`` schedules ``_auto_approve_gate`` —
+        we're inside a sync vessel callback with a running loop.
+        """
+        import asyncio
+        instructions = (
+            f"[Result-driven loop] The experiment result was judged unsound; "
+            f"this stage is being re-run to fix it. Reviewer's reason:\n{reason}"
+        )
+
+        async def _do_revert():
+            try:
+                await self.revert_to_stage(stage=stage, instructions=instructions)
+            except Exception as exc:  # noqa: BLE001 — never crash the callback
+                logger.warning(
+                    "[PIPELINE] result-loop revert_to_stage({}) failed: {} — "
+                    "advancing instead", stage, exc,
+                )
+                self._on_critic_pass(
+                    (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_revert())
+        except RuntimeError:
+            # No running loop (sync test / off-loop) — fall back to advancing
+            # so we never strand the pipeline. Tests stub this method out.
+            logger.debug("[PIPELINE] no running loop for result revert; advancing")
+            self._on_critic_pass(
+                (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+            )
+
     async def revert_to_stage(
         self, *, stage: int, instructions: str, branch_name: str | None = None,
     ) -> str:
@@ -1527,7 +1830,9 @@ class PipelineEngine:
         # workspace; ``discard_uncommitted_changes`` below scrubs that so
         # ``checkout_branch_from_stage``'s DirtyWorkspaceError guard
         # passes.
-        was_mid_flight = self.phase in ("producer", "producer_b", "critic")
+        was_mid_flight = self.phase in (
+            "producer", "producer_b", "producer_b_waiting", "producer_b_finalize", "critic",
+        )
         if was_mid_flight:
             await self._cancel_active_task_and_wait()
 
@@ -1658,57 +1963,591 @@ class PipelineEngine:
             return True
         return False
 
-    def _parse_critic_pass(self, result: str) -> bool:
-        """Parse the critic's PASS/REJECT verdict.
+    # ------------------------------------------------------------------
+    # Stage 6b long-running waiter (#93, #97)
+    # ------------------------------------------------------------------
 
-        Robustness improvements (#60 fix 4 / #63 fix 4):
-        - If the critic's ``submit_result`` was a stub (e.g. ``"Executed: bash"``
-          from a context-window-truncated review), fall back to reading the
-          on-disk ``stage{N}_gate_review.md`` the critic was told to write.
-        - Support table-format verdicts (``| Decision | PASS |``) as well as
-          the conversational ``"Decision: PASS"`` form.
-        - Default to REJECT on ambiguity (no PASS, no REJECT signal). The old
-          default-to-PASS branch was the auto-approve-empty-stage loophole.
+    # Status tokens emitted by the experiment-execution-runbook. Terminal
+    # means the run has a final outcome and the engine can advance to the
+    # critic; pending means the run is still active on infra and the engine
+    # should park itself in ``producer_b_waiting`` until run_tracker flips
+    # all pending runs to terminal.
+    _RUN_TERMINAL_STATUSES = ("succeeded", "failed", "rejected", "blocked", "cancelled")
+    _RUN_PENDING_STATUSES = ("running", "still_running", "queued", "pending", "submitted")
+
+    _RUN_ID_RE = re.compile(
+        # Tolerates Markdown decorations: ``run_id:``, ``**run_id**:``,
+        # ``- **run_id**: `run_x```, etc. The ``\W*?`` between ``id`` and
+        # the colon absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
+        # after the colon absorbs leading quote / backtick wrappers.
+        r"run[_\s-]*id\b\W*?[:=]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
+        re.IGNORECASE,
+    )
+    _STATUS_LINE_RE = re.compile(
+        # Tolerates plain ``status:`` AND decorated ``- **status**:`` forms.
+        # ``\W*?`` (lazy non-word chars) absorbs optional Markdown bold/italic
+        # markers without requiring them.
+        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=]\s*[`'\"*]*([a-z_\-]+)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    # Info-strings whose fenced contents are known to embed a synthetic
+    # ``run_id`` field (script seed-tag, not an infra job id). Only fences
+    # with these info-strings get blanked — leaving the rest of the
+    # report's content intact handles whole-report outer fences, unbalanced
+    # fences, and other arbitrary code blocks gracefully.
+    _FENCE_INFO_STRINGS_TO_STRIP = ("json", "result_json", "json5", "jsonc")
+
+    @classmethod
+    def _strip_fenced_code_blocks(cls, text: str) -> str:
+        """Replace the content of JSON-ish fenced code blocks with
+        whitespace, preserving character offsets so other regexes still
+        align with the original document positions.
+
+        Stage 6b reports embed RESULT_JSON inside a `````json`` block,
+        and that JSON often has its own ``\"run_id\": \"smoke_seed42\"`` field
+        — the script's internal seed-tag, NOT an infra run_id the engine
+        should wait on. Targeting only ``json`` / ``RESULT_JSON``
+        info-strings eliminates that false-positive class without blanking
+        arbitrary unrelated fences (e.g. a wholedocument outer fence, a
+        ``bash`` code example, an unbalanced fence that would otherwise
+        consume the rest of the document — all real cases that would
+        wipe legitimate ``- run_id: ...`` entries and silently regress
+        into the #93 \"critic dispatched on no runs\" behavior).
         """
-        text = result or ""
-        # Stub → reach for the gate-review file on disk.
-        if self._is_stub_result(text):
-            stage_id = self.current_stage
-            gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
-            if gate_review.exists():
-                try:
-                    text = gate_review.read_text(encoding="utf-8")
-                    logger.info(
-                        "[PIPELINE] Critic submit_result was a stub — falling back to {} ({} bytes)",
-                        gate_review.name, len(text),
-                    )
-                except OSError as exc:
-                    logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
-                    text = result  # restore original
+        if "```" not in text:
+            return text
+        out = []
+        in_strippable_fence = False
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if stripped.startswith("```"):
+                if in_strippable_fence:
+                    # Closing the strippable fence.
+                    in_strippable_fence = False
+                else:
+                    # Opening: check the info-string (text after ```).
+                    info = stripped[3:].strip().lower()
+                    # Strip ``json``, ``RESULT_JSON``, etc.; leave bash,
+                    # python, plain ```, etc. alone.
+                    if info in cls._FENCE_INFO_STRINGS_TO_STRIP or info.startswith("result_json"):
+                        in_strippable_fence = True
+                out.append(line)  # keep the fence delimiter either way
+                continue
+            if in_strippable_fence:
+                # Blank out the line but preserve its length so character
+                # offsets stay valid for the original document.
+                out.append(" " * (len(line) - 1) + ("\n" if line.endswith("\n") else ""))
             else:
-                logger.warning(
-                    "[PIPELINE] Critic submit_result is a stub and no {} file found on disk — defaulting to REJECT",
-                    gate_review.name,
-                )
+                out.append(line)
+        return "".join(out)
 
+    @classmethod
+    def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
+        """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
+
+        Walks the report top-to-bottom and pairs each ``run_id:`` line with
+        the next ``status:`` line that follows it within the same run-block.
+        Tolerates the various Markdown decorations the runner uses (e.g.
+        backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
+
+        Filters fenced code blocks first so the RESULT_JSON's internal
+        ``run_id`` (the script's seed tag, not an infra job id) is not
+        confused with a real infra run_id.
+
+        Returns ``[]`` if no run_ids are found — caller treats this as "no
+        runs to wait on" (e.g. budget BLOCKED report with no submitted runs).
+        """
+        if not report:
+            return []
+        scan_text = cls._strip_fenced_code_blocks(report)
+        run_id_hits = [
+            (m.start(), m.group(1))
+            for m in cls._RUN_ID_RE.finditer(scan_text)
+            if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
+        ]
+        status_hits = [
+            (m.start(), m.group(1).lower())
+            for m in cls._STATUS_LINE_RE.finditer(scan_text)
+        ]
+        if not run_id_hits:
+            return []
+        # Bind each run_id to a status that lives **within its block** —
+        # the block is bounded by this run_id's offset on the low side and
+        # the NEXT run_id's offset (or end-of-document) on the high side.
+        # Fail-closed: a run_id with no status in its block is paired with
+        # ``"unknown"``, which the fail-safe ``_runs_have_pending`` will
+        # then treat as pending (engine keeps waiting rather than silently
+        # firing the critic on an unverified run).
+        seen: set[str] = set()
+        out: list[tuple[str, str]] = []
+        for i, (offset, rid) in enumerate(run_id_hits):
+            if rid in seen:
+                continue
+            seen.add(rid)
+            block_end = run_id_hits[i + 1][0] if i + 1 < len(run_id_hits) else len(scan_text)
+            paired_status = "unknown"  # fail-closed default
+            for s_off, s_val in status_hits:
+                if offset < s_off < block_end:
+                    paired_status = s_val
+                    break
+            out.append((rid, paired_status))
+        return out
+
+    @classmethod
+    def _runs_have_pending(cls, runs: list[tuple[str, str]]) -> bool:
+        """True iff any run in the report is still in a non-terminal state.
+
+        **Fail-safe semantics**: a status is considered pending unless it
+        appears in ``_RUN_TERMINAL_STATUSES``. An unknown / free-form
+        status the LLM phrased differently (e.g. ``in_progress``,
+        ``executing``, ``submitted``) is treated as pending so the engine
+        keeps waiting rather than dispatching the critic on a possibly
+        still-running experiment (#93 regression class).
+        """
+        return any(status not in cls._RUN_TERMINAL_STATUSES for _rid, status in runs)
+
+    @classmethod
+    def _pending_run_ids_from(cls, runs: list[tuple[str, str]]) -> list[str]:
+        """Same fail-safe semantics as ``_runs_have_pending``: a run_id is
+        considered pending unless its status is explicitly terminal."""
+        return [rid for rid, status in runs if status not in cls._RUN_TERMINAL_STATUSES]
+
+    @classmethod
+    def _all_pending_terminal(cls, pending_run_ids: list[str], stage_6_runs: dict) -> bool:
+        """True iff every entry in ``pending_run_ids`` has a terminal status
+        on the engine's ``stage_6_runs`` map. Empty pending list is treated
+        as "already done" so callers can fall through cleanly.
+        """
+        if not pending_run_ids:
+            return True
+        if not isinstance(stage_6_runs, dict):
+            return False
+        for rid in pending_run_ids:
+            entry = stage_6_runs.get(rid)
+            if not isinstance(entry, dict):
+                return False
+            if entry.get("status") not in cls._RUN_TERMINAL_STATUSES:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # #27 Hard data gate — deterministic post-critic data-existence check
+    # ------------------------------------------------------------------
+    # Runs AFTER the critic votes PASS and can override it. The critic
+    # grades report *quality*; this gate checks *real data exists*. The
+    # LLM cannot vote its way past it (closes #96 A+C, #94).
+
+    # A Stage 6 run only counts as real data if it actually finished.
+    _RUN_DATA_OK_STATUSES = ("succeeded", "partial_success")
+
+    @classmethod
+    def _data_gate(cls, stage_id: int, result: str) -> tuple[bool, str]:
+        """Deterministic check that a stage's own deliverable (``result``)
+        contains real experimental data. Pure / classmethod — depends only
+        on the report text. Returns ``(ok, reason)``. ``ok=True`` for any
+        stage without an own-result rule (1-5), so the gate is a no-op there.
+        """
+        if stage_id == 6:
+            return cls._data_gate_stage6(result)
+        if stage_id == 7:
+            return cls._data_gate_stage7(result)
+        return True, ""
+
+    def _read_stage_deliverable(self, stage_id: int, fallback: str = "") -> str:
+        """Return the canonical on-disk deliverable for a stage, falling back
+        to ``fallback`` (usually the stored ``stage_results`` entry).
+
+        The producer's ``submit_result`` is often a prose *summary* that
+        points at the file ("see stage6_experimentalist.md") and does not
+        itself carry the machine-parseable evidence (run_id/status lines,
+        hypothesis decisions). The real artifact is the ``stage{N}_{skill}.md``
+        file the producer wrote. The data gate must inspect that file, not
+        the summary — otherwise it gates the wrong text. Mirrors the existing
+        Stage 3 file-content fallback.
+        """
+        try:
+            stage_def = self._stage_def(stage_id)
+            path = Path(self.project_dir) / f"stage{stage_id}_{stage_def.get('skill', '')}.md"
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except (OSError, ValueError) as exc:
+            logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
+        return fallback
+
+    def _stage_data_gate(self, stage_id: int, result: str) -> tuple[bool, str]:
+        """Instance-level gate orchestration used by ``on_task_complete``.
+
+        Delegates to the pure ``_data_gate`` for stages whose rule depends
+        only on their own ``result`` (6, 7). Stage 8 has no own-result rule
+        but requires the UPSTREAM Stage 7 artifact to have carried real data
+        — otherwise the paper-writer is writing about nothing. We enforce
+        that by re-running the Stage 7 gate against the stored Stage 7
+        result (#96 Failure C).
+        """
+        ok, reason = self._data_gate(stage_id, result)
+        if not ok:
+            return ok, reason
+        if stage_id == 8:
+            stage7 = self._read_stage_deliverable(7, fallback=(self.state.get("stage_results") or {}).get("7", ""))
+            s7_ok, s7_reason = self._data_gate_stage7(stage7)
+            if not s7_ok:
+                return False, f"upstream Stage 7 has no confirmatory data ({s7_reason})"
+        return True, ""
+
+    def _pipeline_has_real_data(self) -> bool:
+        """True iff the pipeline actually produced experimental data:
+        Stage 6 had ≥1 succeeded run AND Stage 7 had ≥1 tested hypothesis.
+        Reads the on-disk deliverables (canonical evidence), not the
+        submit_result summaries. Used by the Stage 9 verdict clamp (#94)."""
+        results = self.state.get("stage_results") or {}
+        s6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        s7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        s6_ok, _ = self._data_gate_stage6(s6)
+        s7_ok, _ = self._data_gate_stage7(s7)
+        return s6_ok and s7_ok
+
+    # Stage 9 review verdicts that imply the paper is acceptable. When no
+    # experimental data exists, none of these may stand — clamp to
+    # MAJOR REVISION. REJECT / MAJOR REVISION are already non-acceptance,
+    # so they pass through unchanged.
+    _ACCEPTANCE_VERDICT_RE = re.compile(
+        r"((?:verdict|recommendation|decision)\s*[:=]\s*\**\s*)"
+        r"(weak\s+accept|accept|minor\s+revision)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _clamp_review_verdict(cls, review_text: str) -> tuple[str, bool]:
+        """Rewrite an acceptance-class verdict to MAJOR REVISION. Returns
+        ``(new_text, changed)``. Idempotent: if no acceptance verdict is
+        present (already REJECT / MAJOR REVISION / not found), returns the
+        text unchanged with ``changed=False``."""
+        if not review_text:
+            return review_text, False
+        m = cls._ACCEPTANCE_VERDICT_RE.search(review_text)
+        if not m:
+            return review_text, False
+        new_text = cls._ACCEPTANCE_VERDICT_RE.sub(
+            lambda mm: f"{mm.group(1)}MAJOR REVISION", review_text, count=1
+        )
+        new_text += (
+            "\n\n> [engine data-gate clamp] Verdict downgraded to MAJOR REVISION: "
+            "the pipeline produced no real experimental data (no succeeded Stage 6 "
+            "run / no tested Stage 7 hypothesis), so the paper cannot be accepted "
+            "regardless of presentation quality (#94)."
+        )
+        return new_text, True
+
+    @classmethod
+    def _data_gate_stage6(cls, result: str) -> tuple[bool, str]:
+        """Stage 6 passes only if ≥1 submitted run reached a data-bearing
+        terminal status (succeeded / partial_success)."""
+        runs = cls._parse_runner_report_runs(result)
+        if not runs:
+            return False, "no run_ids found in runner report — zero experiments submitted"
+        ok_runs = [rid for rid, status in runs if status in cls._RUN_DATA_OK_STATUSES]
+        if not ok_runs:
+            statuses = ", ".join(f"{rid}={status}" for rid, status in runs[:5])
+            return False, f"no run succeeded ({statuses})"
+        return True, ""
+
+    # Capture the value after a ``Decision:`` / ``Verdict:`` label (the
+    # leading word(s), e.g. "NOT SUPPORTED", "PASS", "NOT TESTED",
+    # "INCONCLUSIVE_DUE_TO_COVERAGE"). ``[\w ]+`` grabs word chars + spaces;
+    # it stops at a dash / period / digit-start, which is where the
+    # explanatory clause begins.
+    _HYPOTHESIS_DECISION_RE = re.compile(
+        r"(?:decision|verdict)\b\W*?[:：]\s*\*{0,2}\s*([A-Za-z][\w ]*)",
+        re.IGNORECASE,
+    )
+    # Decisions that mean "the experiment did NOT produce data for this
+    # hypothesis". Everything else (SUPPORTED, NOT SUPPORTED, REJECTED,
+    # CONFIRMED, PASS, FAIL, INCONCLUSIVE, …) means a test actually ran —
+    # including null results, which ARE data. Normalised: upper, underscores
+    # and runs of spaces collapsed to single spaces.
+    _STAGE7_NO_DATA_DECISIONS = (
+        "NOT TESTED",
+        "INCONCLUSIVE DUE TO COVERAGE",
+        "BLOCKED",
+        "NO DATA",
+    )
+
+    @staticmethod
+    def _normalise_decision(raw: str) -> str:
+        return re.sub(r"[\s_]+", " ", raw).strip().upper()
+
+    @classmethod
+    def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
+        """Stage 7 passes if ≥1 hypothesis/check has a decision indicating a
+        test actually ran. The gate blocks "no experiment ran" (every
+        decision is NOT TESTED / INCONCLUSIVE_DUE_TO_COVERAGE / BLOCKED), NOT
+        "effect not found" — a ``NOT SUPPORTED`` / null result IS data and
+        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e)."""
+        decisions = [
+            cls._normalise_decision(m.group(1))
+            for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
+        ]
+        if not decisions:
+            return False, "no hypothesis/check decision lines found in result analysis"
+        tested = [d for d in decisions if d not in cls._STAGE7_NO_DATA_DECISIONS]
+        if not tested:
+            return False, (
+                f"all {len(decisions)} decisions are no-data markers "
+                f"({', '.join(sorted(set(decisions)))}) — no experiment ran"
+            )
+        return True, ""
+
+    def on_runs_wait_timeout(self, wait_seconds: int) -> None:
+        """Called by ``run_tracker`` when a project has been parked in
+        ``producer_b_waiting`` past the configured max-wait deadline
+        without all pending runs reaching terminal status.
+
+        Treat it as a producer failure so the existing exhausted-retries
+        path opens a CEO gate (or, under auto_approve, marks the pipeline
+        failed via the #106 fix). The on-disk ``pending_run_ids`` are
+        preserved for forensics — the CEO can read which runs were
+        still active when the deadline tripped.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.warning(
+            "[PIPELINE] Stage 6b max-wait timeout ({}s) — {} pending runs still active. "
+            "Marking pipeline failed; CEO can inspect pending_run_ids for forensics.",
+            wait_seconds, len(pending),
+        )
+        stage = self._stage_def()
+        self.state["phase"] = "gate"
+        self.state["failure_reason"] = f"stage_6_waiting_timeout_{wait_seconds}s"
+        self._save()
+        # Same gate-open path the rest of the engine uses on exhaustion.
+        # Under auto_approve, #106's _auto_approve_gate flips this to
+        # phase=failed; under interactive mode, the CEO sees an exhausted
+        # gate with a failure_reason explaining the timeout.
+        self._emit_gate_event(stage["id"], confidence=None, exhausted=True)
+
+    def on_runs_all_terminal(self) -> None:
+        """Called by ``run_tracker`` (or self-checked on each tick) when every
+        ``pending_run_ids`` entry on this engine has reached a terminal status
+        in ``stage_6_runs``.
+
+        Transitions the engine out of ``producer_b_waiting`` by re-dispatching
+        the runner with a "your runs finished — write the FINAL report"
+        instruction. The runner re-fetches log_tails + metrics via the
+        infra status endpoint and produces a complete experimentalist
+        report, which then flows to the critic via the normal path.
+
+        Idempotent: only acts when ``phase == "producer_b_waiting"``.
+        """
+        if self.phase != "producer_b_waiting":
+            return
+        pending = self.state.get("pending_run_ids") or []
+        logger.info(
+            "[PIPELINE] Stage 6b waiting → finalize: {} run_ids now terminal",
+            len(pending),
+        )
+        self.state["phase"] = "producer_b_finalize"
+        self._save()
+        self._dispatch_producer_b_finalize()
+
+    def _dispatch_producer_b_finalize(self) -> None:
+        """Re-dispatch the experiment runner to write the FINAL Stage 6b
+        report now that all submitted runs have reached terminal status.
+
+        Uses the same employee + skill as the initial 6b dispatch; the
+        runbook reads the ``pending_run_ids`` (carried via task description)
+        and fetches each run's final metrics via ``fast_query_exp_status.sh``.
+        """
+        stage = self._stage_def()
+        if stage["id"] != 6:
+            logger.error(
+                "[PIPELINE] _dispatch_producer_b_finalize called for non-Stage-6 stage {}",
+                stage["id"],
+            )
+            return
+        employee_id = _find_stage_6b_employee()
+        if not employee_id:
+            logger.error("[PIPELINE] No experiment_runner employee for Stage 6b finalize")
+            self.state["phase"] = "failed"
+            self._save()
+            return
+
+        pending = self.state.get("pending_run_ids") or []
+        stage_6_runs = self.state.get("stage_6_runs", {}) or {}
+        digest_lines = []
+        for rid in pending:
+            entry = stage_6_runs.get(rid, {}) if isinstance(stage_6_runs, dict) else {}
+            digest_lines.append(
+                f"  - {rid}: status={entry.get('status','?')} "
+                f"cost={entry.get('actual_cost','?')} "
+                f"finished_at={entry.get('finished_at','?')}"
+            )
+        digest = "\n".join(digest_lines) if digest_lines else "  (no pending run_ids recorded)"
+
+        desc = (
+            "Stage 6b: FINAL REPORT (runs are now terminal)\n\n"
+            "You previously submitted experiments to remote infra and exited "
+            "early so the engine could wait for them. All your runs have now "
+            "reached terminal status. Read each run's final evidence and "
+            "write the FINAL stage6_experimentalist.md.\n\n"
+            f"Pending run_ids (now terminal, snapshot from run_tracker):\n{digest}\n\n"
+        )
+        user_feedback = self._consume_pending_feedback()
+        if user_feedback:
+            desc += (
+                f"Direct guidance from CEO (received during the waiting "
+                f"window — apply this when writing the report):\n{user_feedback}\n\n"
+            )
+        desc += (
+            "## REQUIRED FIRST STEP\n"
+            'Call load_skill("experiment-execution-runbook") and jump to '
+            "Step 3 (write the report). For each run_id above, run "
+            "`fast_query_exp_status.sh <run_id>` ONCE to capture the final "
+            "log_tail / actual_cost / metrics, then write the canonical "
+            "stage6_experimentalist.md. Do NOT re-submit; the runs are done.\n\n"
+            "After writing the file, call submit_result() referencing it."
+        )
+
+        self._dispatch_to_employee(employee_id, desc, "Stage 6b: Final Report")
+        emp_name = employee_id
+        configs = load_employee_configs()
+        if employee_id in configs:
+            emp_name = configs[employee_id].name
+        self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
+
+    # A verdict is only recognised from a LABELED / structured signal — never
+    # an incidental occurrence of "pass"/"reject" (e.g. the rubric header
+    # "Auto-REJECT trigger check", or a per-dimension "| D10 | … | PASS |"
+    # row). #19 facet 2: a stray "Auto-REJECT" in an otherwise-PASS review
+    # was flipping the verdict to REJECT and killing a healthy stage.
+    _VERDICT_LABEL_RE = re.compile(
+        r"(?:decision|verdict|recommendation|gate\s+review[^\n:：—–-]*)"
+        r"\s*[:：—–-]\s*\*{0,2}\s*(PASS|REJECT)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _verdict_from_text(cls, text: str) -> bool | None:
+        """Extract PASS (True) / REJECT (False) / ambiguous (None) from a
+        critic text blob, using only LABELED/structured signals:
+        - table ``| Decision | PASS |`` (markdown emphasis stripped),
+        - labeled ``Decision: PASS`` / ``Verdict: REJECT`` /
+          ``Gate Review Complete — PASS``,
+        - a leading conversational ``PASS: …`` / ``REJECT: …``.
+
+        A bare mention of "pass"/"reject" elsewhere does NOT count — that
+        was the #19 false-verdict source (e.g. "Auto-REJECT trigger check")."""
+        if not text:
+            return None
         upper = text.upper()
-        # Explicit table-format ``| Decision | PASS |`` and ``| **Decision** | **PASS** |``
-        # — strip markdown emphasis before checking.
+        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
         compact = re.sub(r"[\s|*_]+", " ", upper)
         if " DECISION PASS " in compact:
             return True
         if " DECISION REJECT " in compact:
             return False
-        # Conversational form: prefer the FIRST explicit signal.
-        if "REJECT" in upper:
-            return False
-        if "PASS" in upper:
+        # Labeled verdict anywhere in the text.
+        m = cls._VERDICT_LABEL_RE.search(text)
+        if m:
+            return m.group(1).upper() == "PASS"
+        # Leading conversational verdict (``pass: …`` / ``reject: …``).
+        head = text.lstrip().lstrip("*# ").upper()
+        if head.startswith("PASS"):
             return True
-        # Ambiguous → safer default is REJECT (auto-pass on empty stages was
-        # the #63 / #60 root cause).
+        if head.startswith("REJECT"):
+            return False
+        return None
+
+    # Result-driven loop (#40): the result-reviewer routes the pipeline back
+    # to an earlier stage when the experiment's RESULT (not its report) is
+    # unsound. Only these stages are valid revert targets:
+    #   4 = methodology (conceptual: wrong hypothesis / missing control)
+    #   5 = experiment design (scale: n / seeds / power / baselines)
+    #   6 = code (implementation: extraction broken, 0%/NaN, etc.)
+    _RESULT_LOOP_TARGETS = (4, 5, 6)
+    _RESULT_REVERT_RE = re.compile(
+        r"revert[\s_-]*to[\s_-]*stage\b\W*?[:=|]\s*\*{0,2}\s*([4-6])",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_result_route(cls, text: str) -> tuple[str, "int | None", str]:
+        """Parse the result-reviewer's routing verdict.
+
+        Returns ``(action, target_stage, reason)``:
+        - ``("advance", None, reason)`` — result is sound, proceed to Stage 8.
+        - ``("revert", N, reason)`` — N ∈ {4,5,6}; loop back to that stage.
+
+        Fail-safe: a REVERT with no parseable in-range target stage degrades
+        to ``advance`` — we never guess which stage to loop back to, and we
+        don't loop on a malformed review."""
+        t = text or ""
+        # Match a line whose label is exactly "reason" (not "reasonableness").
+        rm = re.search(r"^\s*\**\s*reason\s*\**\s*[:：—-]\s*(.+)$", t,
+                       re.IGNORECASE | re.MULTILINE)
+        reason = rm.group(1).strip() if rm else t.strip()[:300]
+
+        m = cls._RESULT_REVERT_RE.search(t)
+        target = int(m.group(1)) if m else None
+
+        upper = t.upper()
+        compact = re.sub(r"[\s|*_]+", " ", upper)
+        wants_revert = (" ACTION REVERT " in f" {compact} "
+                        or " DECISION REVERT " in compact
+                        or "REVERT TO STAGE" in compact)
+
+        if wants_revert and target in cls._RESULT_LOOP_TARGETS:
+            return "revert", target, reason
+        # Anything else — explicit ADVANCE, ambiguous, or out-of-range target.
+        return "advance", None, reason
+
+    def _parse_critic_pass(self, result: str) -> bool:
+        """Parse the critic's PASS/REJECT verdict.
+
+        Robustness (#60 fix 4 / #63 fix 4 / #19):
+        - An explicit verdict in ``result`` (the critic's submit_result text)
+          wins — table-format ``| Decision | PASS |`` or conversational.
+        - Otherwise, the verdict is AMBIGUOUS. This happens when the
+          submit_result was a stub (``"Executed: bash"``) OR a long
+          tool-result echo (``"Executed: write\\nwrite → {'path': ...}"``,
+          which slips past the short-stub heuristic — #19, seen in the 4→9
+          e2e). In BOTH cases the real verdict lives in the on-disk
+          ``stage{N}_gate_review.md`` the critic was told to write — consult
+          it before giving up.
+        - Default to REJECT only when neither the text nor the file yields a
+          signal. (The old default-to-PASS branch was the #60/#63
+          auto-approve-empty-stage loophole.)
+        """
+        verdict = self._verdict_from_text(result or "")
+        if verdict is not None:
+            return verdict
+
+        # Ambiguous submit_result → the verdict is in the file on disk.
+        stage_id = self.current_stage
+        gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
+        if gate_review.exists():
+            try:
+                file_text = gate_review.read_text(encoding="utf-8")
+                file_verdict = self._verdict_from_text(file_text)
+                if file_verdict is not None:
+                    logger.info(
+                        "[PIPELINE] Critic submit_result had no verdict — resolved {} "
+                        "from {} ({} bytes)",
+                        "PASS" if file_verdict else "REJECT", gate_review.name, len(file_text),
+                    )
+                    return file_verdict
+            except OSError as exc:
+                logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+
+        # Neither text nor file yielded a verdict → safer default is REJECT.
         logger.warning(
-            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT signal, len={}) — defaulting to REJECT",
-            len(text),
+            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT in submit_result "
+            "or {}) — defaulting to REJECT", gate_review.name,
         )
         return False
 
@@ -1768,11 +2607,65 @@ class PipelineEngine:
         }
         if confidence is not None:
             payload["confidence"] = confidence
+        if event_type == "stage_start":
+            hint = self._stage_duration_hint(stage_id)
+            if hint:
+                payload["eta"] = hint
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping stage event; no running event loop: {}", exc)
+
+    def _reset_attempt_timing(self) -> None:
+        self._ensure_timing_state()
+        self.state["attempt_timing"] = {
+            "producer_elapsed_seconds": 0.0,
+            "critic_elapsed_seconds": None,
+        }
+
+    def _record_active_phase_elapsed(self, phase: str) -> None:
+        self._ensure_timing_state()
+        started_at = self.state.get("active_task_started_at")
+        self.state["active_task_started_at"] = None
+        if started_at is None:
+            return
+        try:
+            elapsed = max(0.0, float(time.time()) - float(started_at))
+        except (TypeError, ValueError):
+            return
+        try:
+            timeout_seconds = float(self._stage_def().get("timeout_seconds", 0) or 0)
+        except Exception:
+            timeout_seconds = 0
+        if timeout_seconds <= 0:
+            timeout_seconds = 3600.0
+        elapsed = min(elapsed, timeout_seconds * 2.0)
+
+        timing = self.state.get("attempt_timing", {})
+        if phase in ("producer", "producer_b"):
+            previous = timing.get("producer_elapsed_seconds")
+            timing["producer_elapsed_seconds"] = float(previous or 0.0) + elapsed
+        elif phase == "critic":
+            timing["critic_elapsed_seconds"] = elapsed
+
+    def _stage_duration_hint(self, stage_id: int) -> dict | None:
+        try:
+            stats = self._memory_store().summarize_stage_durations(limit_per_stage=30)
+        except Exception as exc:
+            logger.debug("[PIPELINE] Stage duration stats unavailable: {}", exc)
+            return None
+        stage = stats.get(str(stage_id))
+        if not stage:
+            return None
+        return {
+            "samples": int(stage.get("samples", 0) or 0),
+            "window_size": int(stage.get("window_size", 0) or 0),
+            "total": stage.get("total", {}),
+            "producer": stage.get("producer", {}),
+            "critic": stage.get("critic", {}),
+            "retry_rate": float(stage.get("retry_rate", 0.0) or 0.0),
+        }
 
     def _emit_gate_event(self, stage_id: int, confidence: float = None, exhausted: bool = False):
         """Emit breakpoint/gate event for frontend to show approval dialog."""
@@ -1800,16 +2693,58 @@ class PipelineEngine:
             logger.debug("Skipping gate event; no running event loop: {}", exc)
 
     async def _auto_approve_gate(self, stage_id: int, exhausted: bool):
-        """Unattended-mode gate advance: behaves like a CEO clicking approve."""
+        """Unattended-mode gate advance: behaves like a CEO clicking approve
+        on a clean PASS, but **refuses to approve an exhausted-retries gate**.
+
+        Exhausted gates land here when the stage failed all its retries (stub
+        results, hard-gate misses, critic REJECTs, or producer crashes). Those
+        runs have no usable deliverable; advancing would mask the failure as
+        ``phase=done`` with empty ``stage_results``. Mark the pipeline as
+        ``failed`` instead — a human CEO can still POST /api/ceo/approve
+        explicitly to override if they have an out-of-band recovery plan.
+        """
         import asyncio
         await asyncio.sleep(0)  # let the gate event flush first
         if self.phase != "gate":
             return
+        if exhausted:
+            logger.warning(
+                "[PIPELINE] AUTO-APPROVE refused for exhausted gate at stage {} "
+                "— marking pipeline failed (manual /api/ceo/approve still available)",
+                stage_id,
+            )
+            self.state["phase"] = "failed"
+            self.state["failure_reason"] = f"stage_{stage_id}_retries_exhausted"
+            self._save()
+            self._emit_pipeline_failed(stage_id, "retries_exhausted")
+            return
         logger.info(
-            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {} "
-            "(exhausted={})", stage_id, exhausted,
+            "[PIPELINE] AUTO-APPROVE (unattended): advancing gate at stage {}",
+            stage_id,
         )
         self.on_ceo_approve("")
+
+    def _emit_pipeline_failed(self, stage_id: int, reason: str):
+        """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.
+
+        Fires when auto-approve refuses an exhausted gate, so frontend /
+        archive consumers see the project closed as failed rather than
+        silently hanging at ``phase=gate``.
+        """
+        import asyncio
+        payload = {
+            "type": "pipeline_failed",
+            "project_id": self.project_id,
+            "stage": stage_id,
+            "reason": reason,
+            "stages_completed": len(self.state.get("stage_results", {})),
+            "pipeline_managed": True,
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._emit_async(payload))
+        except RuntimeError as exc:
+            logger.debug("Skipping pipeline failed event; no running event loop: {}", exc)
 
     def _emit_pipeline_complete(self):
         import asyncio

@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- Planet/conflict graph: fetch aigraph via the same-origin /aigraph reverse
+     proxy (server-local :8765 isn't reachable from the browser; this avoids
+     lcg-graph.js's 127.0.0.1:8765 default that caused "Failed to fetch"). -->
+<script>window.LCG_GRAPH_BASE = location.origin + "/aigraph";</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AutoResearch — OMC Research Lab v3</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -231,11 +235,16 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.6rem;font-weight:700;color:#fff;background:var(--green);flex-shrink:0}
 .sc-title{flex:1;font-size:.82rem;font-weight:600;color:var(--text)}
 .sc-title small{font-weight:400;color:var(--text3);margin-left:6px}
+.sc-eta{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;background:var(--bg);color:var(--text3);white-space:nowrap}
 .sc-badge{padding:3px 10px;border-radius:var(--pill);font-family:var(--mono);font-size:.6rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
 .sc-badge.badge-running{background:var(--gold-subtle);color:#8B7332}
 .sc-badge.badge-done{background:var(--green-subtle);color:var(--green)}
 .sc-badge.badge-error{background:var(--coral-subtle);color:var(--coral)}
 .sc-badge.badge-reviewing{background:var(--gold-subtle);color:#8B7332;animation:pulse-badge 1.5s ease-in-out infinite}
+.sc-activity{display:none;align-items:center;gap:8px;padding:6px 16px;border-bottom:1px solid var(--border-light);background:var(--bg);font-family:var(--mono);font-size:.66rem;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-activity.show{display:flex}
+.sc-activity::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse-dot 1.5s ease-in-out infinite;flex-shrink:0}
+.sc-activity .sc-activity-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-style:italic}
 @keyframes pulse-badge{0%,100%{opacity:1}50%{opacity:.6}}
 .sc-revert-btn{padding:4px 10px;border-radius:var(--pill);border:1px solid var(--border);background:var(--white);color:var(--text2);font-size:.7rem;font-weight:500;cursor:pointer;margin-right:6px;transition:all .15s}
 .sc-revert-btn:hover{background:var(--green-subtle);color:var(--green);border-color:var(--green)}
@@ -635,6 +644,7 @@ function _getProject(pid) {
 // created via API rather than the launch form).
 async function hydrateProjectFromBackend(pid) {
   const client = window._omcClient;
+  const ctrl = window._controller;
   if (!client || typeof client.getPipelineStatus !== 'function') return;
   let status;
   try {
@@ -660,17 +670,35 @@ async function hydrateProjectFromBackend(pid) {
     .map(s => parseInt(s, 10))
     .filter(n => !Number.isNaN(n))
     .sort((a, b) => a - b);
-  if (!completedIds.length) return;
 
   const currentStage = status.current_stage || completedIds[completedIds.length - 1];
   const phase = status.phase;
 
+  // Include the currently-running stage even when it has no entry in
+  // ``stage_results`` yet (e.g. Stage 2 producer mid-flight with no
+  // prior completion in this iteration). Without this card, the
+  // ``agent_thinking`` / ``agent_log`` WebSocket stream has nothing
+  // to attach to — neither the producer body nor the live activity
+  // ticker (PR #86 follow-up) updates after a page refresh.
+  const stageIdsToRender = [...completedIds];
+  if (
+    currentStage &&
+    phase &&
+    phase !== 'done' &&
+    !stageIdsToRender.includes(currentStage)
+  ) {
+    stageIdsToRender.push(currentStage);
+    stageIdsToRender.sort((a, b) => a - b);
+  }
+  if (!stageIdsToRender.length) return;
+
   const topic = status.topic || '';
-  completedIds.forEach(sid => {
+  stageIdsToRender.forEach(sid => {
     const meta = STAGES.find(s => s.id === sid);
     if (!meta) return;
     const cardId = `stage${sid}`;  // match pipeline-controller._ensureCard
     getStageCard(cardId, `Stage ${sid} — ${meta.name}`, meta.name, meta.name.slice(0, 2).toUpperCase());
+    if (ctrl) ctrl.stageCardIds[sid] = cardId;
     // The new idea-construction prompt no longer prefixes Stage 3 markdown
     // with a `# Stage 3: — {topic}` heading, so the lcg renderer's topic
     // parser can't see the project topic. Inject it ourselves when missing
@@ -697,6 +725,10 @@ async function hydrateProjectFromBackend(pid) {
 
   if (status.critic_result) {
     updateCritic(`stage${currentStage}`, status.critic_result);
+  }
+  if (ctrl && phase && phase !== 'done') {
+    ctrl.currentStage = currentStage;
+    ctrl.hydrateStageRuntime(currentStage, phase, status.active_task_started_at);
   }
 
   // Backfill the workspace panel. Live runs fill it via `file_written`
@@ -1264,7 +1296,12 @@ function _renderWorkspace() {
 }
 
 function _escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // Simple markdown → HTML renderer (no external deps)
@@ -1481,6 +1518,9 @@ function getStageCard(id, title, agentName, agentInitials) {
       <button class="sc-revert-btn" type="button" data-card="${id}" style="display:none" title="Fork from this stage with new instructions">↺ 回到这里</button>
       <span class="sc-badge badge-running">Running</span>
     </div>
+    <div class="sc-activity" id="sc-activity-${id}">
+      <span class="sc-activity-text"></span>
+    </div>
     <div class="sc-body">
       <div class="sc-section" id="sc-prod-${id}">
         <div class="sc-section-label lbl-producer"><span style="width:4px;height:4px;border-radius:50%;background:var(--green)"></span> ${agentName}</div>
@@ -1548,6 +1588,53 @@ function updateCritic(cardId, content) {
   if (el) el.innerHTML = _renderMd(_clean(content));
   _scroll();
 }
+
+// Live activity line under the stage card head — shows a one-line
+// summary of what the agent is doing right now (latest tool call /
+// thinking chunk). Cleared when the stage transitions to done/failed.
+function setStageActivity(cardId, text) {
+  const row = document.getElementById('sc-activity-' + cardId);
+  if (!row) return;
+  const span = row.querySelector('.sc-activity-text');
+  if (!span) return;
+  const clean = _summarizeActivity(text);
+  if (!clean) {
+    row.classList.remove('show');
+    span.textContent = '';
+    return;
+  }
+  span.textContent = clean;
+  row.classList.add('show');
+}
+
+function clearStageActivity(cardId) {
+  const row = document.getElementById('sc-activity-' + cardId);
+  if (!row) return;
+  row.classList.remove('show');
+  const span = row.querySelector('.sc-activity-text');
+  if (span) span.textContent = '';
+}
+
+// Boil a (possibly multi-line, markdown-tagged) agent message down to
+// a single ~120-char ticker line. Strips code fences, bullet markers,
+// and collapses whitespace. Preserves a leading ``[tool_name]`` tag
+// (already added by the event adapter) since that's the most
+// useful "what's it doing" cue.
+function _summarizeActivity(text) {
+  if (!text) return '';
+  const collapsed = String(text)
+    .replace(/```[\s\S]*?```/g, ' ')           // strip code fences
+    .replace(/`([^`]+)`/g, '$1')               // unwrap inline code
+    .replace(/^[#>*\-\s]+/gm, '')              // strip md markers
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!collapsed) return '';
+  const MAX = 120;
+  return collapsed.length <= MAX ? collapsed : collapsed.slice(0, MAX - 1) + '…';
+}
+
+window.setStageActivity = setStageActivity;
+window.clearStageActivity = clearStageActivity;
 
 // Set card status badge
 function setCardStatus(cardId, status) {

@@ -5765,6 +5765,9 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        # Real dict for .cookies so current_user_id() (sync, reads .cookies.get)
+        # resolves to "" without leaving an un-awaited coroutine (#115).
+        mock_ws.cookies = {}
         # First call returns ceo_task, second raises disconnect
         mock_ws.receive_json = AsyncMock(
             side_effect=[
@@ -5783,7 +5786,8 @@ class TestWebSocketEndpoint:
              patch.object(routes_mod, "ceo_submit_task", mock_submit):
             await routes_mod.websocket_endpoint(mock_ws)
 
-        mock_ws_mgr.connect.assert_awaited_once_with(mock_ws)
+        # Connection is now bound to the (empty, AUTH-off) user id (#115).
+        mock_ws_mgr.connect.assert_awaited_once_with(mock_ws, user_id="")
         mock_submit.assert_awaited_once_with(task="Build something")
         mock_ws_mgr.disconnect.assert_called_once_with(mock_ws)
 
@@ -5795,6 +5799,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         mock_ws_mgr = MagicMock()
@@ -5814,6 +5819,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(
             side_effect=[
                 {"type": "ceo_task", "task": ""},
@@ -5839,6 +5845,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(side_effect=RuntimeError("boom"))
 
         mock_ws_mgr = MagicMock()
@@ -6658,3 +6665,77 @@ class TestAiSearchSettings:
         assert result["status"] == "updated"
         assert ("TALENT_MARKET_USE_AI_SEARCH", "true") in calls
         assert not any(key == "TALENT_MARKET_API_KEY" for key, _ in calls)
+
+
+# ---------------------------------------------------------------------------
+# /aigraph reverse proxy — path allowlist + SSRF (no redirect-follow) guards
+# ---------------------------------------------------------------------------
+
+
+class TestAigraphProxy:
+    """The /aigraph proxy forwards only the allowlisted aigraph endpoints to the
+    pinned upstream, and never follows redirects (no SSRF gadget)."""
+
+    @pytest.mark.asyncio
+    async def test_allowed_path_is_proxied(self):
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            content = b'{"nodes": [], "edges": []}'
+            headers = {"content-type": "application/json"}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                captured["kwargs"] = kw
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                captured["url"] = url
+                return _Resp()
+
+        with patch("httpx.AsyncClient", _FakeClient):
+            app = _make_test_app()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.get("/aigraph/query/graph?topic=cot&run=r1&k=8")
+
+        assert r.status_code == 200
+        # forwarded to the pinned upstream, query string preserved
+        assert captured["url"].endswith("/query/graph?topic=cot&run=r1&k=8")
+        assert "127.0.0.1:8765" in captured["url"]
+        # SSRF guard: the proxy must NOT follow redirects
+        assert captured["kwargs"].get("follow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_disallowed_path_is_rejected_without_upstream_call(self):
+        called = {"hit": False}
+
+        class _FakeClient:
+            def __init__(self, **kw):
+                called["hit"] = True
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                called["hit"] = True
+                return None
+
+        with patch("httpx.AsyncClient", _FakeClient):
+            app = _make_test_app()
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                # path traversal / arbitrary endpoint must be refused before any fetch
+                r1 = await c.get("/aigraph/admin")
+                r2 = await c.get("/aigraph/../etc/passwd")
+
+        assert r1.status_code == 404
+        assert r2.status_code == 404
+        assert called["hit"] is False
