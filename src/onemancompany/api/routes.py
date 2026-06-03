@@ -6398,7 +6398,14 @@ async def save_employee_secrets(employee_id: str, request: Request) -> dict:
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await ws_manager.connect(websocket)
+    # Bind this connection to the logged-in user so the broadcaster can route
+    # project-attributable events to their owner only (issue #115). WebSocket
+    # objects expose .cookies, so current_user_id works unchanged; it returns
+    # "" when AUTH is off / no cookie → the connection sees everything.
+    from onemancompany.api.auth_gate import current_user_id
+
+    user_id = current_user_id(websocket)
+    await ws_manager.connect(websocket, user_id=user_id)
     try:
         while True:
             data = await websocket.receive_json()
