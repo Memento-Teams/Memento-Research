@@ -311,6 +311,608 @@ def test_critic_reject_exhausted_waits_for_ceo(tmp_path, monkeypatch):
     assert gate_events == [((1, 0.2), {"exhausted": True})]
 
 
+@pytest.mark.asyncio
+async def test_auto_approve_refuses_exhausted_gate(tmp_path, monkeypatch):
+    """auto_approve=True must NOT advance past a retries-exhausted gate.
+
+    Regression for a failure observed in smoke testing: an upstream LLM
+    error burned 3 retries on Stage 6a, the engine emitted an exhausted
+    gate, and ``_auto_approve_gate`` then called ``on_ceo_approve("")``
+    which advanced ``phase`` to ``done`` with empty ``stage_results``.
+    The correct behavior is to mark ``phase=failed`` so downstream
+    consumers see the project as terminated, not silently completed.
+    """
+    failed_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_pipeline_failed",
+        lambda self, stage_id, reason: failed_events.append((stage_id, reason)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "gate"
+    engine.state["auto_approve"] = True
+    advanced = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "on_ceo_approve",
+        lambda self, feedback="": advanced.append(feedback),
+    )
+
+    await engine._auto_approve_gate(stage_id=6, exhausted=True)
+
+    assert advanced == [], "Auto-approve must not call on_ceo_approve when exhausted"
+    assert engine.state["phase"] == "failed"
+    assert engine.state["failure_reason"] == "stage_6_retries_exhausted"
+    assert failed_events == [(6, "retries_exhausted")]
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_still_advances_clean_gate(tmp_path, monkeypatch):
+    """Clean (non-exhausted) gates must still auto-advance under auto_approve."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_failed", lambda self, *a, **kw: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["phase"] = "gate"
+    engine.state["auto_approve"] = True
+    approved = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "on_ceo_approve",
+        lambda self, feedback="": approved.append(feedback),
+    )
+
+    await engine._auto_approve_gate(stage_id=2, exhausted=False)
+
+    assert approved == [""], "Clean gate must still trigger on_ceo_approve"
+    assert engine.state["phase"] == "gate", "Phase stays 'gate' until on_ceo_approve runs"
+    assert "failure_reason" not in engine.state
+
+
+@pytest.mark.asyncio
+async def test_emit_pipeline_failed_publishes_payload(tmp_path, monkeypatch):
+    """``_emit_pipeline_failed`` mirrors ``_emit_pipeline_complete`` and
+    publishes a ``pipeline_failed`` event so frontend / archive consumers
+    can close the project as terminal."""
+    published = []
+
+    async def fake_publish(event):
+        published.append(event)
+
+    monkeypatch.setattr(pe.event_bus, "publish", fake_publish)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["stage_results"] = {"1": "done", "2": "done"}
+    engine._emit_pipeline_failed(stage_id=3, reason="retries_exhausted")
+    await asyncio.sleep(0)
+
+    assert len(published) == 1
+    payload = published[0].payload
+    assert payload["type"] == "pipeline_failed"
+    assert payload["project_id"] == "p1"
+    assert payload["stage"] == 3
+    assert payload["reason"] == "retries_exhausted"
+    assert payload["stages_completed"] == 2
+
+
+# ===========================================================================
+# Stage 6b long-running waiter (#93, #97)
+# ===========================================================================
+
+
+def test_parse_runner_report_runs_extracts_id_status_pairs():
+    """The parser handles the runner's various Markdown decorations:
+    bold-bracketed labels, backtick-wrapped ids, plain text."""
+    report = """
+### T1 — Smoke run
+
+- **run_id**: `run_d032e33e194a`
+- **status**: succeeded
+
+### T2 — Long full run
+
+- run_id: run_45aa663ec237
+- status: still_running
+
+### T3 — Stalled
+
+- **run_id**: `run_aa01`
+- status: queued
+"""
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_d032e33e194a", "succeeded"),
+        ("run_45aa663ec237", "still_running"),
+        ("run_aa01", "queued"),
+    ]
+
+
+def test_parse_runner_report_runs_ignores_run_ids_inside_fenced_code():
+    """The runner embeds RESULT_JSON inside a ```json fenced block; its
+    internal ``run_id`` is the script's seed tag (e.g. ``smoke_seed42``)
+    and must NOT be confused with a real infra run_id. Otherwise the
+    engine would wait forever on a synthetic id that run_tracker can
+    never observe in stage_6_runs."""
+    report = """### T1 — Smoke run
+
+- **run_id**: `run_real_infra_id_aa01`
+- **status**: succeeded
+
+**Parsed RESULT_JSON:**
+```json
+{
+  "run_id": "smoke_seed42",
+  "mode": "smoke",
+  "accuracy_direct": 0.667,
+  "status": "still_running"
+}
+```
+
+(end of report)
+"""
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "run_real_infra_id_aa01" in rids
+    assert "smoke_seed42" not in rids, (
+        "RESULT_JSON's internal run_id must not be treated as an infra run_id"
+    )
+    # And the JSON's misleading "status: still_running" must not produce
+    # a phantom pending entry attached to the real run_id.
+    assert not pe.PipelineEngine._runs_have_pending(pairs)
+
+
+def test_parse_runner_report_runs_drops_placeholders():
+    """``run_id: NOT AVAILABLE``-style placeholders must not produce
+    spurious pending runs that would park the pipeline forever."""
+    report = (
+        "- run_id: NONE\n"
+        "- status: blocked\n\n"
+        "- run_id: missing\n"
+        "- status: blocked\n\n"
+        "- run_id: real_run_xyz\n"
+        "- status: running\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "real_run_xyz" in rids
+    assert all(rid.lower() not in {"none", "missing"} for rid in rids)
+
+
+def test_runs_have_pending_distinguishes_terminal_from_active():
+    assert pe.PipelineEngine._runs_have_pending([("r1", "running")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "still_running")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "queued")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "succeeded")]) is False
+    assert pe.PipelineEngine._runs_have_pending([("r1", "failed")]) is False
+    # Mixed: any pending → True
+    assert pe.PipelineEngine._runs_have_pending(
+        [("r1", "succeeded"), ("r2", "running")]
+    ) is True
+
+
+def test_all_pending_terminal_returns_true_when_every_pending_is_terminal():
+    runs_map = {
+        "r1": {"status": "succeeded"},
+        "r2": {"status": "failed"},
+        "r3": {"status": "blocked"},
+    }
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2", "r3"], runs_map) is True
+    assert pe.PipelineEngine._all_pending_terminal([], runs_map) is True  # empty list
+
+
+def test_all_pending_terminal_returns_false_when_any_still_running():
+    runs_map = {
+        "r1": {"status": "succeeded"},
+        "r2": {"status": "running"},
+    }
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2"], runs_map) is False
+
+
+def test_all_pending_terminal_returns_false_when_run_missing_from_map():
+    """Defensive: a pending run that hasn't shown up on infra yet (e.g.
+    runner submitted but tracker hasn't polled yet) must NOT be treated
+    as terminal — the engine should keep waiting."""
+    runs_map = {"r1": {"status": "succeeded"}}
+    assert pe.PipelineEngine._all_pending_terminal(["r1", "r2_not_yet"], runs_map) is False
+
+
+def test_producer_b_complete_with_pending_runs_parks_in_waiting(tmp_path, monkeypatch):
+    """When the 6b runner's report carries `status: still_running` for one
+    or more run_ids, the engine must NOT dispatch the critic. Instead it
+    enters ``producer_b_waiting`` with the pending run_ids persisted.
+    Regression for #93 (long experiments REJECTED on 9-min poll budget)."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = (
+        "## Tasks\n\n"
+        "- run_id: run_long_a\n"
+        "- status: still_running\n\n"
+        "- run_id: run_long_b\n"
+        "- status: running\n"
+    )
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert dispatched_critic == [], "Critic must not be dispatched with pending runs"
+    assert engine.state["phase"] == "producer_b_waiting"
+    assert engine.state["pending_run_ids"] == ["run_long_a", "run_long_b"]
+    assert "pending_waiting_started_at" in engine.state
+
+
+def test_producer_b_complete_with_all_terminal_dispatches_critic(tmp_path, monkeypatch):
+    """Fast path: when every run in the 6b report is terminal, the engine
+    skips ``producer_b_waiting`` and dispatches the critic immediately
+    (pre-#93 behavior preserved for short experiments)."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = (
+        "- **run_id**: `smoke_a`\n"
+        "- **status**: succeeded\n\n"
+        "- **run_id**: `full_b`\n"
+        "- **status**: succeeded\n"
+    )
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert len(dispatched_critic) == 1, "Critic must dispatch when all runs terminal"
+    assert engine.state["phase"] == "producer_b"  # critic dispatch flips it later
+    assert "pending_run_ids" not in engine.state
+
+
+def test_producer_b_complete_with_no_runs_at_all_dispatches_critic(tmp_path, monkeypatch):
+    """Defensive: a blocked/budget-failed runner report with no run_ids at
+    all should NOT park in waiting (no runs to wait on). Critic gets the
+    honest BLOCKED report and decides."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    report = "BLOCKED: session_available=0.00, no runs submitted"
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert len(dispatched_critic) == 1
+    assert "pending_run_ids" not in engine.state
+
+
+def test_on_runs_all_terminal_advances_to_finalize(tmp_path, monkeypatch):
+    """When all pending runs are terminal, on_runs_all_terminal must
+    transition to ``producer_b_finalize`` and re-dispatch the runner."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_waiting"
+    engine.state["pending_run_ids"] = ["run_long_a", "run_long_b"]
+
+    engine.on_runs_all_terminal()
+
+    assert engine.state["phase"] == "producer_b_finalize"
+    assert finalize_dispatched == [True]
+
+
+def test_on_runs_all_terminal_idempotent_outside_waiting_phase(tmp_path, monkeypatch):
+    """Defensive: a duplicate run_tracker callback (e.g. two ticks racing)
+    must not re-dispatch the runner if the engine already advanced."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"  # already advanced
+    engine.state["pending_run_ids"] = ["run_long_a"]
+
+    engine.on_runs_all_terminal()
+
+    assert finalize_dispatched == [], "Must not re-dispatch outside waiting phase"
+
+
+def test_producer_b_finalize_complete_dispatches_critic_and_clears_pending(tmp_path, monkeypatch):
+    """After the runner re-dispatch in finalize mode completes, the engine
+    must dispatch the critic on the final report AND clean up
+    ``pending_run_ids`` from state so a subsequent retry doesn't see
+    stale waiting bookkeeping."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_long_a"]
+    engine.state["pending_waiting_started_at"] = "2026-06-01T17:00:00Z"
+
+    engine.on_task_complete("00025", "nodeB-final", "## Final report\n\n- run_id: run_long_a\n- status: succeeded")
+
+    assert len(dispatched_critic) == 1
+    assert "pending_run_ids" not in engine.state
+    assert "pending_waiting_started_at" not in engine.state
+
+
+def test_on_task_failed_in_finalize_redispatches_finalize_not_initial(tmp_path, monkeypatch):
+    """If the LLM task for ``producer_b_finalize`` fails (e.g. transient
+    503), the engine must re-dispatch the FINALIZE path, NOT the initial
+    submit-and-run path — the runs are already terminal; re-submitting
+    them would orphan the originals and double-charge."""
+    initial_dispatches = []
+    finalize_dispatches = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b",
+        lambda self, feedback="": initial_dispatches.append(feedback),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatches.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_a"]
+
+    engine.on_task_failed("00025", "node-finalize", "503 Service Unavailable")
+
+    assert finalize_dispatches == [True], "Must re-dispatch finalize, not initial submit"
+    assert initial_dispatches == [], "Must NOT call _dispatch_producer_b (would re-submit)"
+
+
+def test_stub_result_in_finalize_redispatches_finalize_not_initial(tmp_path, monkeypatch):
+    """Same invariant for stub-result retry: a stub during finalize must
+    re-dispatch finalize, not the initial submit task."""
+    initial_dispatches = []
+    finalize_dispatches = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b",
+        lambda self, feedback="": initial_dispatches.append(feedback),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatches.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"
+    engine.state["pending_run_ids"] = ["run_a"]
+
+    engine.on_task_complete("00025", "node-finalize", "Executed: bash")
+
+    assert finalize_dispatches == [True], "Stub retry in finalize must re-dispatch finalize"
+    assert initial_dispatches == [], "Must NOT call _dispatch_producer_b on finalize stub"
+
+
+# ===========================================================================
+# Stage 6b waiter — review feedback regressions (PR #107 review by iamlilAJ)
+# ===========================================================================
+
+
+def test_runs_have_pending_treats_unknown_status_as_pending():
+    """Fail-safe semantics: anything NOT in _RUN_TERMINAL_STATUSES is
+    considered pending. Otherwise an LLM-phrased ``in_progress`` /
+    ``executing`` / typo would fall through to terminal and re-introduce
+    the #93 \"critic dispatched on still-running\" failure mode."""
+    # Known terminal — not pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "succeeded")]) is False
+    assert pe.PipelineEngine._runs_have_pending([("r1", "failed")]) is False
+    # Known pending — pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "running")]) is True
+    # Unknown free-form tokens — MUST be treated as pending
+    assert pe.PipelineEngine._runs_have_pending([("r1", "in_progress")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "executing")]) is True
+    assert pe.PipelineEngine._runs_have_pending([("r1", "unknown")]) is True
+    # The fail-closed parser uses "unknown" as the no-status-found marker
+    # — make sure that marker is pending so the engine keeps waiting
+    # rather than firing the critic on an unverified run.
+
+
+def test_pending_run_ids_from_uses_fail_safe_semantics():
+    """``_pending_run_ids_from`` must use the same fail-safe semantics
+    as ``_runs_have_pending`` (anything not terminal counts as pending)."""
+    runs = [
+        ("r_term", "succeeded"),
+        ("r_running", "running"),
+        ("r_weird", "in_progress"),
+        ("r_unknown", "unknown"),
+    ]
+    pending = pe.PipelineEngine._pending_run_ids_from(runs)
+    assert "r_term" not in pending
+    assert set(pending) == {"r_running", "r_weird", "r_unknown"}
+
+
+def test_parse_runner_report_pairs_status_within_run_block_not_globally():
+    """Each run_id binds to a status that lives WITHIN its block (between
+    this run_id's offset and the next run_id's offset). A status appearing
+    BEFORE its run_id, or attached to a different run's block, must not
+    leak across.
+
+    Previously the parser walked status_hits in document order and could
+    drop a ``still_running`` status if a sibling block's terminal status
+    came first.
+    """
+    report = (
+        "- run_id: r_first\n"
+        "- status: succeeded\n\n"
+        "- run_id: r_second\n"
+        "- status: still_running\n\n"
+        "- run_id: r_third_no_status\n"
+        "(no status line for this block)\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    by_rid = dict(pairs)
+    assert by_rid["r_first"] == "succeeded"
+    assert by_rid["r_second"] == "still_running", (
+        "r_second's still_running must not be lost — block-bounded pairing required"
+    )
+    # r_third has no status in its block → fail-closed to "unknown"
+    assert by_rid["r_third_no_status"] == "unknown"
+    # And "unknown" makes the run pending under fail-safe semantics
+    assert pe.PipelineEngine._runs_have_pending(pairs) is True
+
+
+def test_strip_fenced_code_blocks_only_targets_json_fences():
+    """A bash / python / unlabelled fence must NOT have its body blanked
+    — otherwise an outer wrap or unbalanced fence would wipe legitimate
+    ``- run_id: ...`` list-item lines, parser sees no runs, critic
+    dispatched on \"no runs\" (a #93 regression class)."""
+    text = (
+        "preamble\n\n"
+        "- run_id: r_real_outside_fence\n"
+        "- status: still_running\n\n"
+        "```bash\n"
+        "RID=\"foobar\"\n"
+        "- run_id: should_not_be_stripped\n"
+        "```\n\n"
+        "```json\n"
+        '{"run_id": "smoke_seed42"}\n'
+        "```\n"
+    )
+    stripped = pe.PipelineEngine._strip_fenced_code_blocks(text)
+    # Bash fence's contents must survive
+    assert "foobar" in stripped, "bash fence content must NOT be blanked"
+    # json fence's contents must be blanked (so synthetic run_id doesn't leak)
+    assert "smoke_seed42" not in stripped, "json fence must be blanked"
+    # Legitimate list-item outside any fence must survive
+    assert "r_real_outside_fence" in stripped
+
+
+def test_strip_fenced_code_blocks_survives_unbalanced_outer_fence():
+    """A whole-report outer fence (no closing triple-backtick) must NOT
+    silently consume the rest of the document — only json info-string
+    fences are blanked, so an unbalanced bash-opening fence just stays
+    as-is."""
+    text = (
+        "```bash\n"  # opening only; never closed
+        "- run_id: r_inside_unbalanced_bash\n"
+        "- status: still_running\n"
+    )
+    stripped = pe.PipelineEngine._strip_fenced_code_blocks(text)
+    # Content must survive — bash info-string is not in the strip list
+    assert "r_inside_unbalanced_bash" in stripped
+
+
+def test_run_tracker_active_phases_includes_producer_b_waiting():
+    """REGRESSION (PR #107 review blocker): if producer_b_waiting is
+    missing from _ACTIVE_PHASES, the cron filters out parked projects,
+    stage_6_runs never refreshes, and on_runs_all_terminal is unreachable
+    — every long-running experiment hangs forever, the exact failure
+    mode this PR exists to fix."""
+    from onemancompany.core import run_tracker
+    assert "producer_b_waiting" in run_tracker._ACTIVE_PHASES
+    assert "producer_b_finalize" in run_tracker._ACTIVE_PHASES
+
+
+def test_should_poll_state_returns_true_for_producer_b_waiting():
+    """Companion to the _ACTIVE_PHASES check: the gate function used by
+    the disk-walker must also let producer_b_waiting through."""
+    from onemancompany.core import run_tracker
+    state = {"current_stage": 6, "phase": "producer_b_waiting"}
+    assert run_tracker._should_poll_state(state) is True
+
+
+def test_on_runs_wait_timeout_opens_exhausted_gate(tmp_path, monkeypatch):
+    """When the engine sits in producer_b_waiting past the max-wait
+    deadline, run_tracker calls on_runs_wait_timeout. The engine must
+    open a gate with exhausted=True (which under auto_approve, via #106,
+    transitions to phase=failed instead of silently advancing)."""
+    gate_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, stage_id, confidence=None, exhausted=False:
+            gate_events.append((stage_id, confidence, exhausted)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_waiting"
+    engine.state["pending_run_ids"] = ["run_hung_a"]
+
+    engine.on_runs_wait_timeout(wait_seconds=12 * 3600)
+
+    assert engine.state["phase"] == "gate"
+    assert engine.state["failure_reason"] == "stage_6_waiting_timeout_43200s"
+    assert gate_events == [(6, None, True)], (
+        "Must open an EXHAUSTED gate (so #106's auto-approve refusal kicks in)"
+    )
+
+
+def test_on_runs_wait_timeout_idempotent_outside_waiting(tmp_path, monkeypatch):
+    """If run_tracker fires the deadline callback after the engine
+    already advanced (race), the call must be a no-op."""
+    gate_events = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_gate_event",
+        lambda self, stage_id, confidence=None, exhausted=False:
+            gate_events.append((stage_id, confidence, exhausted)),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_finalize"  # already advanced
+
+    engine.on_runs_wait_timeout(wait_seconds=99999)
+
+    assert engine.state["phase"] == "producer_b_finalize", "must not regress phase"
+    assert gate_events == [], "must not emit a duplicate exhausted gate"
+
+
+def test_producer_b_immediate_terminal_via_state_short_circuits_waiting(tmp_path, monkeypatch):
+    """If the runner's report says still_running but run_tracker has
+    already marked the runs terminal in stage_6_runs (race between the
+    cron tick and the runner's completion event), the engine must
+    short-circuit straight to finalize instead of waiting for a poll
+    cycle that has nothing left to do."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+    # Also stub critic dispatch so we can tell which path was taken
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    # run_tracker already filled in terminal status before we got here
+    engine.state["stage_6_runs"] = {
+        "run_long_a": {"status": "succeeded"},
+    }
+    report = "- run_id: run_long_a\n- status: still_running"
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert finalize_dispatched == [True], "Must short-circuit to finalize, not park"
+    assert dispatched_critic == [], "Must not dispatch critic — finalize will do that"
+
+
 def test_dispatch_critic_without_critic_auto_passes(tmp_path, monkeypatch):
     stage_events = []
     gate_events = []
@@ -395,6 +997,107 @@ def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
     assert engine.state["memory_feedback"]["1"]["episode_id"] == memory_id
 
 
+def test_record_stage_memory_persists_phase_elapsed_seconds(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    memory_id = engine._record_stage_memory(
+        pe.STAGES[0],
+        producer_result="producer output",
+        critic_result="PASS confidence: 0.9",
+        passed=True,
+        confidence=0.9,
+        outcome="critic_pass",
+        producer_elapsed_seconds=42.5,
+        critic_elapsed_seconds=8.0,
+    )
+
+    store = pe.ResearchMemoryStore("p1", str(tmp_path))
+    record = next(r for r in store._read_records() if r["id"] == memory_id)
+    assert record["producer_elapsed_seconds"] == 42.5
+    assert record["critic_elapsed_seconds"] == 8.0
+
+
+def test_on_task_complete_updates_attempt_timing_and_records_it(tmp_path, monkeypatch):
+    recorded = {}
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda *a, **k: None)
+
+    def fake_record(self, stage, **kwargs):
+        recorded.update(kwargs)
+        return "m-1"
+
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
+
+    now = {"t": 1000.0}
+
+    def fake_time():
+        return now["t"]
+
+    monkeypatch.setattr(pe.time, "time", fake_time)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine.state["phase"] = "producer"
+    engine.state["active_task_started_at"] = 970.0
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+    engine.state["stage_results"] = {"1": "producer output"}
+
+    now["t"] = 1000.0
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, _result: None)
+    engine.on_task_complete("00006", "n1", "producer output")
+    assert engine.state["attempt_timing"]["producer_elapsed_seconds"] == 30.0
+
+    engine.state["phase"] = "critic"
+    engine.state["active_task_started_at"] = 1000.0
+    now["t"] = 1012.0
+    engine.on_task_complete("00014", "n2", "PASS confidence: 0.7")
+
+    assert recorded["producer_elapsed_seconds"] == 30.0
+    assert recorded["critic_elapsed_seconds"] == 12.0
+
+
+def test_critic_retry_persists_attempt_timing_before_reset(tmp_path, monkeypatch):
+    recorded = {}
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_critic_pass", lambda *a, **k: False)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_confidence", lambda *a, **k: 0.2)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": None)
+
+    def fake_record(self, stage, **kwargs):
+        recorded.update(kwargs)
+        return "m-1"
+
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine.state["phase"] = "critic"
+    engine.state["retries"] = 0
+    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 41.0, "critic_elapsed_seconds": 9.0}
+
+    engine.on_task_complete("00014", "n2", "REJECT confidence: 0.2")
+
+    assert recorded["producer_elapsed_seconds"] == 41.0
+    assert recorded["critic_elapsed_seconds"] == 9.0
+    assert engine.state["attempt_timing"] == {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+
+def test_record_active_phase_elapsed_clamps_clock_jump_outliers(tmp_path, monkeypatch):
+    now = {"t": 10_000.0}
+    monkeypatch.setattr(pe.time, "time", lambda: now["t"])
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    monkeypatch.setattr(engine, "_stage_def", lambda stage_id=None: {"id": 2, "timeout_seconds": 1200})
+    engine.state["active_task_started_at"] = 10.0
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+    engine._record_active_phase_elapsed("producer")
+
+    assert engine.state["attempt_timing"]["producer_elapsed_seconds"] == 2400.0
+
+
 @pytest.mark.parametrize("feedback,expect_revise", [
     # advance-with-comment chats that must NOT trigger a redo
     ("再补充一点细节", False),
@@ -476,6 +1179,52 @@ def test_parse_critic_pass_stub_falls_back_to_disk(tmp_path):
     gate_review.unlink()
     assert engine._parse_critic_pass("Executed: bash") is False, (
         "Stub critic result + no fallback file should default to REJECT (not PASS)"
+    )
+
+
+def test_parse_critic_pass_long_toolresult_stub_falls_back_to_disk(tmp_path):
+    """REGRESSION (#19, caught by the 4→9 e2e, project 5232b74836ee): the
+    critic wrote a perfect gate_review.md ('| Decision | PASS |') but its
+    submit_result was a ~867-char tool-result echo:
+
+        Executed: write
+        write → {'status': 'ok', 'path': '.../stage6_gate_review.md', 'type': ...}
+
+    This is LONGER than the 300-char stub threshold, so _is_stub_result
+    didn't flag it, the on-disk fallback never fired, and the parser saw a
+    long blob with no PASS/REJECT → defaulted to REJECT → 3 retries → the
+    whole run died at Stage 6 even though the critic had PASSED.
+
+    The verdict lives in the FILE; when the submit_result text carries no
+    clear PASS/REJECT signal, the parser MUST consult the on-disk
+    gate_review before defaulting to REJECT — regardless of stub length."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    # Neutral path text (no 'pass'/'reject' substring) so the parser can't
+    # accidentally pattern-match a verdict out of the tool echo itself.
+    long_toolresult_stub = (
+        "Executed: write\n"
+        "write → {'status': 'ok', 'path': '/work/stage6_gate_review.md', "
+        "'type': 'file', 'bytes': 3125, 'note': '" + ("x" * 700) + "'}"
+    )
+    assert len(long_toolresult_stub) > 300  # NOT caught by the short-stub heuristic
+    assert "PASS" not in long_toolresult_stub.upper()
+    assert "REJECT" not in long_toolresult_stub.upper()
+
+    gate_review = tmp_path / "stage6_gate_review.md"
+    gate_review.write_text("# Gate Review\n\n| **Decision** | **PASS** |\n| Confidence | 0.58 |")
+    assert engine._parse_critic_pass(long_toolresult_stub) is True, (
+        "long tool-result stub + on-disk PASS must resolve to PASS via file fallback"
+    )
+
+    gate_review.write_text("# Gate Review\n\n| **Decision** | **REJECT** |\nNo data.")
+    assert engine._parse_critic_pass(long_toolresult_stub) is False
+
+    # A real conversational verdict in the text still wins without touching disk.
+    gate_review.write_text("| Decision | PASS |")  # stale file says PASS...
+    assert engine._parse_critic_pass("REJECT: the smoke run failed") is False, (
+        "an explicit in-text verdict must take precedence over the on-disk file"
     )
 
 
@@ -1872,23 +2621,23 @@ def test_find_employee_for_stage_6_code_implementer_preference_wins(monkeypatch)
     assert pe._find_stage_6b_employee() == "emp-runner"
 
 
-def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
-    """A stub return from Stage 6b (producer_b phase) must retry 6b
-    (not 6a). The stub gate branches on ``self.phase`` to pick the
-    right dispatcher."""
+def test_producer_b_stub_routes_to_6a_rebuild(tmp_path, monkeypatch):
+    """UPDATED for #20: a stub return from Stage 6b (producer_b phase) routes
+    back to 6a (``_dispatch_producer``) to REBUILD the code, NOT re-run the
+    same runner on the same (usually broken) code. Re-running the runner on a
+    stub just stubs again — observed 3× → total failure in run 3f644a5996bb.
+    6a's completion re-dispatches a fresh 6b, so transient runner hiccups
+    also recover."""
     redispatched = []
-
-    def _capture_b(self, feedback=""):
-        redispatched.append(("b", feedback))
-
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: "emp-runner" if skill == "experiment_runner" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
-    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
-                        lambda self, *args: None)
-    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
-                        lambda self, *args, **kwargs: None)
-    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", _capture_b)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": redispatched.append(("a", feedback)))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b",
+                        lambda self, feedback="": redispatched.append(("b", feedback)))
 
     engine = pe.PipelineEngine("p", str(tmp_path), "topic")
     engine.state["current_stage"] = 6
@@ -1896,8 +2645,8 @@ def test_producer_b_stub_retries_via_dispatch_producer_b(tmp_path, monkeypatch):
 
     engine.on_task_complete("emp", "n1", "Executed: bash")
 
-    assert redispatched and redispatched[0][0] == "b", (
-        f"Stub at producer_b must retry via _dispatch_producer_b, got {redispatched!r}"
+    assert redispatched and redispatched[0][0] == "a", (
+        f"Stub at producer_b must route to 6a (rebuild), got {redispatched!r}"
     )
     assert "stub" in redispatched[0][1].lower()
 
@@ -2192,3 +2941,524 @@ def test_dispatch_producer_b_injects_feedback_and_user_feedback(tmp_path, monkey
     assert "ceo direct guidance" in desc
     # Pending user feedback is consumed.
     assert engine.state.get("pending_user_feedback", "") == ""
+
+
+# ===========================================================================
+# #27 Hard data gate — deterministic post-critic check (closes #96 A+C, #94)
+# ===========================================================================
+
+
+def test_data_gate_stage6_fails_when_no_run_succeeded():
+    """Stage 6 data gate: a runner report whose every run is non-succeeded
+    (still_running / blocked / failed) has no usable experimental data —
+    the gate must FAIL even if the critic graded the report well-written."""
+    report = (
+        "## Tasks executed\n\n"
+        "- run_id: run_a\n- status: still_running\n\n"
+        "- run_id: run_b\n- status: blocked\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(6, report)
+    assert ok is False
+    assert "succeed" in reason.lower() or "run" in reason.lower()
+
+
+def test_data_gate_stage6_passes_when_one_run_succeeded():
+    """Stage 6 gate passes as soon as one run is succeeded, even if others
+    are still_running (the long-running waiter already finalized the rest)."""
+    report = (
+        "- run_id: run_a\n- status: succeeded\n\n"
+        "- run_id: run_b\n- status: still_running\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(6, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_fails_when_all_hypotheses_not_tested():
+    """Stage 7 gate: if every hypothesis row is NOT TESTED, there is no
+    confirmatory result — the gate FAILs regardless of how polished the
+    analysis prose is (the 70cb46f4e26a INCONCLUSIVE-paper failure mode)."""
+    report = (
+        "## Hypotheses\n\n"
+        "### H1\nDecision: NOT TESTED\n\n"
+        "### H2\nDecision: NOT TESTED\n\n"
+        "### H3\nDecision: NOT TESTED\n\n"
+        "Overall: INCONCLUSIVE_DUE_TO_COVERAGE\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
+    assert "tested" in reason.lower() or "hypothes" in reason.lower()
+
+
+def test_data_gate_stage7_passes_with_one_supported_hypothesis():
+    """One SUPPORTED/REJECTED hypothesis with a real decision is enough to
+    clear the Stage 7 gate."""
+    report = (
+        "### H1\nTest result: t=3.2 (95% CI [1.1, 5.3]), effect size: 0.6\n"
+        "Decision: SUPPORTED\n\n"
+        "### H2\nDecision: NOT TESTED\n\n"
+        "Overall: PARTIALLY CONFIRMED\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_blocks_stage6_advance_when_critic_passed_but_no_data(tmp_path, monkeypatch):
+    """The flagship #27 behavior: critic votes PASS on a well-written Stage 6
+    report, but every run is still_running (no real data). The data gate must
+    override the PASS — the stage does NOT advance to gate; it routes to the
+    critic-reject retry path (which #106 then auto-fails on exhaustion)."""
+    redispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": redispatched.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: still_running\n",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    # Did NOT advance to gate — the gate override turned PASS into a reject.
+    assert engine.phase != "gate", f"must not advance; phase={engine.phase}"
+    assert engine.state["retries"] == 1
+    assert redispatched, "must re-dispatch (reject path)"
+    assert "DATA_GATE_FAIL" in redispatched[0]
+
+
+def test_data_gate_allows_stage6_advance_when_data_present(tmp_path, monkeypatch):
+    """Control: a Stage 6 report WITH a succeeded run passes the gate and
+    advances to the CEO gate exactly as before (no regression)."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: succeeded\n",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    assert getattr(engine, "_passed", False) is True, "must call _on_critic_pass when data present"
+
+
+def test_data_gate_stage8_fails_when_upstream_stage7_has_no_data(tmp_path, monkeypatch):
+    """Stage 8 (paper writing) must not advance if the upstream Stage 7
+    result analysis had no confirmatory data — the paper would be written
+    about nothing (#96 Failure C)."""
+    redispatched = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "7": "### H1\nDecision: NOT TESTED\n\n### H2\nDecision: NOT TESTED\n",
+        "8": "# Paper\n\nSome well-written abstract and intro.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.98")
+
+    assert engine.phase != "gate", f"must not advance; phase={engine.phase}"
+    assert redispatched, "must re-dispatch (reject path)"
+    assert "Stage 7" in redispatched[0]
+
+
+def test_data_gate_stage8_passes_when_upstream_stage7_has_data(tmp_path, monkeypatch):
+    """Control: Stage 8 advances when Stage 7 carried a real tested hypothesis."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "7": "### H1\nTest result: t=3.2\nDecision: SUPPORTED\n",
+        "8": "# Paper\n\nResults show H1 supported.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    assert getattr(engine, "_passed", False) is True
+
+
+def test_stage9_verdict_clamped_to_major_revision_when_no_data(tmp_path, monkeypatch):
+    """Stage 9 (self-review) is terminal — it can't be blocked/retried like
+    6/7/8. Instead, when the pipeline has no real experimental data, an
+    acceptance-class verdict must be CLAMPED to MAJOR REVISION. A paper that
+    never ran its experiments cannot be ACCEPT (#94)."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 9
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: blocked\n",      # no data
+        "7": "### H1\nDecision: NOT TESTED\n",             # no data
+        "9": "## Review\n\nVerdict: ACCEPT\n\nStrong methodology.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    clamped = engine.state["stage_results"]["9"]
+    assert "ACCEPT" not in clamped.split("clamp")[0] or "MAJOR REVISION" in clamped, clamped
+    assert "MAJOR REVISION" in clamped, "verdict must be clamped to MAJOR REVISION"
+    # Stage 9 still completes (terminal) — not routed to reject/retry.
+    assert getattr(engine, "_passed", False) is True
+
+
+def test_stage9_verdict_preserved_when_data_present(tmp_path, monkeypatch):
+    """Control: with real data upstream, Stage 9's ACCEPT verdict is left
+    untouched."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 9
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {
+        "6": "- run_id: run_a\n- status: succeeded\n",
+        "7": "### H1\nDecision: SUPPORTED\n",
+        "9": "## Review\n\nVerdict: ACCEPT\n\nStrong methodology.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+
+    assert "Verdict: ACCEPT" in engine.state["stage_results"]["9"]
+    assert "MAJOR REVISION" not in engine.state["stage_results"]["9"]
+    assert getattr(engine, "_passed", False) is True
+
+
+@pytest.mark.asyncio
+async def test_data_gate_fail_exhausts_to_autofail_under_auto_approve(tmp_path, monkeypatch):
+    """End-to-end reuse: a Stage 6 data-gate fail routes through the existing
+    critic-reject retry path; after MAX_RETRIES it opens an exhausted gate,
+    which under auto_approve (the #106 fix) marks the pipeline failed rather
+    than silently advancing an empty stage."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": None)
+    failed = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_failed", lambda self, sid, reason: failed.append((sid, reason)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["auto_approve"] = True
+    engine.state["retries"] = pe.MAX_RETRIES  # already at the cap
+    engine.state["stage_results"] = {"6": "- run_id: run_a\n- status: still_running\n"}
+
+    # Critic says PASS, but gate fails → reject → exhausted (retries==MAX) → gate
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+    assert engine.phase == "gate"
+
+    # auto-approve fires on the exhausted gate → #106 refuses → failed
+    await engine._auto_approve_gate(stage_id=6, exhausted=True)
+    assert engine.state["phase"] == "failed"
+    assert failed == [(6, "retries_exhausted")]
+
+
+def test_data_gate_reads_ondisk_deliverable_not_submit_result_summary(tmp_path, monkeypatch):
+    """REGRESSION (caught by the 4→9 e2e, project 538372e68022): the runner's
+    submit_result is a PROSE SUMMARY ("Smoke run: `run_x` — succeeded") whose
+    run_id/status share a line — _parse_runner_report_runs finds 0 runs in it.
+    The canonical evidence is the on-disk stage6_experimentalist.md (proper
+    `- run_id:` / `- status:` lines). The gate MUST read the file, else it
+    wrongly fails a healthy Stage 6 and (via #106) kills the whole run."""
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+    # On-disk canonical evidence file with real, parseable runs.
+    (tmp_path / "stage6_experimentalist.md").write_text(
+        "### T2 — Smoke\n- run_id: run_914f8929b927\n- status: succeeded\n\n"
+        "### T3 — Full\n- run_id: run_131741e1d009\n- status: succeeded\n"
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    # The stored deliverable is the runner's PROSE summary — does NOT parse.
+    engine.state["stage_results"] = {
+        "6": "The deliverable stage6_experimentalist.md exists. "
+             "Smoke run: `run_914f8929b927` — `succeeded`, $0.00.",
+    }
+
+    engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+    assert getattr(engine, "_passed", False) is True, (
+        "gate must read the on-disk report (which has real succeeded runs), "
+        "not the unparseable submit_result summary"
+    )
+
+
+def test_parse_critic_pass_ignores_incidental_reject_word(tmp_path):
+    """REGRESSION (#19 facet 2, caught by 4→9 run 6d188381963c at Stage 7):
+    the critic's submit_result was a clear PASS ('Gate Review Complete —
+    PASS (0.95)') but contained the rubric header 'Auto-REJECT trigger
+    check:'. The old bare-substring `if 'REJECT' in text` matched that
+    incidental word and returned REJECT, killing a PASSED stage.
+
+    A verdict must come from a LABELED/structured signal (Decision: X,
+    Verdict: X, Gate Review ... — X, | Decision | X |), not any stray
+    occurrence of the words pass/reject."""
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+
+    real_submit_result = (
+        "**Stage 7 Gate Review Complete — PASS (0.95 confidence).**\n\n"
+        "| D9 | Reproducibility | PASS |\n"
+        "| D10 | Language & Style | PASS |\n\n"
+        "**Auto-REJECT trigger check:**\n"
+        "- (a) HARKing: none detected\n"
+        "- (b) fabricated data: none\n"
+    )
+    assert engine._parse_critic_pass(real_submit_result) is True, (
+        "an incidental 'Auto-REJECT' rubric mention must not flip a PASS to REJECT"
+    )
+
+    # And a genuinely labeled REJECT still parses as REJECT.
+    assert engine._parse_critic_pass(
+        "Gate Review Complete — REJECT. The smoke run produced no data."
+    ) is False
+
+
+def test_data_gate_stage7_accepts_not_supported_null_result(tmp_path):
+    """REGRESSION (#27 Stage 7 gate too narrow, caught by 4→9 run
+    6d188381963c): a hypothesis decided 'NOT SUPPORTED — Δ=0.00 < 0.20' IS a
+    tested result with a real statistic (a null result), not 'no data'. The
+    gate's job is to block 'no experiment ran', not 'effect not found'. The
+    old regex only knew SUPPORTED/REJECTED/CONFIRMED/NOT TESTED and missed
+    'NOT SUPPORTED' + the 'Decision: PASS' manipulation-check style → wrongly
+    reported 'no decision lines'."""
+    report = (
+        "## G1 — Scaling criterion\n"
+        "**Decision:** **NOT SUPPORTED** — Δ = 0.00 < 0.20. Both at 100% accuracy.\n\n"
+        "## Manipulation check\n"
+        "**Decision:** **PASS** — cot_trace_nonempty_ratio = 1.0.\n\n"
+        "**No hypotheses are NOT TESTED.** All checks have full coverage.\n"
+        "**Overall verdict:** PARTIALLY CONFIRMED.\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate_stage7(report)
+    assert ok is True, f"NOT SUPPORTED is a tested null result — gate must pass. reason={reason}"
+
+
+def test_data_gate_stage7_still_fails_pure_not_tested(tmp_path):
+    """Control: a report where EVERY hypothesis is genuinely NOT TESTED /
+    INCONCLUSIVE_DUE_TO_COVERAGE (no experiment ran) must still FAIL."""
+    report = (
+        "### H1\n**Decision:** NOT TESTED — Stage 6 collected 0 observations.\n\n"
+        "### H2\n**Decision:** NOT TESTED.\n\n"
+        "**Overall verdict:** INCONCLUSIVE_DUE_TO_COVERAGE.\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate_stage7(report)
+    assert ok is False
+
+
+def test_producer_b_stub_routes_to_6a_rebuild_not_runner_rerun(tmp_path, monkeypatch):
+    """REGRESSION (#20, caught by 4→9 run 3f644a5996bb): the 6b runner
+    thrashed on a broken entrypoint ('--output-dir' the 6a code didn't
+    accept), burned its step budget, and returned a 14-char stub. Re-running
+    the SAME runner on the SAME broken code just stubs again (observed 3×) →
+    exhausted → whole run dies.
+
+    A producer_b stub means the runner couldn't produce a usable report —
+    usually because the experiment code/entrypoint is broken. Route the retry
+    back to 6a (rebuild code) rather than re-running the runner."""
+    to_6a = []
+    to_6b = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": to_6a.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b", lambda self, feedback="": to_6b.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    engine.on_task_complete("00025", "node", "Executed: bash")  # 14-char runner stub
+
+    assert to_6a, "producer_b stub must route to 6a (rebuild), not re-run the runner"
+    assert to_6b == [], "must NOT re-dispatch the same runner on a stub"
+    assert engine.state["retries"] == 1
+    # feedback should hint the code/entrypoint is the suspect
+    assert "entrypoint" in to_6a[0].lower() or "runner" in to_6a[0].lower()
+
+
+# ===========================================================================
+# Result-driven loop (#40): result-reviewer routes back to 4/5/6 or advances
+# ===========================================================================
+
+
+def test_parse_result_route_advance():
+    """Reviewer says the result is sound → advance (no revert target)."""
+    txt = "RESULT REVIEW\nReasonableness: REASONABLE\nAction: ADVANCE\nReason: solid."
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "advance"
+    assert target is None
+
+
+def test_parse_result_route_revert_to_code():
+    """Reviewer judges it a code bug → revert to Stage 6, with the stage it gave."""
+    txt = ("RESULT REVIEW\nReasonableness: UNREASONABLE\nAction: REVERT\n"
+           "Revert to stage: 6\nReason: direct accuracy 0.0 across all problems — "
+           "extraction is almost certainly broken.")
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "revert"
+    assert target == 6
+    assert "extraction" in reason.lower()
+
+
+def test_parse_result_route_revert_to_methodology():
+    """Reviewer judges the design too weak → revert to Stage 4."""
+    txt = ("Action: REVERT\nRevert to stage: 4\n"
+           "Reason: n=7 with no baseline cannot support the causal claim.")
+    action, target, reason = pe.PipelineEngine._parse_result_route(txt)
+    assert action == "revert"
+    assert target == 4
+
+
+def test_parse_result_route_table_form_and_aliases():
+    """Tolerate decorated / aliased phrasings the LLM may emit."""
+    assert pe.PipelineEngine._parse_result_route(
+        "| **Decision** | **REVERT** |\n| Revert-to-stage | 5 |")[1] == 5
+    assert pe.PipelineEngine._parse_result_route(
+        "verdict: advance — results look reasonable")[0] == "advance"
+
+
+def test_parse_result_route_ambiguous_defaults_to_advance():
+    """If the reviewer says REVERT but gives no parseable target stage, do NOT
+    guess a stage — treat as advance (don't loop on a malformed review)."""
+    action, target, reason = pe.PipelineEngine._parse_result_route(
+        "Action: REVERT\nReason: something feels off but I won't say where")
+    assert action == "advance"
+    assert target is None
+
+
+def test_parse_result_route_rejects_out_of_range_target():
+    """Only 4/5/6 are valid revert targets for the result loop."""
+    action, target, _ = pe.PipelineEngine._parse_result_route(
+        "Action: REVERT\nRevert to stage: 2")
+    assert action == "advance"  # 2 is not a valid result-loop target → no-op
+
+
+def test_result_review_advance_proceeds_to_next_stage(tmp_path, monkeypatch):
+    """result_review verdict ADVANCE → normal advance (via _on_critic_pass)."""
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: advanced.append(result))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+
+    engine.on_task_complete("critic", "n", "Action: ADVANCE\nReason: sound result.")
+
+    assert advanced == ["analysis"], "ADVANCE must proceed via _on_critic_pass"
+
+
+def test_result_review_revert_schedules_revert_and_counts_loop(tmp_path, monkeypatch):
+    """REVERT to 6 → schedule revert_to_stage(6) and bump that stage's loop count."""
+    reverts = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: reverts.append("ADVANCED"))
+    monkeypatch.setattr(pe.PipelineEngine, "_schedule_result_revert",
+                        lambda self, stage, reason: reverts.append((stage, reason)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+
+    engine.on_task_complete("critic", "n",
+        "Action: REVERT\nRevert to stage: 6\nReason: accuracy 0.0 — extraction broken.")
+
+    assert reverts and reverts[0][0] == 6, f"must schedule revert to 6, got {reverts}"
+    assert engine.state["result_loops"]["6"] == 1
+    assert "ADVANCED" not in reverts
+
+
+def test_result_review_revert_budget_exhausted_advances_with_caveat(tmp_path, monkeypatch):
+    """When a target's loop budget is spent, stop looping → advance instead."""
+    calls = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: calls.append("ADVANCED"))
+    monkeypatch.setattr(pe.PipelineEngine, "_schedule_result_revert",
+                        lambda self, stage, reason: calls.append(("REVERT", stage)))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "result_review"
+    engine.state["stage_results"] = {"7": "analysis"}
+    engine.state["result_loops"] = {"6": pe.MAX_RESULT_LOOPS}  # already exhausted
+
+    engine.on_task_complete("critic", "n",
+        "Action: REVERT\nRevert to stage: 6\nReason: still looks broken.")
+
+    assert calls == ["ADVANCED"], f"exhausted budget must advance, got {calls}"
+
+
+def test_stage7_pass_dispatches_result_reviewer_not_straight_to_paper(tmp_path, monkeypatch):
+    """Stage 7 critic PASS must go through the result-reviewer (phase
+    result_review), NOT advance straight to Stage 8."""
+    reviewer = []
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_stage_data_gate", lambda self, sid, d: (True, ""))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_result_reviewer", lambda self, conf=None: reviewer.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: advanced.append(True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {"7": "### H1\nDecision: SUPPORTED\n"}
+
+    engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
+
+    assert reviewer == [True], "Stage 7 pass must dispatch the result-reviewer"
+    assert advanced == [], "Stage 7 pass must NOT call _on_critic_pass directly"
+
+
+def test_stage6_pass_still_advances_normally_not_via_reviewer(tmp_path, monkeypatch):
+    """Control: only Stage 7 triggers the result-reviewer. Stage 6 pass keeps
+    its normal advance path."""
+    reviewer = []
+    advanced = []
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", lambda self, *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_stage_data_gate", lambda self, sid, d: (True, ""))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_result_reviewer", lambda self, conf=None: reviewer.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, *a, **k: advanced.append(True))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "critic"
+    engine.state["stage_results"] = {"6": "- run_id: r1\n- status: succeeded\n"}
+
+    engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
+
+    assert advanced == [True] and reviewer == [], "Stage 6 keeps normal advance"

@@ -105,3 +105,78 @@ async def test_branches_endpoint(tmp_path):
 
     assert result["current"] == "main"
     assert len(result["branches"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_stats_endpoint(tmp_path):
+    from onemancompany.api.routes import pipeline_stage_stats
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    store = ResearchMemoryStore("p1", tmp_path, memory_root=tmp_path / "memory")
+    store.record_stage_episode(
+        topic="timing",
+        stage={"id": 2, "name": "Literature Survey", "skill": "literature_surveyor"},
+        producer_result="p",
+        critic_result="c",
+        passed=True,
+        confidence=0.8,
+        retries=0,
+        reward=0.8,
+        outcome="critic_pass",
+        producer_elapsed_seconds=300,
+        critic_elapsed_seconds=60,
+    )
+
+    with patch("onemancompany.core.config.PROJECTS_DIR", tmp_path), \
+         patch("onemancompany.core.research_memory._default_memory_root", return_value=tmp_path / "memory"):
+        result = await pipeline_stage_stats(window=20)
+
+    assert result["window_size"] == 20
+    assert "2" in result["stages"]
+    assert result["stages"]["2"]["total"]["mean_seconds"] == 360
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stage_stats_endpoint_aggregates_across_project_ids(tmp_path):
+    from onemancompany.api.routes import pipeline_stage_stats
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    memory_root = tmp_path / "memory"
+    store_a = ResearchMemoryStore("project-a", tmp_path / "a", memory_root=memory_root)
+    store_b = ResearchMemoryStore("project-b", tmp_path / "b", memory_root=memory_root)
+
+    store_a.record_stage_episode(
+        topic="timing-a",
+        stage={"id": 2, "name": "Literature Survey", "skill": "literature_surveyor"},
+        producer_result="p",
+        critic_result="c",
+        passed=True,
+        confidence=0.9,
+        retries=0,
+        reward=0.8,
+        outcome="critic_pass",
+        producer_elapsed_seconds=200,
+        critic_elapsed_seconds=40,
+    )
+    store_b.record_stage_episode(
+        topic="timing-b",
+        stage={"id": 3, "name": "Idea Generation", "skill": "idea_generator"},
+        producer_result="p",
+        critic_result="c",
+        passed=True,
+        confidence=0.8,
+        retries=1,
+        reward=0.7,
+        outcome="critic_pass",
+        producer_elapsed_seconds=120,
+        critic_elapsed_seconds=30,
+    )
+
+    with patch("onemancompany.core.config.PROJECTS_DIR", tmp_path), \
+         patch("onemancompany.core.research_memory._default_memory_root", return_value=memory_root):
+        result = await pipeline_stage_stats(window=30)
+
+    assert "2" in result["stages"]
+    assert "3" in result["stages"]
+    assert result["stages"]["2"]["total"]["mean_seconds"] == 240
+    assert result["stages"]["3"]["total"]["mean_seconds"] == 150

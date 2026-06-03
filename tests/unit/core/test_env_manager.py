@@ -30,6 +30,13 @@ def env_path(tmp_path, monkeypatch):
         "onemancompany.core.env_manager._env_path",
         lambda: p,
     )
+    # Isolate the project-root .env fallback from the developer's real
+    # one — otherwise tests pick up live credentials from cwd/.env.
+    fallback = tmp_path / "fallback.env"
+    monkeypatch.setattr(
+        "onemancompany.core.env_manager._fallback_env_path",
+        lambda: fallback,
+    )
     # Fresh module state for each test.
     from onemancompany.core import env_manager as em
     em._pending.clear()

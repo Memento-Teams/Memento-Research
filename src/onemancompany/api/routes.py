@@ -919,7 +919,7 @@ async def task_followup(project_id: str, body: dict) -> dict:
 
 
 @router.post("/api/pipeline/resume")
-async def resume_pipeline_breakpoint(body: dict):
+async def resume_pipeline_breakpoint(body: dict, request: Request):
     """Resume pipeline after a breakpoint.
 
     Finds the HOLDING parent node with hold_reason 'breakpoint:stage_N'
@@ -935,6 +935,18 @@ async def resume_pipeline_breakpoint(body: dict):
 
     if not project_id:
         raise HTTPException(status_code=400, detail="Missing project_id")
+
+    # Per-user isolation: this is a body-keyed action route, so the auth-gate
+    # path regex (which only sees /api/pipeline/resume, no pid) cannot guard it.
+    # Enforce ownership here instead, mirroring the middleware's check. Returns
+    # True for empty user_id (auth off / localhost automation) — zero regression.
+    from onemancompany.api.auth_gate import current_user_id
+    from onemancompany.core.user_llm import user_can_access_project
+
+    if not user_can_access_project(project_id, current_user_id(request)):
+        raise HTTPException(
+            status_code=403, detail="forbidden: project belongs to another user"
+        )
 
     from onemancompany.core.project_archive import get_project_dir
     pdir = str(get_project_dir(project_id))
@@ -1043,6 +1055,22 @@ async def list_pipeline_branches(project_id: str):
         return {"current": None, "branches": []}
 
 
+@router.get("/api/pipeline/stage-stats")
+async def pipeline_stage_stats(window: int = 30):
+    """Return rolling stage duration stats from research memory."""
+    from onemancompany.core.config import PROJECTS_DIR
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    window = max(1, min(int(window or 30), 200))
+    store = ResearchMemoryStore("global", PROJECTS_DIR)
+    try:
+        stages = store.summarize_stage_durations(limit_per_stage=window)
+    except Exception as exc:
+        logger.warning("[pipeline-stage-stats] failed to summarize durations: {}", exc)
+        stages = {}
+    return {"window_size": window, "stages": stages}
+
+
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
@@ -1114,6 +1142,8 @@ async def pipeline_status(project_id: str):
         "topic": engine.topic,
         "start_stage": engine.state.get("start_stage", 1),
         "end_stage": engine.state.get("end_stage", 9),
+        "active_task_started_at": engine.state.get("active_task_started_at"),
+        "attempt_timing": engine.state.get("attempt_timing", {}),
         "stage_results": engine.state.get("stage_results", {}),
         "critic_result": engine.state.get("critic_result", None),
         "stages": STAGES,
@@ -6300,6 +6330,69 @@ async def env_save(request: Request) -> dict:
     return {"status": "ok", "saved": list(body.keys())}
 
 
+# ── Infra runs panel ─────────────────────────────────────
+
+
+@router.get("/api/infra/runs")
+async def infra_runs() -> dict:
+    """Proxy to the experiment-infra ``/api/list_runs`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing so the frontend can render an informative empty state.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{server_url}/api/list_runs",
+                json={"session_key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[infra/runs] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
+@router.get("/api/infra/budget")
+async def infra_budget() -> dict:
+    """Proxy to the experiment-infra ``/api/budget`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{server_url}/api/budget",
+                json={"session_key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[infra/budget] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
 # ── Generic credentials endpoint ────────────────────────
 @router.post("/api/credentials/{service_name}")
 async def submit_credentials(service_name: str, request: Request) -> dict:
@@ -6386,7 +6479,14 @@ async def save_employee_secrets(employee_id: str, request: Request) -> dict:
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await ws_manager.connect(websocket)
+    # Bind this connection to the logged-in user so the broadcaster can route
+    # project-attributable events to their owner only (issue #115). WebSocket
+    # objects expose .cookies, so current_user_id works unchanged; it returns
+    # "" when AUTH is off / no cookie → the connection sees everything.
+    from onemancompany.api.auth_gate import current_user_id
+
+    user_id = current_user_id(websocket)
+    await ws_manager.connect(websocket, user_id=user_id)
     try:
         while True:
             data = await websocket.receive_json()
@@ -8289,3 +8389,53 @@ async def api_product_activity(slug: str, limit: int = 50) -> list[dict]:
     from onemancompany.core import product as prod
 
     return prod.list_product_activity(slug, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# aigraph reverse proxy — lets the browser-side orbit/conflict graph
+# (frontend/src/lcg-graph.js) reach the server-local aigraph service at
+# 127.0.0.1:8765 via same-origin /aigraph (8765 isn't browser-reachable, and
+# fetching it directly from the browser fails with "Failed to fetch").
+# ---------------------------------------------------------------------------
+import os as _os_aig
+
+_AIGRAPH_UPSTREAM = _os_aig.environ.get("AIGRAPH_URL", "http://127.0.0.1:8765").rstrip("/")
+
+# Only these aigraph REST endpoints are reachable through the proxy. The
+# frontend orbit graph fetches /query/graph; /query and /api/runs are the other
+# read-only endpoints OMC uses. An explicit allowlist (not a "../" reject) is
+# the right control here: the path has no prefix to escape — /aigraph/admin
+# would otherwise reach upstream/admin directly — so we enumerate what is
+# permitted rather than try to blocklist what is not.
+_AIGRAPH_ALLOWED_PATHS = frozenset({"query/graph", "query", "api/runs"})
+
+
+@router.api_route("/aigraph/{path:path}", methods=["GET"])
+async def _aigraph_proxy(path: str, request: Request):
+    """Proxy GET /aigraph/<path>?<qs> -> <AIGRAPH_UPSTREAM>/<path>?<qs>.
+
+    Restricted to the read-only aigraph endpoints the frontend needs, and the
+    upstream host is pinned (no redirect-following) so the proxy can't be turned
+    into an SSRF gadget.
+    """
+    import httpx
+    from fastapi.responses import JSONResponse as _JR
+    from starlette.responses import Response as _StarResponse
+
+    norm = path.strip("/")
+    if norm not in _AIGRAPH_ALLOWED_PATHS:
+        return _JR({"error": f"aigraph path not allowed: {path}"}, status_code=404)
+
+    upstream = f"{_AIGRAPH_UPSTREAM}/{norm}"
+    qs = request.url.query
+    if qs:
+        upstream += f"?{qs}"
+    try:
+        # follow_redirects=False keeps the request pinned to the upstream host —
+        # a malicious/compromised upstream can't 3xx us into an internal SSRF.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=20.0) as _c:
+            r = await _c.get(upstream)
+        media = r.headers.get("content-type", "application/json")
+        return _StarResponse(content=r.content, status_code=r.status_code, media_type=media)
+    except Exception as _e:  # noqa: BLE001
+        return _JR({"error": f"aigraph upstream unreachable: {_e}"}, status_code=502)
