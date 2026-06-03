@@ -72,18 +72,43 @@ def _env_path() -> Path:
     return DATA_ROOT / DOT_ENV_FILENAME
 
 
-def _read_env_file() -> dict[str, str]:
-    path = _env_path()
-    if not path.exists():
-        return {}
+def _parse_env_text(text: str) -> dict[str, str]:
     out: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#") or "=" not in s:
             continue
         k, _, v = s.partition("=")
         out[k.strip()] = v.strip()
     return out
+
+
+def _fallback_env_path() -> Path:
+    """Project-root ``.env`` — read-only fallback. Pulled into a function
+    so tests can monkeypatch it independently of ``_env_path``."""
+    return Path.cwd() / ".env"
+
+
+def _read_env_file() -> dict[str, str]:
+    """Read merged env state.
+
+    Canonical store is ``DATA_ROOT/.env`` (writes always go here). For
+    convenience we also surface a project-root ``.env`` as a read-only
+    fallback, so users who already stashed credentials there see them
+    in the ENV panel without having to re-paste. The canonical store
+    wins on conflict.
+    """
+    merged: dict[str, str] = {}
+    canonical = _env_path()
+    fallback = _fallback_env_path()
+    try:
+        if fallback.exists() and fallback.resolve() != canonical.resolve():
+            merged.update(_parse_env_text(fallback.read_text(encoding="utf-8")))
+    except OSError as exc:
+        logger.warning("[env_manager] failed to read fallback .env: {}", exc)
+    if canonical.exists():
+        merged.update(_parse_env_text(canonical.read_text(encoding="utf-8")))
+    return merged
 
 
 def _write_env_file(updates: dict[str, str]) -> None:
