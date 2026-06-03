@@ -2478,12 +2478,21 @@ async function _openEnvPanel(focusKeys) {
   header.innerHTML = '<span>🔧 ENV Management</span><button id="envPanelClose" style="background:transparent;color:#fff;border:1px solid #444;padding:2px 6px;cursor:pointer;font-family:inherit;font-size:8px;">×</button>';
   const body = document.createElement('div');
   body.style.cssText = 'padding:10px 12px;overflow:auto;flex:1;';
-  if (rows.length === 0) {
-    body.innerHTML = '<div style="opacity:.6;">No env vars tracked yet.</div>';
+  // Inject virtual rows for any focusKeys not already tracked, so a
+  // caller can deep-link a user straight to "set INFRA_SERVER_URL" even
+  // when env_manager has never heard of that key.
+  const existingNames = new Set(rows.map(r => r.name));
+  if (focusKeys) {
+    for (const k of focusKeys) {
+      if (!existingNames.has(k)) {
+        rows.push({ name: k, set: false, pending: false, secret: true, _virtual: true });
+        existingNames.add(k);
+      }
+    }
   }
   const inputs = {};
   rows.sort((a, b) => (b.pending - a.pending) || a.name.localeCompare(b.name));
-  for (const row of rows) {
+  const appendRow = (row) => {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin-bottom:10px;padding:8px;border:1px solid ' + (row.pending ? '#f33' : '#333') + ';background:' + (row.pending ? 'rgba(255,60,60,.08)' : 'transparent') + ';';
     if (focusKeys && focusKeys.includes(row.name)) {
@@ -2496,15 +2505,39 @@ async function _openEnvPanel(focusKeys) {
     const input = document.createElement('input');
     input.type = row.secret === false ? 'text' : 'password';
     input.value = '';
-    input.placeholder = row.pending ? 'Pending — paste value' : (row.set ? '(hidden — paste to overwrite)' : '');
+    input.placeholder = row.pending ? 'Pending — paste value' : (row.set ? '(hidden — paste to overwrite)' : 'Paste value');
     input.style.cssText = 'width:100%;background:#000;color:#fff;border:1px solid #444;font-family:inherit;font-size:8px;padding:6px;';
     inputs[row.name] = input;
     wrap.appendChild(label);
     wrap.appendChild(input);
     body.appendChild(wrap);
+  };
+  for (const row of rows) appendRow(row);
+  if (rows.length === 0) {
+    const empty = document.createElement('div');
+    empty.id = 'envEmptyHint';
+    empty.style.cssText = 'opacity:.6;margin-bottom:10px;';
+    empty.textContent = 'No env vars tracked yet — use "+ Add" below.';
+    body.insertBefore(empty, body.firstChild);
   }
   const footer = document.createElement('div');
   footer.style.cssText = 'padding:10px 12px;border-top:2px solid var(--border,#444);display:flex;justify-content:flex-end;gap:8px;';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '+ Add';
+  addBtn.style.cssText = 'background:transparent;color:#fff;border:1px solid #666;padding:6px 12px;cursor:pointer;font-family:inherit;font-size:8px;margin-right:auto;';
+  addBtn.onclick = () => {
+    const raw = prompt('Env var name (e.g. INFRA_SERVER_URL):');
+    if (!raw) return;
+    const name = raw.trim();
+    if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      alert('Invalid name. Use letters, digits, and underscores; must start with a letter or underscore.');
+      return;
+    }
+    if (inputs[name]) { inputs[name].focus(); return; }
+    document.getElementById('envEmptyHint')?.remove();
+    appendRow({ name, set: false, pending: false, secret: false });
+    inputs[name].focus();
+  };
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save';
   saveBtn.style.cssText = 'background:#2a6;color:#fff;border:1px solid #4c8;padding:6px 12px;cursor:pointer;font-family:inherit;font-size:8px;';
@@ -2528,6 +2561,7 @@ async function _openEnvPanel(focusKeys) {
       saveBtn.textContent = 'Save';
     }
   };
+  footer.appendChild(addBtn);
   footer.appendChild(saveBtn);
   modal.appendChild(header);
   modal.appendChild(body);
