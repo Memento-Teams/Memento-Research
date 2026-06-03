@@ -997,6 +997,107 @@ def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
     assert engine.state["memory_feedback"]["1"]["episode_id"] == memory_id
 
 
+def test_record_stage_memory_persists_phase_elapsed_seconds(tmp_path):
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    memory_id = engine._record_stage_memory(
+        pe.STAGES[0],
+        producer_result="producer output",
+        critic_result="PASS confidence: 0.9",
+        passed=True,
+        confidence=0.9,
+        outcome="critic_pass",
+        producer_elapsed_seconds=42.5,
+        critic_elapsed_seconds=8.0,
+    )
+
+    store = pe.ResearchMemoryStore("p1", str(tmp_path))
+    record = next(r for r in store._read_records() if r["id"] == memory_id)
+    assert record["producer_elapsed_seconds"] == 42.5
+    assert record["critic_elapsed_seconds"] == 8.0
+
+
+def test_on_task_complete_updates_attempt_timing_and_records_it(tmp_path, monkeypatch):
+    recorded = {}
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda *a, **k: None)
+
+    def fake_record(self, stage, **kwargs):
+        recorded.update(kwargs)
+        return "m-1"
+
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
+
+    now = {"t": 1000.0}
+
+    def fake_time():
+        return now["t"]
+
+    monkeypatch.setattr(pe.time, "time", fake_time)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine.state["phase"] = "producer"
+    engine.state["active_task_started_at"] = 970.0
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+    engine.state["stage_results"] = {"1": "producer output"}
+
+    now["t"] = 1000.0
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, _result: None)
+    engine.on_task_complete("00006", "n1", "producer output")
+    assert engine.state["attempt_timing"]["producer_elapsed_seconds"] == 30.0
+
+    engine.state["phase"] = "critic"
+    engine.state["active_task_started_at"] = 1000.0
+    now["t"] = 1012.0
+    engine.on_task_complete("00014", "n2", "PASS confidence: 0.7")
+
+    assert recorded["producer_elapsed_seconds"] == 30.0
+    assert recorded["critic_elapsed_seconds"] == 12.0
+
+
+def test_critic_retry_persists_attempt_timing_before_reset(tmp_path, monkeypatch):
+    recorded = {}
+
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda *a, **k: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_critic_pass", lambda *a, **k: False)
+    monkeypatch.setattr(pe.PipelineEngine, "_parse_confidence", lambda *a, **k: 0.2)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": None)
+
+    def fake_record(self, stage, **kwargs):
+        recorded.update(kwargs)
+        return "m-1"
+
+    monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 1
+    engine.state["phase"] = "critic"
+    engine.state["retries"] = 0
+    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 41.0, "critic_elapsed_seconds": 9.0}
+
+    engine.on_task_complete("00014", "n2", "REJECT confidence: 0.2")
+
+    assert recorded["producer_elapsed_seconds"] == 41.0
+    assert recorded["critic_elapsed_seconds"] == 9.0
+    assert engine.state["attempt_timing"] == {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+
+def test_record_active_phase_elapsed_clamps_clock_jump_outliers(tmp_path, monkeypatch):
+    now = {"t": 10_000.0}
+    monkeypatch.setattr(pe.time, "time", lambda: now["t"])
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    monkeypatch.setattr(engine, "_stage_def", lambda stage_id=None: {"id": 2, "timeout_seconds": 1200})
+    engine.state["active_task_started_at"] = 10.0
+    engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
+
+    engine._record_active_phase_elapsed("producer")
+
+    assert engine.state["attempt_timing"]["producer_elapsed_seconds"] == 2400.0
+
+
 @pytest.mark.parametrize("feedback,expect_revise", [
     # advance-with-comment chats that must NOT trigger a redo
     ("再补充一点细节", False),
