@@ -20,6 +20,20 @@ MEMORY_FILENAME = "stage_memories.jsonl"
 MAX_STORED_TEXT = 12000
 MAX_SNIPPET_TEXT = 700
 
+# Module-level cache for stage-duration summaries. Keyed by
+# (resolved memory_path, mtime_ns, size, limit_per_stage) so it survives
+# the short-lived ResearchMemoryStore instances created per request.
+_STAGE_SUMMARY_CACHE: dict[tuple[str, int | None, int | None, int], dict[str, dict[str, Any]]] = {}
+_STAGE_SUMMARY_CACHE_MAX = 64
+
+
+def _stage_summary_cache_set(key: tuple[str, int | None, int | None, int], value: dict[str, dict[str, Any]]) -> None:
+    if len(_STAGE_SUMMARY_CACHE) >= _STAGE_SUMMARY_CACHE_MAX:
+        # Drop the oldest entry to keep the cache bounded.
+        oldest = next(iter(_STAGE_SUMMARY_CACHE))
+        _STAGE_SUMMARY_CACHE.pop(oldest, None)
+    _STAGE_SUMMARY_CACHE[key] = value
+
 
 @dataclass(frozen=True)
 class RetrievedResearchMemory:
@@ -99,7 +113,6 @@ class ResearchMemoryStore:
         self.project_dir = Path(project_dir)
         self.memory_dir = Path(memory_root) if memory_root else _default_memory_root(project_dir)
         self.memory_path = self.memory_dir / MEMORY_FILENAME
-        self._stage_summary_cache: dict[tuple[int, int | None, int | None], dict[str, dict[str, Any]]] = {}
 
     def retrieve_stage_guidance(
         self,
@@ -263,18 +276,19 @@ class ResearchMemoryStore:
         return {"episode_id": episode_id, "updated_ids": updated_ids, "reward_signal": reward_signal}
 
     def summarize_stage_durations(self, *, limit_per_stage: int = 30) -> dict[str, dict[str, Any]]:
+        path_key = str(self.memory_path)
         try:
             stat = self.memory_path.stat()
-            cache_key = (int(limit_per_stage), stat.st_mtime_ns, stat.st_size)
+            cache_key = (path_key, stat.st_mtime_ns, stat.st_size, int(limit_per_stage))
         except OSError:
-            cache_key = (int(limit_per_stage), None, None)
-        cached = self._stage_summary_cache.get(cache_key)
+            cache_key = (path_key, None, None, int(limit_per_stage))
+        cached = _STAGE_SUMMARY_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
         records = self._read_records()
         if not records:
-            self._stage_summary_cache[cache_key] = {}
+            _stage_summary_cache_set(cache_key, {})
             return {}
 
         by_stage: dict[int, list[dict[str, Any]]] = {}
@@ -344,7 +358,7 @@ class ResearchMemoryStore:
                     else 0.0
                 ),
             }
-        self._stage_summary_cache = {cache_key: summary}
+        _stage_summary_cache_set(cache_key, summary)
         return summary
 
     def _read_records(self) -> list[dict[str, Any]]:
@@ -376,7 +390,6 @@ class ResearchMemoryStore:
                 memory_file.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
                 memory_file.write("\n")
         tmp_path.replace(self.memory_path)
-        self._stage_summary_cache.clear()
 
     def _build_stage_query(
         self,

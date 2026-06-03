@@ -330,10 +330,10 @@ export class PipelineController {
     }
 
     const total = stats.total || {};
-    const typicalMin = Number(total.typical_min_seconds || total.mean_seconds || 0);
-    const typicalMax = Number(total.typical_max_seconds || total.mean_seconds || 0);
-    const producerMean = Number((stats.producer || {}).mean_seconds || 0);
-    const criticMean = Number((stats.critic || {}).mean_seconds || 0);
+    const typicalMin = Number(total.typical_min_seconds ?? total.mean_seconds ?? 0);
+    const typicalMax = Number(total.typical_max_seconds ?? total.mean_seconds ?? 0);
+    const producerMean = Number((stats.producer || {}).mean_seconds ?? 0);
+    const criticMean = Number((stats.critic || {}).mean_seconds ?? 0);
     const rangeText = typicalMax > 0
       ? (typicalMin > 0 && Math.abs(typicalMax - typicalMin) > 30
         ? `${this._fmtDuration(typicalMin)}–${this._fmtDuration(typicalMax)}`
