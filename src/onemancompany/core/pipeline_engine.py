@@ -40,6 +40,12 @@ STAGES = [
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
 
+# Result-driven loop (#40): max times the result-reviewer may send the
+# pipeline back to a given earlier stage (4/5/6) before we stop looping and
+# proceed with the best result (written up honestly with its limitations).
+# Per-target so a code-fix loop and a redesign loop don't share a budget.
+MAX_RESULT_LOOPS = 2
+
 # Canonical default employee per stage, sourced from company/hire_list.json.
 # When multiple hired employees share the same skill, the one originating
 # from the canonical talent_id wins. Falls back to skill-based lookup if
@@ -1071,6 +1077,57 @@ class PipelineEngine:
         self._save()
         self._dispatch_to_employee(critic_id, desc, f"Gate Review: Stage {stage['id']}")
 
+    def _dispatch_result_reviewer(self, confidence: float = None):
+        """Result-driven loop (#40): after Stage 7 passes its critic + data
+        gate, ask a reviewer whether the experiment RESULT is scientifically
+        sound — and if not, which earlier stage to loop back to. The reviewer
+        gives the target; the engine executes it.
+
+        Falls back to advancing (normal Stage 7 → 8) if no reviewer employee
+        exists, so the loop is additive and never strands the pipeline.
+        """
+        reviewer_id = _find_employee_by_skill(CRITIC_SKILL)
+        if not reviewer_id:
+            logger.info("[PIPELINE] No reviewer for result-loop; advancing Stage 7 → 8")
+            self._on_critic_pass(self.state["stage_results"].get("7", ""), confidence)
+            return
+
+        loops = self.state.get("result_loops", {}) or {}
+        results = self.state.get("stage_results", {}) or {}
+        stage6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        stage7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        ctx = self._cap_for_critic(
+            f"--- Stage 6 experiment evidence ---\n{stage6}\n\n"
+            f"--- Stage 7 result analysis ---\n{stage7}\n",
+            stage_id=7,
+        )
+        desc = (
+            "Result Review (Stage 7 → routing decision)\n\n"
+            "Stage 7 passed its quality critic. Before writing the paper, judge "
+            "whether the experiment's RESULT is scientifically SOUND and worth "
+            "writing up — not whether the report is well-formatted.\n\n"
+            "Decide ONE of:\n"
+            "  - ADVANCE — the result is sound and supports a real finding; proceed to the paper.\n"
+            "  - REVERT to stage 6 (code) — the numbers look like an implementation bug, "
+            "not science: e.g. accuracy exactly 0% or 100% across all conditions, "
+            "below-random accuracy, extraction yield < 100%, NaN/identical outputs.\n"
+            "  - REVERT to stage 5 (experiment design) — the result is real but the design "
+            "is too weak to conclude: n below the power analysis, confidence intervals too "
+            "wide, missing baseline/control, no variance estimate (single seed).\n"
+            "  - REVERT to stage 4 (methodology) — a conceptual flaw: wrong hypothesis, "
+            "uncontrolled confound, the claim cannot be tested by this design.\n\n"
+            f"Loop budget already used per stage: {loops} (max {MAX_RESULT_LOOPS} each — "
+            "if a target is exhausted, prefer ADVANCE and note the limitation).\n\n"
+            "Output EXACTLY these lines:\n"
+            "Action: ADVANCE | REVERT\n"
+            "Revert to stage: <4|5|6>   (only if REVERT)\n"
+            "Reason: <one paragraph naming the specific metric/design flaw>\n\n"
+            f"{ctx}"
+        )
+        self.state["phase"] = "result_review"
+        self._save()
+        self._dispatch_to_employee(reviewer_id, desc, "Result Review: Stage 7")
+
     # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
     # ≈ 20K tokens, comfortably under the smaller-window critic models
     # (Kimi-K2.6: 262K, MiniMax-M2.7: 128K-ish, Claude-Sonnet: 200K) while
@@ -1140,7 +1197,27 @@ class PipelineEngine:
                         # runner would try to re-submit completed runs.
                         self._dispatch_producer_b_finalize()
                     elif self.phase == "producer_b":
-                        self._dispatch_producer_b(feedback=feedback)
+                        # #20: a 6b-runner stub means the runner couldn't
+                        # produce a usable report — almost always because the
+                        # experiment code/entrypoint is broken (e.g. the
+                        # runnable command in the receipt hits an argparse /
+                        # import error), so the runner thrashes on re-submits
+                        # and runs out of steps. Re-running the SAME runner on
+                        # the SAME broken code just stubs again (observed 3× in
+                        # run 3f644a5996bb → total failure). Route back to 6a to
+                        # rebuild the code; 6a's completion re-dispatches a
+                        # fresh 6b, so a transient runner hiccup also recovers.
+                        rebuild_feedback = (
+                            "Stage 6b runner produced no usable report (stub result), "
+                            "which usually means the experiment could not be run cleanly — "
+                            "e.g. the runnable command in stage6_implementation_receipt.md "
+                            "hits an argparse/import/attribute error, or the entrypoint flags "
+                            "don't match what benchmark.py actually accepts. Re-verify the "
+                            "EXACT runnable entrypoint works (run it locally / dry-run the "
+                            "args), fix any CLI/import mismatch, re-commit, and rewrite the "
+                            "receipt with the corrected command.\n\n" + feedback
+                        )
+                        self._dispatch_producer(feedback=rebuild_feedback)
                     else:
                         self._dispatch_producer(feedback=feedback)
                     return
@@ -1309,6 +1386,36 @@ class PipelineEngine:
             self._emit_stage_event("stage_reviewing", stage["id"])
             self._dispatch_critic(result)
 
+        elif self.phase == "result_review":
+            # Result-driven loop (#40). The result-reviewer judged whether the
+            # Stage 7 RESULT (not its report) is scientifically sound and, if
+            # not, named the stage to loop back to (4 methodology / 5 design /
+            # 6 code). Route on its verdict; the LLM gives the target, the
+            # engine executes it (reusing revert_to_stage).
+            self.state["result_review_result"] = result
+            action, target, reason = self._parse_result_route(result)
+            if action == "revert" and target is not None:
+                loops = self.state.setdefault("result_loops", {})
+                used = int(loops.get(str(target), 0))
+                if used < MAX_RESULT_LOOPS:
+                    loops[str(target)] = used + 1
+                    self._save()
+                    logger.warning(
+                        "[PIPELINE] Result-loop: reverting to stage {} ({}/{}). Reason: {}",
+                        target, used + 1, MAX_RESULT_LOOPS, reason[:200],
+                    )
+                    self._schedule_result_revert(target, reason)
+                    return
+                logger.warning(
+                    "[PIPELINE] Result-loop budget for stage {} exhausted ({}x) — "
+                    "proceeding to paper with documented limitation. Reason: {}",
+                    target, MAX_RESULT_LOOPS, reason[:200],
+                )
+            # ADVANCE, or revert-budget exhausted → proceed to Stage 8 as if
+            # Stage 7 passed normally (the analysis is already stored).
+            stage7_result = (self.state.get("stage_results") or {}).get("7", result)
+            self._on_critic_pass(stage7_result, confidence=None)
+
         elif self.phase == "critic":
             # Critic finished → parse decision
             self.state["critic_result"] = result
@@ -1317,6 +1424,54 @@ class PipelineEngine:
             confidence = self._parse_confidence(result)
 
             stage = self._stage_def()
+
+            # #27 Hard data gate: a deterministic check that runs even when
+            # the critic voted PASS, and overrides it. The critic grades
+            # report *quality*; this gate verifies *real data exists* in the
+            # upstream artifact. The LLM cannot vote its way past it. Closes
+            # the #96/#94 failure mode where every critic accepted an honest
+            # "I couldn't run / NOT TESTED" report and the empty stage
+            # advanced to an INCONCLUSIVE paper.
+            if is_pass:
+                # Gate the PRODUCER's deliverable, not the critic's verdict
+                # text — the data lives in the stage's own report. Prefer the
+                # on-disk stage{N}_{skill}.md (the canonical evidence) over the
+                # stored submit_result, which is often a prose summary that
+                # points at the file without carrying parseable run/hypothesis
+                # lines (regression caught by the 4→9 e2e).
+                stored = (self.state.get("stage_results") or {}).get(str(stage["id"]), "")
+                producer_deliverable = self._read_stage_deliverable(stage["id"], fallback=stored)
+                if stage["id"] == 9:
+                    # Stage 9 is terminal: it can't be blocked/retried like
+                    # 6/7/8. When the pipeline has no real data, clamp an
+                    # acceptance-class verdict to MAJOR REVISION instead of
+                    # letting an unearned ACCEPT stand (#94). The stage still
+                    # "passes" (the review itself is valid) — only the verdict
+                    # is bounded by the existence of results.
+                    if not self._pipeline_has_real_data():
+                        clamped, changed = self._clamp_review_verdict(producer_deliverable)
+                        if changed:
+                            logger.warning(
+                                "[PIPELINE] Stage 9 verdict clamped to MAJOR REVISION "
+                                "— pipeline has no experimental data (#94)"
+                            )
+                            self.state["stage_results"]["9"] = clamped
+                            self._save()
+                else:
+                    data_ok, gate_reason = self._stage_data_gate(stage["id"], producer_deliverable)
+                    if not data_ok:
+                        logger.warning(
+                            "[PIPELINE] Stage {} data-gate FAIL despite critic PASS: {}",
+                            stage["id"], gate_reason,
+                        )
+                        is_pass = False
+                        result = (
+                            f"DATA_GATE_FAIL: {gate_reason}\n\n"
+                            "The deliverable was graded PASS for quality but contains no "
+                            "real experimental data, so the stage cannot advance. Produce "
+                            "a deliverable backed by actual run data.\n\n"
+                            f"--- original critic verdict ---\n{result}"
+                        )
 
             # Emit critic result to frontend so it shows in the stage card
             self._emit_critic_result(stage["id"], result, is_pass, confidence)
@@ -1332,7 +1487,15 @@ class PipelineEngine:
                 )
                 self._save()
                 logger.info("[PIPELINE] Stage {} PASSED (confidence={})", stage["id"], confidence)
-                self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
+                # Result-driven loop (#40): when Stage 7 (Result Analysis)
+                # passes its critic + data gate, don't advance straight to the
+                # paper. First ask the result-reviewer whether the RESULT is
+                # scientifically sound; it may route back to 4/5/6. Only Stage
+                # 7 triggers this (it's where real metrics first exist).
+                if stage["id"] == 7:
+                    self._dispatch_result_reviewer(confidence)
+                else:
+                    self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
                 retries = self.state.get("retries", 0)
                 if retries < MAX_RETRIES:
@@ -1543,6 +1706,43 @@ class PipelineEngine:
     # ------------------------------------------------------------------
     # Public API — revert to a previous stage with new instructions
     # ------------------------------------------------------------------
+
+    def _schedule_result_revert(self, stage: int, reason: str) -> None:
+        """Schedule an async ``revert_to_stage`` from the (sync) result-review
+        completion handler. The reviewer's reason becomes the producer's
+        instructions so the re-run targets exactly what was unsound.
+
+        Mirrors how ``_emit_gate_event`` schedules ``_auto_approve_gate`` —
+        we're inside a sync vessel callback with a running loop.
+        """
+        import asyncio
+        instructions = (
+            f"[Result-driven loop] The experiment result was judged unsound; "
+            f"this stage is being re-run to fix it. Reviewer's reason:\n{reason}"
+        )
+
+        async def _do_revert():
+            try:
+                await self.revert_to_stage(stage=stage, instructions=instructions)
+            except Exception as exc:  # noqa: BLE001 — never crash the callback
+                logger.warning(
+                    "[PIPELINE] result-loop revert_to_stage({}) failed: {} — "
+                    "advancing instead", stage, exc,
+                )
+                self._on_critic_pass(
+                    (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_revert())
+        except RuntimeError:
+            # No running loop (sync test / off-loop) — fall back to advancing
+            # so we never strand the pipeline. Tests stub this method out.
+            logger.debug("[PIPELINE] no running loop for result revert; advancing")
+            self._on_critic_pass(
+                (self.state.get("stage_results") or {}).get("7", ""), confidence=None,
+            )
 
     async def revert_to_stage(
         self, *, stage: int, instructions: str, branch_name: str | None = None,
@@ -1896,6 +2096,175 @@ class PipelineEngine:
                 return False
         return True
 
+    # ------------------------------------------------------------------
+    # #27 Hard data gate — deterministic post-critic data-existence check
+    # ------------------------------------------------------------------
+    # Runs AFTER the critic votes PASS and can override it. The critic
+    # grades report *quality*; this gate checks *real data exists*. The
+    # LLM cannot vote its way past it (closes #96 A+C, #94).
+
+    # A Stage 6 run only counts as real data if it actually finished.
+    _RUN_DATA_OK_STATUSES = ("succeeded", "partial_success")
+
+    @classmethod
+    def _data_gate(cls, stage_id: int, result: str) -> tuple[bool, str]:
+        """Deterministic check that a stage's own deliverable (``result``)
+        contains real experimental data. Pure / classmethod — depends only
+        on the report text. Returns ``(ok, reason)``. ``ok=True`` for any
+        stage without an own-result rule (1-5), so the gate is a no-op there.
+        """
+        if stage_id == 6:
+            return cls._data_gate_stage6(result)
+        if stage_id == 7:
+            return cls._data_gate_stage7(result)
+        return True, ""
+
+    def _read_stage_deliverable(self, stage_id: int, fallback: str = "") -> str:
+        """Return the canonical on-disk deliverable for a stage, falling back
+        to ``fallback`` (usually the stored ``stage_results`` entry).
+
+        The producer's ``submit_result`` is often a prose *summary* that
+        points at the file ("see stage6_experimentalist.md") and does not
+        itself carry the machine-parseable evidence (run_id/status lines,
+        hypothesis decisions). The real artifact is the ``stage{N}_{skill}.md``
+        file the producer wrote. The data gate must inspect that file, not
+        the summary — otherwise it gates the wrong text. Mirrors the existing
+        Stage 3 file-content fallback.
+        """
+        try:
+            stage_def = self._stage_def(stage_id)
+            path = Path(self.project_dir) / f"stage{stage_id}_{stage_def.get('skill', '')}.md"
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except (OSError, ValueError) as exc:
+            logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
+        return fallback
+
+    def _stage_data_gate(self, stage_id: int, result: str) -> tuple[bool, str]:
+        """Instance-level gate orchestration used by ``on_task_complete``.
+
+        Delegates to the pure ``_data_gate`` for stages whose rule depends
+        only on their own ``result`` (6, 7). Stage 8 has no own-result rule
+        but requires the UPSTREAM Stage 7 artifact to have carried real data
+        — otherwise the paper-writer is writing about nothing. We enforce
+        that by re-running the Stage 7 gate against the stored Stage 7
+        result (#96 Failure C).
+        """
+        ok, reason = self._data_gate(stage_id, result)
+        if not ok:
+            return ok, reason
+        if stage_id == 8:
+            stage7 = self._read_stage_deliverable(7, fallback=(self.state.get("stage_results") or {}).get("7", ""))
+            s7_ok, s7_reason = self._data_gate_stage7(stage7)
+            if not s7_ok:
+                return False, f"upstream Stage 7 has no confirmatory data ({s7_reason})"
+        return True, ""
+
+    def _pipeline_has_real_data(self) -> bool:
+        """True iff the pipeline actually produced experimental data:
+        Stage 6 had ≥1 succeeded run AND Stage 7 had ≥1 tested hypothesis.
+        Reads the on-disk deliverables (canonical evidence), not the
+        submit_result summaries. Used by the Stage 9 verdict clamp (#94)."""
+        results = self.state.get("stage_results") or {}
+        s6 = self._read_stage_deliverable(6, fallback=results.get("6", ""))
+        s7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
+        s6_ok, _ = self._data_gate_stage6(s6)
+        s7_ok, _ = self._data_gate_stage7(s7)
+        return s6_ok and s7_ok
+
+    # Stage 9 review verdicts that imply the paper is acceptable. When no
+    # experimental data exists, none of these may stand — clamp to
+    # MAJOR REVISION. REJECT / MAJOR REVISION are already non-acceptance,
+    # so they pass through unchanged.
+    _ACCEPTANCE_VERDICT_RE = re.compile(
+        r"((?:verdict|recommendation|decision)\s*[:=]\s*\**\s*)"
+        r"(weak\s+accept|accept|minor\s+revision)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _clamp_review_verdict(cls, review_text: str) -> tuple[str, bool]:
+        """Rewrite an acceptance-class verdict to MAJOR REVISION. Returns
+        ``(new_text, changed)``. Idempotent: if no acceptance verdict is
+        present (already REJECT / MAJOR REVISION / not found), returns the
+        text unchanged with ``changed=False``."""
+        if not review_text:
+            return review_text, False
+        m = cls._ACCEPTANCE_VERDICT_RE.search(review_text)
+        if not m:
+            return review_text, False
+        new_text = cls._ACCEPTANCE_VERDICT_RE.sub(
+            lambda mm: f"{mm.group(1)}MAJOR REVISION", review_text, count=1
+        )
+        new_text += (
+            "\n\n> [engine data-gate clamp] Verdict downgraded to MAJOR REVISION: "
+            "the pipeline produced no real experimental data (no succeeded Stage 6 "
+            "run / no tested Stage 7 hypothesis), so the paper cannot be accepted "
+            "regardless of presentation quality (#94)."
+        )
+        return new_text, True
+
+    @classmethod
+    def _data_gate_stage6(cls, result: str) -> tuple[bool, str]:
+        """Stage 6 passes only if ≥1 submitted run reached a data-bearing
+        terminal status (succeeded / partial_success)."""
+        runs = cls._parse_runner_report_runs(result)
+        if not runs:
+            return False, "no run_ids found in runner report — zero experiments submitted"
+        ok_runs = [rid for rid, status in runs if status in cls._RUN_DATA_OK_STATUSES]
+        if not ok_runs:
+            statuses = ", ".join(f"{rid}={status}" for rid, status in runs[:5])
+            return False, f"no run succeeded ({statuses})"
+        return True, ""
+
+    # Capture the value after a ``Decision:`` / ``Verdict:`` label (the
+    # leading word(s), e.g. "NOT SUPPORTED", "PASS", "NOT TESTED",
+    # "INCONCLUSIVE_DUE_TO_COVERAGE"). ``[\w ]+`` grabs word chars + spaces;
+    # it stops at a dash / period / digit-start, which is where the
+    # explanatory clause begins.
+    _HYPOTHESIS_DECISION_RE = re.compile(
+        r"(?:decision|verdict)\b\W*?[:：]\s*\*{0,2}\s*([A-Za-z][\w ]*)",
+        re.IGNORECASE,
+    )
+    # Decisions that mean "the experiment did NOT produce data for this
+    # hypothesis". Everything else (SUPPORTED, NOT SUPPORTED, REJECTED,
+    # CONFIRMED, PASS, FAIL, INCONCLUSIVE, …) means a test actually ran —
+    # including null results, which ARE data. Normalised: upper, underscores
+    # and runs of spaces collapsed to single spaces.
+    _STAGE7_NO_DATA_DECISIONS = (
+        "NOT TESTED",
+        "INCONCLUSIVE DUE TO COVERAGE",
+        "BLOCKED",
+        "NO DATA",
+    )
+
+    @staticmethod
+    def _normalise_decision(raw: str) -> str:
+        return re.sub(r"[\s_]+", " ", raw).strip().upper()
+
+    @classmethod
+    def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
+        """Stage 7 passes if ≥1 hypothesis/check has a decision indicating a
+        test actually ran. The gate blocks "no experiment ran" (every
+        decision is NOT TESTED / INCONCLUSIVE_DUE_TO_COVERAGE / BLOCKED), NOT
+        "effect not found" — a ``NOT SUPPORTED`` / null result IS data and
+        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e)."""
+        decisions = [
+            cls._normalise_decision(m.group(1))
+            for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
+        ]
+        if not decisions:
+            return False, "no hypothesis/check decision lines found in result analysis"
+        tested = [d for d in decisions if d not in cls._STAGE7_NO_DATA_DECISIONS]
+        if not tested:
+            return False, (
+                f"all {len(decisions)} decisions are no-data markers "
+                f"({', '.join(sorted(set(decisions)))}) — no experiment ran"
+            )
+        return True, ""
+
     def on_runs_wait_timeout(self, wait_seconds: int) -> None:
         """Called by ``run_tracker`` when a project has been parked in
         ``producer_b_waiting`` past the configured max-wait deadline
@@ -2016,57 +2385,134 @@ class PipelineEngine:
             emp_name = configs[employee_id].name
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
-    def _parse_critic_pass(self, result: str) -> bool:
-        """Parse the critic's PASS/REJECT verdict.
+    # A verdict is only recognised from a LABELED / structured signal — never
+    # an incidental occurrence of "pass"/"reject" (e.g. the rubric header
+    # "Auto-REJECT trigger check", or a per-dimension "| D10 | … | PASS |"
+    # row). #19 facet 2: a stray "Auto-REJECT" in an otherwise-PASS review
+    # was flipping the verdict to REJECT and killing a healthy stage.
+    _VERDICT_LABEL_RE = re.compile(
+        r"(?:decision|verdict|recommendation|gate\s+review[^\n:：—–-]*)"
+        r"\s*[:：—–-]\s*\*{0,2}\s*(PASS|REJECT)\b",
+        re.IGNORECASE,
+    )
 
-        Robustness improvements (#60 fix 4 / #63 fix 4):
-        - If the critic's ``submit_result`` was a stub (e.g. ``"Executed: bash"``
-          from a context-window-truncated review), fall back to reading the
-          on-disk ``stage{N}_gate_review.md`` the critic was told to write.
-        - Support table-format verdicts (``| Decision | PASS |``) as well as
-          the conversational ``"Decision: PASS"`` form.
-        - Default to REJECT on ambiguity (no PASS, no REJECT signal). The old
-          default-to-PASS branch was the auto-approve-empty-stage loophole.
-        """
-        text = result or ""
-        # Stub → reach for the gate-review file on disk.
-        if self._is_stub_result(text):
-            stage_id = self.current_stage
-            gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
-            if gate_review.exists():
-                try:
-                    text = gate_review.read_text(encoding="utf-8")
-                    logger.info(
-                        "[PIPELINE] Critic submit_result was a stub — falling back to {} ({} bytes)",
-                        gate_review.name, len(text),
-                    )
-                except OSError as exc:
-                    logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
-                    text = result  # restore original
-            else:
-                logger.warning(
-                    "[PIPELINE] Critic submit_result is a stub and no {} file found on disk — defaulting to REJECT",
-                    gate_review.name,
-                )
+    @classmethod
+    def _verdict_from_text(cls, text: str) -> bool | None:
+        """Extract PASS (True) / REJECT (False) / ambiguous (None) from a
+        critic text blob, using only LABELED/structured signals:
+        - table ``| Decision | PASS |`` (markdown emphasis stripped),
+        - labeled ``Decision: PASS`` / ``Verdict: REJECT`` /
+          ``Gate Review Complete — PASS``,
+        - a leading conversational ``PASS: …`` / ``REJECT: …``.
 
+        A bare mention of "pass"/"reject" elsewhere does NOT count — that
+        was the #19 false-verdict source (e.g. "Auto-REJECT trigger check")."""
+        if not text:
+            return None
         upper = text.upper()
-        # Explicit table-format ``| Decision | PASS |`` and ``| **Decision** | **PASS** |``
-        # — strip markdown emphasis before checking.
+        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
         compact = re.sub(r"[\s|*_]+", " ", upper)
         if " DECISION PASS " in compact:
             return True
         if " DECISION REJECT " in compact:
             return False
-        # Conversational form: prefer the FIRST explicit signal.
-        if "REJECT" in upper:
-            return False
-        if "PASS" in upper:
+        # Labeled verdict anywhere in the text.
+        m = cls._VERDICT_LABEL_RE.search(text)
+        if m:
+            return m.group(1).upper() == "PASS"
+        # Leading conversational verdict (``pass: …`` / ``reject: …``).
+        head = text.lstrip().lstrip("*# ").upper()
+        if head.startswith("PASS"):
             return True
-        # Ambiguous → safer default is REJECT (auto-pass on empty stages was
-        # the #63 / #60 root cause).
+        if head.startswith("REJECT"):
+            return False
+        return None
+
+    # Result-driven loop (#40): the result-reviewer routes the pipeline back
+    # to an earlier stage when the experiment's RESULT (not its report) is
+    # unsound. Only these stages are valid revert targets:
+    #   4 = methodology (conceptual: wrong hypothesis / missing control)
+    #   5 = experiment design (scale: n / seeds / power / baselines)
+    #   6 = code (implementation: extraction broken, 0%/NaN, etc.)
+    _RESULT_LOOP_TARGETS = (4, 5, 6)
+    _RESULT_REVERT_RE = re.compile(
+        r"revert[\s_-]*to[\s_-]*stage\b\W*?[:=|]\s*\*{0,2}\s*([4-6])",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _parse_result_route(cls, text: str) -> tuple[str, "int | None", str]:
+        """Parse the result-reviewer's routing verdict.
+
+        Returns ``(action, target_stage, reason)``:
+        - ``("advance", None, reason)`` — result is sound, proceed to Stage 8.
+        - ``("revert", N, reason)`` — N ∈ {4,5,6}; loop back to that stage.
+
+        Fail-safe: a REVERT with no parseable in-range target stage degrades
+        to ``advance`` — we never guess which stage to loop back to, and we
+        don't loop on a malformed review."""
+        t = text or ""
+        # Match a line whose label is exactly "reason" (not "reasonableness").
+        rm = re.search(r"^\s*\**\s*reason\s*\**\s*[:：—-]\s*(.+)$", t,
+                       re.IGNORECASE | re.MULTILINE)
+        reason = rm.group(1).strip() if rm else t.strip()[:300]
+
+        m = cls._RESULT_REVERT_RE.search(t)
+        target = int(m.group(1)) if m else None
+
+        upper = t.upper()
+        compact = re.sub(r"[\s|*_]+", " ", upper)
+        wants_revert = (" ACTION REVERT " in f" {compact} "
+                        or " DECISION REVERT " in compact
+                        or "REVERT TO STAGE" in compact)
+
+        if wants_revert and target in cls._RESULT_LOOP_TARGETS:
+            return "revert", target, reason
+        # Anything else — explicit ADVANCE, ambiguous, or out-of-range target.
+        return "advance", None, reason
+
+    def _parse_critic_pass(self, result: str) -> bool:
+        """Parse the critic's PASS/REJECT verdict.
+
+        Robustness (#60 fix 4 / #63 fix 4 / #19):
+        - An explicit verdict in ``result`` (the critic's submit_result text)
+          wins — table-format ``| Decision | PASS |`` or conversational.
+        - Otherwise, the verdict is AMBIGUOUS. This happens when the
+          submit_result was a stub (``"Executed: bash"``) OR a long
+          tool-result echo (``"Executed: write\\nwrite → {'path': ...}"``,
+          which slips past the short-stub heuristic — #19, seen in the 4→9
+          e2e). In BOTH cases the real verdict lives in the on-disk
+          ``stage{N}_gate_review.md`` the critic was told to write — consult
+          it before giving up.
+        - Default to REJECT only when neither the text nor the file yields a
+          signal. (The old default-to-PASS branch was the #60/#63
+          auto-approve-empty-stage loophole.)
+        """
+        verdict = self._verdict_from_text(result or "")
+        if verdict is not None:
+            return verdict
+
+        # Ambiguous submit_result → the verdict is in the file on disk.
+        stage_id = self.current_stage
+        gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
+        if gate_review.exists():
+            try:
+                file_text = gate_review.read_text(encoding="utf-8")
+                file_verdict = self._verdict_from_text(file_text)
+                if file_verdict is not None:
+                    logger.info(
+                        "[PIPELINE] Critic submit_result had no verdict — resolved {} "
+                        "from {} ({} bytes)",
+                        "PASS" if file_verdict else "REJECT", gate_review.name, len(file_text),
+                    )
+                    return file_verdict
+            except OSError as exc:
+                logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+
+        # Neither text nor file yielded a verdict → safer default is REJECT.
         logger.warning(
-            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT signal, len={}) — defaulting to REJECT",
-            len(text),
+            "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT in submit_result "
+            "or {}) — defaulting to REJECT", gate_review.name,
         )
         return False
 
