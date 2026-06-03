@@ -332,24 +332,19 @@ export class PipelineController {
     const total = stats.total || {};
     const typicalMin = Number(total.typical_min_seconds ?? total.mean_seconds ?? 0);
     const typicalMax = Number(total.typical_max_seconds ?? total.mean_seconds ?? 0);
-    const producerMean = Number((stats.producer || {}).mean_seconds ?? 0);
-    const criticMean = Number((stats.critic || {}).mean_seconds ?? 0);
     const rangeText = typicalMax > 0
       ? (typicalMin > 0 && Math.abs(typicalMax - typicalMin) > 30
         ? `${this._fmtDuration(typicalMin)}–${this._fmtDuration(typicalMax)}`
         : this._fmtDuration(typicalMax))
       : 'N/A';
-    const phaseHint = (producerMean > 0 || criticMean > 0)
-      ? ` · P ${this._fmtDuration(producerMean)} / C ${this._fmtDuration(criticMean)}`
-      : '';
 
     if (elapsedSeconds != null) {
       const pastTypical = typicalMax > 0 && elapsedSeconds > typicalMax;
       etaEl.textContent = pastTypical
-        ? `${this._fmtDuration(elapsedSeconds)} elapsed · past typical ${rangeText}${phaseHint}`
-        : `${this._fmtDuration(elapsedSeconds)} elapsed · typical ${rangeText}${phaseHint}`;
+        ? `${this._fmtDuration(elapsedSeconds)} elapsed · past estimate ${rangeText}`
+        : `${this._fmtDuration(elapsedSeconds)} elapsed · estimate ${rangeText}`;
     } else {
-      etaEl.textContent = `Typical ${rangeText}${phaseHint}`;
+      etaEl.textContent = `Estimate ${rangeText}`;
     }
     etaEl.style.display = '';
   }
