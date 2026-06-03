@@ -6350,9 +6350,9 @@ async def infra_runs() -> dict:
         return {"error": "INFRA not configured"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
+            resp = await client.post(
                 f"{server_url}/api/list_runs",
-                headers={"X-Session-Key": session_key},
+                json={"session_key": session_key},
             )
             resp.raise_for_status()
             return resp.json()
@@ -6380,9 +6380,9 @@ async def infra_budget() -> dict:
         return {"error": "INFRA not configured"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
+            resp = await client.post(
                 f"{server_url}/api/budget",
-                headers={"X-Session-Key": session_key},
+                json={"session_key": session_key},
             )
             resp.raise_for_status()
             return resp.json()

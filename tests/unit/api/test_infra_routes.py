@@ -1,7 +1,8 @@
 """Unit tests for /api/infra/runs and /api/infra/budget routes.
 
 Verifies that both routes:
-- Forward the ``X-Session-Key`` auth header to the upstream infra server.
+- POST to the upstream infra server with ``{"session_key": ...}`` in the
+  JSON body (the upstream contract — GET returns 404 on these paths).
 - Return the upstream JSON unchanged on success.
 - Return ``{"error": "INFRA not configured"}`` when env vars are missing.
 - Return an ``{"error": ...}`` dict (not a 5xx) when the upstream call fails.
@@ -59,7 +60,7 @@ class TestInfraRunsRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
@@ -70,8 +71,8 @@ class TestInfraRunsRoute:
         data = resp.json()
         assert data == upstream_payload
 
-    async def test_forwards_auth_header(self, monkeypatch):
-        """Route passes X-Session-Key header to the upstream server."""
+    async def test_forwards_session_key_in_body(self, monkeypatch):
+        """Route POSTs the session key in the JSON body (upstream contract)."""
         monkeypatch.setenv("INFRA_SERVER_URL", "http://infra.example.com")
         monkeypatch.setenv("INFRA_SESSION_KEY", "secret-session-key")
 
@@ -79,18 +80,15 @@ class TestInfraRunsRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 await c.get("/api/infra/runs")
 
-        _call_kwargs = mock_client.get.call_args
-        headers = _call_kwargs.kwargs.get("headers") or _call_kwargs.args[1] if len(_call_kwargs.args) > 1 else {}
-        if not headers:
-            headers = _call_kwargs[1].get("headers", {})
-        assert headers.get("X-Session-Key") == "secret-session-key"
+        body = mock_client.post.call_args.kwargs.get("json") or {}
+        assert body.get("session_key") == "secret-session-key"
 
     async def test_calls_correct_upstream_path(self, monkeypatch):
         """Route calls /api/list_runs on the configured server URL.
@@ -106,14 +104,14 @@ class TestInfraRunsRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 await c.get("/api/infra/runs")
 
-        called_url = mock_client.get.call_args.args[0]
+        called_url = mock_client.post.call_args.args[0]
         assert called_url == "http://infra.example.com/api/list_runs"
 
     async def test_not_configured_when_env_missing(self, monkeypatch):
@@ -148,7 +146,7 @@ class TestInfraRunsRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+        mock_client.post = AsyncMock(side_effect=Exception("connection refused"))
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
@@ -177,7 +175,7 @@ class TestInfraBudgetRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
@@ -187,8 +185,8 @@ class TestInfraBudgetRoute:
         assert resp.status_code == 200
         assert resp.json() == upstream_payload
 
-    async def test_forwards_auth_header(self, monkeypatch):
-        """Route passes X-Session-Key header to the upstream server."""
+    async def test_forwards_session_key_in_body(self, monkeypatch):
+        """Route POSTs the session key in the JSON body (upstream contract)."""
         monkeypatch.setenv("INFRA_SERVER_URL", "http://infra.example.com")
         monkeypatch.setenv("INFRA_SESSION_KEY", "budget-key-xyz")
 
@@ -196,16 +194,15 @@ class TestInfraBudgetRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 await c.get("/api/infra/budget")
 
-        _call_kwargs = mock_client.get.call_args
-        headers = _call_kwargs.kwargs.get("headers") or {}
-        assert headers.get("X-Session-Key") == "budget-key-xyz"
+        body = mock_client.post.call_args.kwargs.get("json") or {}
+        assert body.get("session_key") == "budget-key-xyz"
 
     async def test_calls_correct_upstream_path(self, monkeypatch):
         """Route calls /api/budget on the configured server URL."""
@@ -216,14 +213,14 @@ class TestInfraBudgetRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=fake_resp)
+        mock_client.post = AsyncMock(return_value=fake_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 await c.get("/api/infra/budget")
 
-        called_url = mock_client.get.call_args.args[0]
+        called_url = mock_client.post.call_args.args[0]
         # Trailing slash should be stripped before appending path
         assert called_url == "http://infra.example.com/api/budget"
 
@@ -247,7 +244,7 @@ class TestInfraBudgetRoute:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=Exception("timeout"))
+        mock_client.post = AsyncMock(side_effect=Exception("timeout"))
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             app = _make_test_app()
