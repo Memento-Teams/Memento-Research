@@ -24,7 +24,7 @@ async def test_broadcast_sends_in_parallel():
     for _ in range(3):
         ws = MagicMock()
         ws.send_json = AsyncMock(side_effect=slow_send)
-        mgr.connections.add(ws)
+        mgr.connections[ws] = ""
 
     await mgr.broadcast({"type": "test"})
 
@@ -44,8 +44,8 @@ async def test_broadcast_removes_dead_connections():
     bad_ws = MagicMock()
     bad_ws.send_json = AsyncMock(side_effect=ConnectionError("gone"))
 
-    mgr.connections.add(good_ws)
-    mgr.connections.add(bad_ws)
+    mgr.connections[good_ws] = ""
+    mgr.connections[bad_ws] = ""
 
     await mgr.broadcast({"type": "test"})
 
@@ -67,7 +67,7 @@ async def test_broadcast_timeout_removes_stalled_connection():
         await asyncio.sleep(100)
 
     stalled_ws.send_json = AsyncMock(side_effect=stall_forever)
-    mgr.connections.add(stalled_ws)
+    mgr.connections[stalled_ws] = ""
 
     start = time.monotonic()
     await mgr.broadcast({"type": "test"})

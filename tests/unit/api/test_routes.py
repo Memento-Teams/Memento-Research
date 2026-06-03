@@ -5765,6 +5765,9 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        # Real dict for .cookies so current_user_id() (sync, reads .cookies.get)
+        # resolves to "" without leaving an un-awaited coroutine (#115).
+        mock_ws.cookies = {}
         # First call returns ceo_task, second raises disconnect
         mock_ws.receive_json = AsyncMock(
             side_effect=[
@@ -5783,7 +5786,8 @@ class TestWebSocketEndpoint:
              patch.object(routes_mod, "ceo_submit_task", mock_submit):
             await routes_mod.websocket_endpoint(mock_ws)
 
-        mock_ws_mgr.connect.assert_awaited_once_with(mock_ws)
+        # Connection is now bound to the (empty, AUTH-off) user id (#115).
+        mock_ws_mgr.connect.assert_awaited_once_with(mock_ws, user_id="")
         mock_submit.assert_awaited_once_with(task="Build something")
         mock_ws_mgr.disconnect.assert_called_once_with(mock_ws)
 
@@ -5795,6 +5799,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(side_effect=WebSocketDisconnect())
 
         mock_ws_mgr = MagicMock()
@@ -5814,6 +5819,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(
             side_effect=[
                 {"type": "ceo_task", "task": ""},
@@ -5839,6 +5845,7 @@ class TestWebSocketEndpoint:
         from onemancompany.api import routes as routes_mod
 
         mock_ws = AsyncMock()
+        mock_ws.cookies = {}  # sync .cookies.get for current_user_id (#115)
         mock_ws.receive_json = AsyncMock(side_effect=RuntimeError("boom"))
 
         mock_ws_mgr = MagicMock()
