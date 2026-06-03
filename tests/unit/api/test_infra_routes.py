@@ -93,8 +93,13 @@ class TestInfraRunsRoute:
         assert headers.get("X-Session-Key") == "secret-session-key"
 
     async def test_calls_correct_upstream_path(self, monkeypatch):
-        """Route calls /api/list_runs on the configured server URL."""
-        monkeypatch.setenv("INFRA_SERVER_URL", "http://infra.example.com")
+        """Route calls /api/list_runs on the configured server URL.
+
+        The configured URL intentionally has a trailing slash to exercise
+        the route's ``.rstrip('/')`` normalization (otherwise the joined
+        URL would be ``http://infra.example.com//api/list_runs``).
+        """
+        monkeypatch.setenv("INFRA_SERVER_URL", "http://infra.example.com/")
         monkeypatch.setenv("INFRA_SESSION_KEY", "k")
 
         fake_resp = _fake_httpx_response({"runs": []})

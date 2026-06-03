@@ -6356,6 +6356,8 @@ async def infra_runs() -> dict:
             )
             resp.raise_for_status()
             return resp.json()
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning("[infra/runs] upstream error: {}", exc)
         return {"error": "upstream request failed"}
@@ -6384,6 +6386,8 @@ async def infra_budget() -> dict:
             )
             resp.raise_for_status()
             return resp.json()
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logger.warning("[infra/budget] upstream error: {}", exc)
         return {"error": "upstream request failed"}

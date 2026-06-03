@@ -2672,6 +2672,14 @@ window._openEnvPanel = _openEnvPanel;
           body.appendChild(msg);
           return;
         }
+        if (runsResp.error) {
+          body.innerHTML = '';
+          const msg = document.createElement('div');
+          msg.style.cssText = 'opacity:.8;padding:8px;color:#f88;';
+          msg.textContent = `Failed to load runs: ${runsResp.error}`;
+          body.appendChild(msg);
+          return;
+        }
         _renderRuns(body, runsResp, budgetResp, runsResp.base_url || '');
       } catch (e) {
         body.innerHTML = `<div style="opacity:.6;color:#f88;">Error loading infra data. Check the server logs.</div>`;
