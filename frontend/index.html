@@ -2612,52 +2612,103 @@ window._openEnvPanel = _openEnvPanel;
     return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
   }
 
+  function _esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  function _money(v) {
+    if (v == null) return '';
+    const n = +v;
+    if (!isFinite(n)) return '';
+    return '$' + (n >= 1 ? n.toFixed(2) : n.toFixed(4));
+  }
+
   function _renderRuns(body, runsData, budgetData, baseUrl) {
     body.innerHTML = '';
 
-    // Budget bar
+    // Budget summary (multi-tier)
     if (budgetData && !budgetData.error) {
-      const used = budgetData.used != null ? budgetData.used : (budgetData.spent != null ? budgetData.spent : 0);
-      const total = budgetData.total != null ? budgetData.total : (budgetData.limit != null ? budgetData.limit : 0);
-      const pct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+      const sessSpent = +budgetData.session_spent || 0;
+      const sessLimit = +budgetData.session_limit || 0;
+      const pct = sessLimit > 0 ? Math.min(100, (sessSpent / sessLimit) * 100) : 0;
+      const tier = (label, avail) => avail != null
+        ? `<span style="opacity:.85"><span style="opacity:.6">${label}</span> ${_money(avail)}</span>`
+        : '';
       const bar = document.createElement('div');
-      bar.style.cssText = 'margin-bottom:12px;padding:8px;background:#111;border:1px solid #333;';
-      bar.innerHTML = `<div style="font-size:7px;opacity:.7;margin-bottom:4px;font-family:var(--mono)">BUDGET</div>
-        <div style="background:#222;height:6px;border-radius:3px;overflow:hidden;margin-bottom:4px">
+      bar.style.cssText = 'margin-bottom:12px;padding:10px;background:#111;border:1px solid #333;display:flex;flex-direction:column;gap:6px;';
+      bar.innerHTML = `
+        <div style="font-size:8px;opacity:.7;font-family:var(--mono)">BUDGET</div>
+        <div style="background:#222;height:8px;border-radius:3px;overflow:hidden">
           <div style="width:${pct.toFixed(1)}%;background:${pct > 80 ? '#f33' : '#2a6'};height:100%"></div>
         </div>
-        <div style="font-size:7px;font-family:var(--mono);opacity:.8">$${(+used).toFixed(2)} used${total ? ' / $' + (+total).toFixed(2) + ' total' : ''}</div>`;
+        <div style="font-size:9px;font-family:var(--mono);display:flex;gap:14px;flex-wrap:wrap">
+          <span><span style="opacity:.6">session</span> ${_money(sessSpent)} / ${_money(sessLimit)}</span>
+          ${tier('session avail', budgetData.session_available)}
+          ${tier('project avail', budgetData.project_available)}
+          ${tier('user avail', budgetData.user_available)}
+        </div>`;
       body.appendChild(bar);
     }
 
     const runs = runsData.runs || runsData.data || (Array.isArray(runsData) ? runsData : []);
     if (runs.length === 0) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'opacity:.6;padding:8px;font-size:8px;';
+      empty.style.cssText = 'opacity:.6;padding:8px;font-size:10px;';
       empty.textContent = 'No active runs.';
       body.appendChild(empty);
       return;
     }
 
+    const cols = [
+      { key: 'run_id',     label: 'Run ID',  w: '160px' },
+      { key: 'user_id',    label: 'User',    w: '90px'  },
+      { key: 'project_id', label: 'Project', w: '140px' },
+      { key: 'status',     label: 'Status',  w: '90px'  },
+      { key: 'gpu',        label: 'GPU',     w: '80px'  },
+      { key: 'mode',       label: 'Mode',    w: '70px'  },
+      { key: 'cloud',      label: 'Cloud',   w: '70px'  },
+      { key: 'cost',       label: 'Cost',    w: '80px'  },
+      { key: 'elapsed',    label: 'Elapsed', w: '80px'  },
+    ];
+
+    const table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-family:var(--mono,monospace);font-size:10px;';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr style="background:#1a1a1a;border-bottom:2px solid #333">' +
+      cols.map(c => `<th style="text-align:left;padding:6px 8px;font-weight:normal;opacity:.7;width:${c.w}">${c.label}</th>`).join('') +
+      '</tr>';
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
     for (const run of runs) {
-      const row = document.createElement('div');
-      row.style.cssText = 'margin-bottom:8px;padding:8px;border:1px solid #333;background:#111;';
       const runId = run.run_id || run.id || '?';
       const runUrl = baseUrl ? `${baseUrl.replace(/\/$/, '')}/runs/${runId}` : null;
-      const idHtml = runUrl
-        ? `<a href="${runUrl}" target="_blank" rel="noopener" style="color:#7af;text-decoration:none;font-family:var(--mono);font-size:7px;">${runId}</a>`
-        : `<span style="font-family:var(--mono);font-size:7px;">${runId}</span>`;
-      const owner = _parseOwner(run);
-      const elapsed = _elapsed(run.started_at || run.created_at);
-      const cost = run.cost != null ? `$${(+run.cost).toFixed(4)}` : '';
-      row.innerHTML = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          ${idHtml} ${_statusBadge(run.status)}
-          ${owner ? `<span style="font-size:7px;opacity:.7">${owner}</span>` : ''}
-          ${elapsed ? `<span style="font-size:7px;opacity:.6">⏱ ${elapsed}</span>` : ''}
-          ${cost ? `<span style="font-size:7px;opacity:.6">💰 ${cost}</span>` : ''}
-        </div>`;
-      body.appendChild(row);
+      const idCell = runUrl
+        ? `<a href="${_esc(runUrl)}" target="_blank" rel="noopener" style="color:#7af;text-decoration:none">${_esc(runId)}</a>`
+        : _esc(runId);
+      const spot = run.use_spot ? ' <span style="opacity:.5">(spot)</span>' : '';
+      const cost = run.actual_cost != null ? _money(run.actual_cost)
+        : run.estimated_cost != null ? `~${_money(run.estimated_cost)}`
+        : run.cost != null ? _money(run.cost) : '';
+      const elapsed = _elapsed(run.started_at || run.created_at) || '';
+      const cells = [
+        idCell,
+        _esc(run.user_id || ''),
+        _esc(run.project_id || ''),
+        _statusBadge(run.status),
+        _esc(run.gpu || ''),
+        _esc(run.mode || '') + spot,
+        _esc(run.cloud || ''),
+        cost,
+        elapsed,
+      ];
+      const tr = document.createElement('tr');
+      tr.style.cssText = 'border-bottom:1px solid #222;';
+      tr.innerHTML = cells.map(c => `<td style="padding:6px 8px;vertical-align:top">${c}</td>`).join('');
+      tbody.appendChild(tr);
     }
+    table.appendChild(tbody);
+    body.appendChild(table);
   }
 
   async function _openInfraPanel() {
@@ -2666,10 +2717,10 @@ window._openEnvPanel = _openEnvPanel;
 
     const backdrop = document.createElement('div');
     backdrop.id = 'infraPanelBackdrop';
-    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:flex-end;justify-content:flex-start;';
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center;';
 
     const modal = document.createElement('div');
-    modal.style.cssText = 'background:#1a1a1a;border:1px solid #444;width:380px;max-height:70vh;margin:0 0 0 0;display:flex;flex-direction:column;font-family:var(--mono,monospace);font-size:8px;color:#eee;border-radius:4px 4px 0 0;';
+    modal.style.cssText = 'background:#1a1a1a;border:1px solid #444;width:min(1100px,95vw);max-height:88vh;display:flex;flex-direction:column;font-family:var(--mono,monospace);font-size:10px;color:#eee;border-radius:4px;';
 
     const header = document.createElement('div');
     header.style.cssText = 'padding:8px 12px;background:#222;border-bottom:1px solid #444;display:flex;align-items:center;justify-content:space-between;';
