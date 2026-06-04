@@ -158,7 +158,7 @@
     "name": "Idea Generator",
     "role": "Researcher",
     "department": "Research",
-    "description": "Generates novel research ideas grounded in topic constraints, literature gaps, and prior-stage context.",
+    "description": "Generates novel research ideas grounded in topic constraints, literature gaps, and prior-stage context. Backed by aigraph's literature-conflict-graph MCP for grounded hypothesis surfacing.",
     "agent_family": "omctalent",
     "hosting": "omctalent",
     "auth_method": "api_key",
@@ -168,7 +168,11 @@
     "skills": [
       "idea_generator"
     ],
-    "tools": [],
+    "tools": [
+      "aigraph_get_idea_report",
+      "aigraph_generate_ideas",
+      "aigraph_research_ideas"
+    ],
     "personality_tags": [
       "creative",
       "critical",
@@ -176,8 +180,9 @@
     ],
     "hiring_fee": 1.0,
     "salary_per_1m_tokens": 0,
-    "system_prompt_template": "You are Idea Generator for the AutoResearch pipeline. Propose novel, testable hypotheses and method directions grounded in the refined topic and literature gaps. Prefer ideas with clear evaluation paths.",
-    "source_type": "talent_market"
+    "system_prompt_template": "You are Idea Generator for the AutoResearch pipeline. Your Stage 3 deliverable is a literature-conflict-graph idea report. Default workflow: call `aigraph_get_idea_report(topic=<refined topic from Stage 1>, run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` to get the complete markdown deliverable (200ms, 0 LLM, Atlas-filtered). Write the returned content to `stage3_idea_generator.md` verbatim. For sparse-corpus fallback or higher coverage guarantee, use `aigraph_generate_ideas` (slower, LLM cascade). For full-pipeline auto-discovery, use `aigraph_research_ideas` (may trigger paid corpus build).",
+    "source_type": "talent_market",
+    "upstream_repo_url": "https://github.com/iamlilAJ/literature-researcher-talent"
   },
   {
     "cv_version": "1.0",
