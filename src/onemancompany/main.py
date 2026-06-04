@@ -428,6 +428,67 @@ from onemancompany.core.config import DATA_ROOT, load_employee_configs  # noqa: 
 HIRE_LIST_FILENAME = "hire_list.json"
 
 
+def _clone_talent_repos_from_hire_list() -> None:
+    """Clone talent repos declared by hire_list CVs (``upstream_repo_url``)
+    into ``TALENTS_RUNTIME_DIR`` so their tools/skills become available
+    before founding employees are hired.
+
+    Idempotent — skips any target dir that already exists. Per-CV failures
+    are logged but do not abort the loop. Runs synchronously so the hire
+    step below sees the fresh on-disk talent layout.
+    """
+    import json
+    import shutil
+    import subprocess
+    from onemancompany.core.config import TALENTS_RUNTIME_DIR
+
+    hire_file = DATA_ROOT / "company" / HIRE_LIST_FILENAME
+    if not hire_file.exists():
+        return
+    try:
+        cvs = json.loads(hire_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("[startup] talent_market: failed to parse hire_list.json: {}", exc)
+        return
+    if not cvs:
+        return
+    if shutil.which("git") is None:
+        logger.warning("[startup] talent_market: git not on PATH — skipping talent clones")
+        return
+
+    TALENTS_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    cloned = 0
+    skipped = 0
+    failed = 0
+    for cv in cvs:
+        url = (cv.get("upstream_repo_url") or "").strip()
+        if not url:
+            continue
+        repo_name = url.rstrip("/").split("/")[-1]
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        target = TALENTS_RUNTIME_DIR / repo_name
+        if target.exists():
+            skipped += 1
+            continue
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", url, str(target)],
+                check=True, capture_output=True, timeout=90,
+            )
+            print(f"[startup]   ✓ talent repo cloned: {repo_name}")
+            cloned += 1
+        except subprocess.TimeoutExpired:
+            print(f"[startup]   ✗ talent repo timeout: {repo_name}")
+            failed += 1
+        except Exception as exc:
+            print(f"[startup]   ✗ talent repo clone failed: {repo_name}: {exc}")
+            failed += 1
+    if cloned or failed:
+        print(f"[startup] talent_market: {cloned} cloned, "
+              f"{skipped} already present, {failed} failed")
+
+
 async def _bootstrap_hire_list_employees() -> None:
     """Hire ``company/hire_list.json`` employees inline during lifespan startup
     so the port is bound only after the founding roster is on disk. Per-CV
@@ -551,6 +612,13 @@ async def lifespan(app: FastAPI):
         await start_talent_market()
     except Exception as e:
         logger.warning("Talent Market connection failed (configure in Settings): {}", e)
+
+    # Clone any talent repos declared via `upstream_repo_url` on hire_list
+    # CVs into TALENTS_RUNTIME_DIR before hiring runs — otherwise tools
+    # referenced in the CV's tool list won't resolve at hire time.
+    # Idempotent + per-CV failures don't abort startup (talent without a
+    # cloned repo still hires but with a reduced tool set).
+    _clone_talent_repos_from_hire_list()
 
     # Hire the founding roster from company/hire_list.json BEFORE the
     # registration loop below runs — otherwise the new employees would be
