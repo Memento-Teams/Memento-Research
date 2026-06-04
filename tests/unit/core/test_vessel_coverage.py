@@ -2262,6 +2262,56 @@ class TestCompletionQueue:
         except asyncio.CancelledError:
             pass
 
+    @pytest.mark.asyncio
+    async def test_completion_timeout_unwedges_end_to_end(self, tmp_path, monkeypatch):
+        # BEHAVIOR test (not mock-theater): drive the REAL consumer loop through a
+        # forced timeout and assert the stuck next-stage node actually lands in
+        # the in-memory schedule — i.e. the full chain
+        #   consumer timeout → _requeue_node_after_timeout → schedule_node
+        # genuinely unwedges the run. The other tests mock one half of this chain
+        # each; this one mocks neither, so a break in the wiring is caught.
+        monkeypatch.setattr(
+            "onemancompany.core.vessel.COMPLETION_CONSUMER_TIMEOUT_S", 0.05
+        )
+        # Avoid disk side-effects from the task-index write inside schedule_node.
+        monkeypatch.setattr(
+            "onemancompany.core.store.append_task_index_entry", lambda *a, **k: None
+        )
+
+        tree, tree_path, root = _make_tree(tmp_path, status="processing")
+        child = tree.add_child(parent_id=root.id, employee_id="e1",
+                               description="next stage", acceptance_criteria=[])
+        tree.save(tree_path)
+        entry = ScheduleEntry(node_id=child.id, tree_path=str(tree_path))
+
+        mgr = EmployeeManager()
+        mgr.executors["e1"] = object()  # schedule_node requires a registered executor
+
+        async def _slow_inner(*_a, **_k):
+            await asyncio.sleep(0.5)
+
+        # Real _requeue_node_after_timeout + real schedule_node run; only the
+        # final agent dispatch (_run_task) is stubbed so nothing actually executes.
+        async def _noop_run_task(*_a, **_k):
+            return None
+
+        with patch.object(mgr, "_on_child_complete_inner", side_effect=_slow_inner), \
+             patch.object(mgr, "_run_task", side_effect=_noop_run_task):
+            mgr._ensure_completion_queue()
+            done = asyncio.Event()
+            await mgr._completion_queue.put(("e1", entry, "proj1", done))
+            await asyncio.wait_for(done.wait(), timeout=2.0)
+
+        scheduled_ids = [e.node_id for e in mgr._schedule.get("e1", [])]
+        assert child.id in scheduled_ids, \
+            "forced completion timeout must re-schedule the stuck next-stage node"
+
+        mgr._completion_consumer.cancel()
+        try:
+            await mgr._completion_consumer
+        except asyncio.CancelledError:
+            pass
+
     def test_requeue_redispatches_schedulable_node(self, tmp_path):
         # On timeout the run must advance WITHOUT a restart: a PENDING node whose
         # deps are resolved (the next step the interrupted propagation never
