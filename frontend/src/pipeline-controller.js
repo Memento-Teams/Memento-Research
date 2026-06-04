@@ -8,6 +8,10 @@ export class PipelineController {
     this.adapter = adapter;
     this.currentStage = null;
     this.stageCardIds = {}; // stageId → card DOM id
+    this.stageEtaStats = {}; // stageId -> stats object
+    this.stageRuntime = {}; // stageId -> { startedAtMs, status }
+    this._countdownTimer = null;
+    this._statsTimer = null;
 
     adapter.on('stage_start', (e) => this.handleStageStart(e));
     adapter.on('meeting_message', (e) => this.handleMeetingMessage(e));
@@ -18,6 +22,9 @@ export class PipelineController {
     adapter.on('system_event', (e) => this.handleSystemEvent(e));
     adapter.on('file_written', (e) => this.handleFileWritten(e));
     adapter.on('breakpoint_hit', (e) => this.handleBreakpointHit(e));
+
+    this._refreshStageStats();
+    this._statsTimer = setInterval(() => this._refreshStageStats(), 60000);
   }
 
   _cardId(stageId) {
@@ -35,11 +42,14 @@ export class PipelineController {
     return id;
   }
 
-  handleStageStart({ stageId, stageName, employeeName, employeeId, roomName, participants }) {
+  handleStageStart({ stageId, stageName, employeeName, employeeId, roomName, participants, eta }) {
     if (!stageId) return;
     this.currentStage = stageId;
     if (typeof showPipelineBar === 'function') showPipelineBar();
     setStage(stageId, 'running');
+    this.stageRuntime[stageId] = { startedAtMs: Date.now(), status: 'running' };
+    if (eta && typeof eta === 'object') this.stageEtaStats[stageId] = eta;
+    this._ensureCountdownTicker();
 
     // Create card with actual employee name
     const name = employeeName || this._getProducerName(stageId);
@@ -50,6 +60,7 @@ export class PipelineController {
       getStageCard(id, title, name, initials);
       this.stageCardIds[stageId] = id;
     }
+    this._renderEta(stageId);
   }
 
   handleMeetingMessage({ agent, role, message }) {
@@ -87,6 +98,17 @@ export class PipelineController {
     } else {
       updateProducer(cardId, message);
     }
+
+    // Live activity ticker under the stage head — one-line summary of
+    // what the agent is doing right now, so the user sees motion even
+    // when the long body text scrolls past. ``window.*`` is mandatory:
+    // ``setStageActivity`` is a top-level ``function`` in index.html
+    // and lives on ``window``, but a bare reference from this ES
+    // module didn't resolve in practice (the previous ``typeof``
+    // guard evaluated to ``'undefined'`` and the call was skipped).
+    if (typeof window !== 'undefined' && typeof window.setStageActivity === 'function') {
+      window.setStageActivity(cardId, message);
+    }
   }
 
   handleStageReviewing({ stageId }) {
@@ -96,6 +118,11 @@ export class PipelineController {
     const cardId = this._ensureCard(sid);
     setCardStatus(cardId, 'reviewing');
     setStage(sid, 'reviewing');
+    const runtime = this.stageRuntime[sid] || { startedAtMs: Date.now(), status: 'reviewing' };
+    runtime.status = 'reviewing';
+    this.stageRuntime[sid] = runtime;
+    this._ensureCountdownTicker();
+    this._renderEta(sid);
   }
 
   handleStageComplete({ stageId, confidence, result }) {
@@ -114,6 +141,9 @@ export class PipelineController {
 
     // Pipeline engine sends breakpoint_hit separately — don't check here
     setStage(sid, 'done');
+    delete this.stageRuntime[sid];
+    this._renderEta(sid);
+    if (typeof window !== 'undefined' && typeof window.clearStageActivity === 'function') window.clearStageActivity(cardId);
   }
 
   handleStageFailed({ stageId, confidence, reason }) {
@@ -131,6 +161,9 @@ export class PipelineController {
     }
 
     setStage(sid, 'failed');
+    delete this.stageRuntime[sid];
+    this._renderEta(sid);
+    if (typeof window !== 'undefined' && typeof window.clearStageActivity === 'function') window.clearStageActivity(cardId);
   }
 
   handleDirectorAction({ phase, message }) {
@@ -229,5 +262,100 @@ export class PipelineController {
       6: 'Auto Experiment', 7: 'Result Analysis', 8: 'Paper Generation', 9: 'Self-Review',
     };
     return stages[stageId] || `Stage ${stageId}`;
+  }
+
+  hydrateStageRuntime(stageId, phase, startedAtSeconds) {
+    if (!stageId || !phase || phase === 'done' || phase === 'failed' || phase === 'gate') return;
+    const startedAtMs = startedAtSeconds ? Number(startedAtSeconds) * 1000 : Date.now();
+    this.stageRuntime[stageId] = {
+      startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : Date.now(),
+      status: phase,
+    };
+    this._ensureCountdownTicker();
+    this._renderEta(stageId);
+  }
+
+  _refreshStageStats() {
+    const client = window._omcClient;
+    if (!client || typeof client.getPipelineStageStats !== 'function') return;
+    client.getPipelineStageStats()
+      .then((data) => {
+        const stats = (data && data.stages) ? data.stages : {};
+        this.stageEtaStats = stats;
+        Object.keys(this.stageCardIds).forEach((stageId) => this._renderEta(Number(stageId)));
+      })
+      .catch(() => {});
+  }
+
+  _ensureCountdownTicker() {
+    if (this._countdownTimer) return;
+    this._countdownTimer = setInterval(() => this._refreshCountdowns(), 1000);
+  }
+
+  _refreshCountdowns() {
+    const runningStages = Object.keys(this.stageRuntime);
+    if (!runningStages.length) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
+      return;
+    }
+    runningStages.forEach((sid) => this._renderEta(Number(sid)));
+  }
+
+  _renderEta(stageId) {
+    const cardId = this._cardId(stageId);
+    const card = document.getElementById(`sc-${cardId}`);
+    if (!card) return;
+    const head = card.querySelector('.sc-head');
+    if (!head) return;
+
+    let etaEl = head.querySelector('.sc-eta');
+    if (!etaEl) {
+      etaEl = document.createElement('span');
+      etaEl.className = 'sc-eta';
+      const statusBadge = head.querySelector('.sc-badge');
+      if (statusBadge) head.insertBefore(etaEl, statusBadge);
+      else head.appendChild(etaEl);
+    }
+
+    const runtime = this.stageRuntime[stageId];
+    const elapsedSeconds = runtime?.startedAtMs
+      ? Math.max(0, Math.floor((Date.now() - runtime.startedAtMs) / 1000))
+      : null;
+    const stats = this.stageEtaStats[String(stageId)] || this.stageEtaStats[stageId];
+    if (!stats) {
+      etaEl.textContent = elapsedSeconds != null ? `${this._fmtDuration(elapsedSeconds)} elapsed` : '';
+      etaEl.style.display = etaEl.textContent ? '' : 'none';
+      return;
+    }
+
+    const total = stats.total || {};
+    const typicalMin = Number(total.typical_min_seconds ?? total.mean_seconds ?? 0);
+    const typicalMax = Number(total.typical_max_seconds ?? total.mean_seconds ?? 0);
+    const rangeText = typicalMax > 0
+      ? (typicalMin > 0 && Math.abs(typicalMax - typicalMin) > 30
+        ? `${this._fmtDuration(typicalMin)}–${this._fmtDuration(typicalMax)}`
+        : this._fmtDuration(typicalMax))
+      : 'N/A';
+
+    if (elapsedSeconds != null) {
+      const pastTypical = typicalMax > 0 && elapsedSeconds > typicalMax;
+      etaEl.textContent = pastTypical
+        ? `${this._fmtDuration(elapsedSeconds)} elapsed · past estimate ${rangeText}`
+        : `${this._fmtDuration(elapsedSeconds)} elapsed · estimate ${rangeText}`;
+    } else {
+      etaEl.textContent = `Estimate ${rangeText}`;
+    }
+    etaEl.style.display = '';
+  }
+
+  _fmtDuration(seconds) {
+    const s = Math.max(0, Math.round(Number(seconds) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+    if (m > 0) return `${m}:${String(sec).padStart(2, '0')}`;
+    return `0:${String(sec).padStart(2, '0')}`;
   }
 }

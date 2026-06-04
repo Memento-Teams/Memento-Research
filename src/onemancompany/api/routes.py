@@ -1055,6 +1055,22 @@ async def list_pipeline_branches(project_id: str):
         return {"current": None, "branches": []}
 
 
+@router.get("/api/pipeline/stage-stats")
+async def pipeline_stage_stats(window: int = 30):
+    """Return rolling stage duration stats from research memory."""
+    from onemancompany.core.config import PROJECTS_DIR
+    from onemancompany.core.research_memory import ResearchMemoryStore
+
+    window = max(1, min(int(window or 30), 200))
+    store = ResearchMemoryStore("global", PROJECTS_DIR)
+    try:
+        stages = store.summarize_stage_durations(limit_per_stage=window)
+    except Exception as exc:
+        logger.warning("[pipeline-stage-stats] failed to summarize durations: {}", exc)
+        stages = {}
+    return {"window_size": window, "stages": stages}
+
+
 @router.get("/api/pipeline/{project_id}/status")
 async def pipeline_status(project_id: str):
     """Get current pipeline state for a project."""
@@ -1126,6 +1142,8 @@ async def pipeline_status(project_id: str):
         "topic": engine.topic,
         "start_stage": engine.state.get("start_stage", 1),
         "end_stage": engine.state.get("end_stage", 9),
+        "active_task_started_at": engine.state.get("active_task_started_at"),
+        "attempt_timing": engine.state.get("attempt_timing", {}),
         "stage_results": engine.state.get("stage_results", {}),
         "critic_result": engine.state.get("critic_result", None),
         "stages": STAGES,
@@ -6312,6 +6330,69 @@ async def env_save(request: Request) -> dict:
     return {"status": "ok", "saved": list(body.keys())}
 
 
+# ── Infra runs panel ─────────────────────────────────────
+
+
+@router.get("/api/infra/runs")
+async def infra_runs() -> dict:
+    """Proxy to the experiment-infra ``/api/list_runs`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing so the frontend can render an informative empty state.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{server_url}/api/list_runs",
+                json={"session_key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[infra/runs] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
+@router.get("/api/infra/budget")
+async def infra_budget() -> dict:
+    """Proxy to the experiment-infra ``/api/budget`` endpoint.
+
+    Uses ``INFRA_SERVER_URL`` and ``INFRA_SESSION_KEY`` from the environment.
+    Returns ``{"error": "INFRA not configured"}`` (200) when either env var is
+    missing.
+    """
+    import os
+    import httpx
+
+    server_url = os.environ.get("INFRA_SERVER_URL", "").rstrip("/")
+    session_key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not server_url or not session_key:
+        return {"error": "INFRA not configured"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{server_url}/api/budget",
+                json={"session_key": session_key},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("[infra/budget] upstream error: {}", exc)
+        return {"error": "upstream request failed"}
+
+
 # ── Generic credentials endpoint ────────────────────────
 @router.post("/api/credentials/{service_name}")
 async def submit_credentials(service_name: str, request: Request) -> dict:
@@ -6398,7 +6479,14 @@ async def save_employee_secrets(employee_id: str, request: Request) -> dict:
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await ws_manager.connect(websocket)
+    # Bind this connection to the logged-in user so the broadcaster can route
+    # project-attributable events to their owner only (issue #115). WebSocket
+    # objects expose .cookies, so current_user_id works unchanged; it returns
+    # "" when AUTH is off / no cookie → the connection sees everything.
+    from onemancompany.api.auth_gate import current_user_id
+
+    user_id = current_user_id(websocket)
+    await ws_manager.connect(websocket, user_id=user_id)
     try:
         while True:
             data = await websocket.receive_json()
