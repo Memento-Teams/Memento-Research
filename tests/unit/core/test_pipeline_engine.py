@@ -543,6 +543,59 @@ def test_producer_b_complete_with_pending_runs_parks_in_waiting(tmp_path, monkey
     assert "pending_waiting_started_at" in engine.state
 
 
+def test_producer_b_waiting_parses_on_disk_report_not_submit_summary(tmp_path, monkeypatch):
+    """REGRESSION (run 1a255f1aaf3d, Round-7 MF-BO): the 6b runner's
+    submit_result was a prose summary with a Markdown TABLE
+    (``| run_id | type | status |``) that the line-pair parser can't read,
+    while the on-disk ``stage6_experimentalist.md`` carried perfectly
+    parseable ``- run_id: ... / - status: running`` rows. The engine parsed
+    only the submit_result → found no pending runs → dispatched the critic
+    on a still-running pilot → procedural REJECT burned a retry.
+
+    Same disease as #27's original gate bug: never parse critical state
+    from the lossy submit summary when the canonical deliverable is on
+    disk. The waiter must read the deliverable first."""
+    dispatched_critic = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_critic",
+        lambda self, r: dispatched_critic.append(r),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    # On-disk canonical report: bullet rows, one still-running pilot.
+    (tmp_path / "stage6_experimentalist.md").write_text(
+        "# Stage 6 — Auto Experiment Results\n\n"
+        "### T1 — Pilot\n"
+        "- run_id: run_pilot_a\n"
+        "- status: running\n\n"
+        "### T0 — Smoke (validated by 6a)\n"
+        "- run_id: run_smoke_b\n"
+        "- status: succeeded\n",
+        encoding="utf-8",
+    )
+    # submit_result: prose + table — the format that defeated the parser.
+    summary = (
+        "**Stage 6b — STILL_RUNNING**\n\n"
+        "**Deliverable saved**: stage6_experimentalist.md (50 lines)\n\n"
+        "| run_id | type | status |\n"
+        "|--------|------|--------|\n"
+        "| `run_pilot_a` | pilot | running |\n"
+        "| `run_smoke_b` | smoke | succeeded |\n"
+    )
+
+    engine.on_task_complete("00025", "nodeB", summary)
+
+    assert dispatched_critic == [], (
+        "critic must NOT run on a still-running pilot — the on-disk report "
+        "names a running run_id"
+    )
+    assert engine.state["phase"] == "producer_b_waiting"
+    assert "run_pilot_a" in engine.state["pending_run_ids"]
+
+
 def test_producer_b_complete_with_all_terminal_dispatches_critic(tmp_path, monkeypatch):
     """Fast path: when every run in the 6b report is terminal, the engine
     skips ``producer_b_waiting`` and dispatches the critic immediately
@@ -1225,6 +1278,58 @@ def test_parse_critic_pass_long_toolresult_stub_falls_back_to_disk(tmp_path):
     gate_review.write_text("| Decision | PASS |")  # stale file says PASS...
     assert engine._parse_critic_pass("REJECT: the smoke run failed") is False, (
         "an explicit in-text verdict must take precedence over the on-disk file"
+    )
+
+
+def test_parse_critic_pass_consults_latest_versioned_review(tmp_path):
+    """REGRESSION (run e04df33b06bb, Round-3 GSM8K e2e): on a retry cycle the
+    critic sees ``stage6_gate_review.md`` already exists (the previous
+    cycle's REJECT) and writes its NEW verdict to
+    ``stage6_gate_review_v2.md`` — PASS. Its submit_result was again a
+    tool-echo stub, so the parser fell back to disk… and read the FIXED
+    filename: the stale v1 REJECT. A scientifically successful run
+    (CoT 87.04% vs direct 18.65% on full GSM8K, vLLM, 88 s wall-clock)
+    died at retries-exhausted on a verdict from the previous cycle.
+
+    The disk consult must read the LATEST ``stage{N}_gate_review*.md``
+    (by mtime), not the fixed name."""
+    import os
+    import time
+
+    engine = pe.PipelineEngine("p", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+
+    stub = (
+        "Executed: write\n"
+        "write → {'status': 'ok', 'path': '/work/stage6_gate_review_v2.md', "
+        "'type': 'create', 'note': '" + ("x" * 700) + "'}"
+    )
+    assert "PASS" not in stub.upper() and "REJECT" not in stub.upper()
+
+    old = time.time() - 3600
+    v1 = tmp_path / "stage6_gate_review.md"
+    v1.write_text("# Gate Review\n\n| Decision | REJECT |\n\nNo usable data.")
+    os.utime(v1, (old, old))
+    v2 = tmp_path / "stage6_gate_review_v2.md"
+    v2.write_text("# Gate Review — v2\n\n| Decision | PASS |\n\nReal data confirmed.")
+
+    assert engine._parse_critic_pass(stub) is True, (
+        "stale v1 REJECT must not shadow the newer v2 PASS"
+    )
+
+    # Reverse: newest verdict REJECT must win over an older PASS — no
+    # cherry-picking a favorable old file.
+    os.utime(v2, (old, old))
+    v3 = tmp_path / "stage6_gate_review_v3.md"
+    v3.write_text("# Gate Review — v3\n\n| Decision | REJECT |\n\nRegression found.")
+    assert engine._parse_critic_pass(stub) is False
+
+    # If the newest file is garbled (no verdict), fall back to the next
+    # newest that has one.
+    v4 = tmp_path / "stage6_gate_review_v4.md"
+    v4.write_text("# Gate Review — v4\n\n(truncated mid-write, no decision row)")
+    assert engine._parse_critic_pass(stub) is False, (
+        "garbled newest file falls through to v3's REJECT"
     )
 
 

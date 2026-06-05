@@ -171,6 +171,40 @@ class TestStuckDetection:
             )
 
 
+class TestProducerBWaitingExempt:
+    def test_producer_b_waiting_not_flagged_stuck(self, tmp_path):
+        """``producer_b_waiting`` is owned by run_tracker's
+        ``on_runs_wait_timeout``, not the generic stuck detector. A real
+        Stage 6b experiment legitimately parks here for hours while runs
+        execute on remote infra; the state file goes stale and the runner
+        node sits COMPLETED on disk. Surfacing it as PIPELINE_STUCK would
+        be a spurious signal that conflicts with run_tracker's own
+        deadline handling. Exempt the phase regardless of node status or
+        staleness (#30)."""
+        from onemancompany.core.pipeline_engine import (
+            detect_stuck_pipelines,
+            PIPELINE_STUCK_THRESHOLD_SECONDS,
+        )
+        for status in ("processing", "completed", "pending"):
+            tmp = tmp_path / status
+            tmp.mkdir()
+            _make_iter(
+                tmp,
+                pipeline_state={
+                    "current_stage": 6,
+                    "phase": "producer_b_waiting",
+                    "active_node_id": "node-stage-4",
+                    "pending_run_ids": ["run_abc123"],
+                },
+                node_status=status,
+                state_mtime_offset=-(PIPELINE_STUCK_THRESHOLD_SECONDS + 60),
+            )
+            assert detect_stuck_pipelines(tmp) == [], (
+                f"producer_b_waiting with node_status={status} must be left "
+                "to run_tracker, not flagged stuck"
+            )
+
+
 class TestEventTypeAvailable:
     def test_pipeline_stuck_event_type_exists(self):
         from onemancompany.core.models import EventType
