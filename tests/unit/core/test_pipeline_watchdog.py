@@ -237,6 +237,41 @@ class TestNoOpScenarios:
         assert recovered == 0
         engine.on_task_complete.assert_not_called()
 
+    def test_producer_b_waiting_not_replayed(self, tmp_path, monkeypatch):
+        """A Stage 6b experiment parked in ``producer_b_waiting`` has its
+        runner node COMPLETED on disk — the runner submitted an interim
+        report and exited within its task budget, but the experiment is
+        still running on remote infra. ``run_tracker`` owns the transition
+        out of this phase (on_runs_all_terminal / on_runs_wait_timeout).
+
+        The startup watchdog must NOT replay ``on_task_complete`` on that
+        completed node. ``producer_b_waiting`` has no handler branch in
+        ``on_task_complete``, so a replay is a no-op at best; at worst it
+        races with run_tracker flipping the phase to ``producer_b_finalize``
+        (which IS handled) and re-fires the stale 6b result as a finalize
+        completion — double-dispatching the critic (#30)."""
+        from onemancompany.core import pipeline_engine as pe
+
+        _make_iter(
+            tmp_path,
+            pipeline_state={
+                "topic": "x", "current_stage": 6, "start_stage": 1, "end_stage": 9,
+                "phase": "producer_b_waiting", "active_node_id": "node-stage-4",
+                "retries": 0, "stage_results": {}, "stage_assignments": {},
+                "pending_run_ids": ["run_abc123"],
+            },
+            node_status="completed",
+        )
+
+        engine = MagicMock(spec=["on_task_complete", "on_task_failed"])
+        monkeypatch.setattr(pe, "get_or_load_pipeline", lambda pid, pdir: engine)
+
+        recovered = pe.recover_stalled_pipelines(tmp_path)
+
+        assert recovered == 0
+        engine.on_task_complete.assert_not_called()
+        engine.on_task_failed.assert_not_called()
+
     def test_missing_task_tree_skipped_not_raised(self, tmp_path, monkeypatch):
         """``pipeline_state.yaml`` exists but the corresponding
         ``task_tree.yaml`` doesn't (corrupted state). Watchdog must log
