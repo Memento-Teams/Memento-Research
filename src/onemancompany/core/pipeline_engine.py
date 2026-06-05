@@ -2786,6 +2786,32 @@ class PipelineEngine:
         )
         self.on_ceo_approve("")
 
+    def cancel(self, reason: str = "cancelled by user") -> None:
+        """Terminally cancel this pipeline (R5-1).
+
+        ``/api/task/<pid>/abort`` cancels the task-tree nodes, but without
+        a terminal engine phase the cancelled node's failure event is
+        indistinguishable from an ordinary producer crash — the engine
+        retried and the pipeline resurrected itself (zombie 76ad6534ed86
+        survived three aborts). Idempotent; no-op on already-terminal
+        pipelines so a late abort cannot stomp a ``done`` result.
+        """
+        if self.phase in ("done", "failed"):
+            return
+        stage_id = self.current_stage
+        logger.warning(
+            "[PIPELINE] Cancelled at stage {} phase {} (project={}): {}",
+            stage_id, self.phase, self.project_id, reason,
+        )
+        self.state["phase"] = "failed"
+        self.state["failure_reason"] = f"cancelled: {reason}"
+        self.state["active_node_id"] = None
+        self._save()
+        try:
+            self._emit_pipeline_failed(stage_id, f"cancelled: {reason}")
+        except Exception as exc:  # noqa: BLE001 — cancellation must never raise
+            logger.warning("[PIPELINE] cancel(): failed-event emit raised: {}", exc)
+
     def _emit_pipeline_failed(self, stage_id: int, reason: str):
         """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.
 

@@ -92,6 +92,114 @@ def _list_infra_runs(limit: int = 100) -> list[dict[str, Any]]:
         return []
 
 
+def _cancel_infra_run(run_id: str) -> bool:
+    """POST ``/api/cancel`` for one run. Best-effort: returns False on any
+    failure (missing creds, network, run already terminal — the infra
+    rejects those harmlessly)."""
+    url = os.environ.get("INFRA_SERVER_URL", "")
+    key = os.environ.get("INFRA_SESSION_KEY", "")
+    if not url or not key:
+        return False
+    try:
+        resp = httpx.post(
+            f"{url.rstrip('/')}/api/cancel",
+            headers={"Content-Type": "application/json"},
+            json={"session_key": key, "run_id": run_id},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        return True
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("[run_tracker] cancel {} failed: {}", run_id, exc)
+        return False
+
+
+# Statuses the GC treats as "already over — nothing to cancel". Mirrors the
+# engine's terminal set; anything else (running/queued/unknown/missing) is
+# possibly alive and worth a cancel attempt.
+_GC_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "rejected"})
+
+
+def gc_orphan_runs(all_runs: list[dict[str, Any]] | None = None) -> int:
+    """R9-1: cancel remote runs leaked by locally-dead pipelines.
+
+    When a pipeline reaches ``phase=failed`` (retries exhausted, CEO
+    abort, operator kill) while parked on ``pending_run_ids``, nothing
+    watches those runs any more — they keep executing on the infra for
+    hours and eat the concurrency quota (run_0569b7feb018 ran 2h+ after
+    its pipeline died and helped starve a later round into
+    ``Concurrent run limit reached 4/4``).
+
+    Walks the project tree for terminal pipelines that still carry
+    ``pending_run_ids``; cancels every run the infra listing does not
+    show terminal (missing-from-listing counts as possibly-alive);
+    persists ``orphan_runs_cancelled`` forensics and clears the pending
+    list so the GC is one-shot per project. Returns the number of
+    cancel attempts made.
+    """
+    import yaml
+    from onemancompany.core.config import PROJECTS_DIR
+
+    # Gather candidates FIRST so the no-op tick costs zero infra calls.
+    candidates: list[tuple["Path", dict[str, Any]]] = []
+    if not PROJECTS_DIR.exists():
+        return 0
+    for project_dir in PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir() or project_dir.name.startswith("_"):
+            continue
+        iters = project_dir / "iterations"
+        if not iters.exists():
+            continue
+        for iter_dir in iters.iterdir():
+            state_file = iter_dir / "pipeline_state.yaml"
+            if not state_file.is_file():
+                continue
+            try:
+                state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
+            except (yaml.YAMLError, OSError):
+                continue
+            if not isinstance(state, dict):
+                continue
+            if state.get("phase") == "failed" and state.get("pending_run_ids"):
+                candidates.append((state_file, state))
+
+    if not candidates:
+        return 0
+
+    if all_runs is None:
+        all_runs = _list_infra_runs()
+    status_by_id = {
+        r.get("run_id"): str(r.get("status", "")).lower()
+        for r in all_runs if isinstance(r, dict)
+    }
+
+    cancelled_total = 0
+    for state_file, state in candidates:
+        cancelled_here: list[str] = []
+        for rid in list(state.get("pending_run_ids") or []):
+            status = status_by_id.get(rid)
+            if status in _GC_TERMINAL_STATUSES:
+                continue  # already over — nothing leaked
+            _cancel_infra_run(rid)
+            cancelled_here.append(rid)
+            cancelled_total += 1
+        state["orphan_runs_cancelled"] = cancelled_here
+        state["pending_run_ids"] = []
+        try:
+            state_file.write_text(
+                yaml.safe_dump(state, default_flow_style=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("[run_tracker] orphan-GC persist failed for {}: {}", state_file, exc)
+        if cancelled_here:
+            logger.warning(
+                "[run_tracker] orphan-GC: cancelled {} leaked run(s) for dead pipeline {} ({})",
+                len(cancelled_here), state_file.parents[2].name, ", ".join(cancelled_here),
+            )
+    return cancelled_total
+
+
 def _filter_for_project(
     runs: list[dict[str, Any]], pid: str, iter_id: str
 ) -> list[dict[str, Any]]:
@@ -207,9 +315,19 @@ async def poll_active_projects() -> dict[str, int]:
 
     targets = _iter_active_project_iter_dirs()
     if not targets:
+        # Still GC leaked runs of dead pipelines (R9-1) — it self-fetches
+        # the listing only when candidates exist, so idle ticks stay free.
+        try:
+            gc_orphan_runs()
+        except Exception as exc:  # noqa: BLE001 — never poison the cron
+            logger.warning("[run_tracker] orphan-GC raised: {}", exc)
         return {}
 
     all_runs = _list_infra_runs()
+    try:
+        gc_orphan_runs(all_runs=all_runs)
+    except Exception as exc:  # noqa: BLE001 — never poison the cron
+        logger.warning("[run_tracker] orphan-GC raised: {}", exc)
     if not all_runs:
         return {pid: 0 for pid, _it, _path in targets}
 
