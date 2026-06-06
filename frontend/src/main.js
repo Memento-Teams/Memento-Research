@@ -310,8 +310,14 @@ function _applyPipelineStatusToView(pid, status) {
     }
   }
 
-  // If pipeline is at gate, show breakpoint dialog
-  if (phase === 'gate' && window._controller) {
+  // If pipeline is at gate, show breakpoint dialog — but ONLY when this hydrate
+  // is for the project currently on screen (#123). Restoring/refreshing a
+  // background project must not pop its gate (and clobber the controller's
+  // paused state) over whatever the user is actually viewing.
+  const curPid = (window._currentProjectId || window._currentSessionId || '').split('/')[0];
+  const thisPid = (pid || '').split('/')[0];
+  const isCurrent = !curPid || !thisPid || curPid === thisPid;
+  if (phase === 'gate' && window._controller && isCurrent) {
     window._controller.pausedStageId = currentStage;
     window._controller.currentStage = currentStage;
     const stageDef = (status.stages || [])[currentStage - 1];
