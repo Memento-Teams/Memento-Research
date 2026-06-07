@@ -556,6 +556,83 @@ async def holding_timeout_sweep() -> list | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Stage hang watchdog — auto-recover pipeline stages whose agent hung
+# (node stuck in PROCESSING with a frozen debug_trace; no completion will
+# ever fire). Aborting the project routes the cancellation through
+# vessel._on_child_complete -> PipelineEngine.on_task_failed, which
+# re-dispatches the stage (bounded by MAX_RETRIES, then holds for CEO).
+# Unlike project_progress_watchdog (which SKIPS PROCESSING nodes — "someone
+# is working"), this targets exactly the hung-PROCESSING case.
+# ---------------------------------------------------------------------------
+_hang_aborted_at: dict[str, float] = {}
+
+
+@system_cron("stage_hang_watchdog", interval="2m", description="Auto-recover pipeline stages whose agent hung (PROCESSING + frozen trace)", enabled_by_default=True)
+async def stage_hang_watchdog() -> list | None:
+    import time as _time
+    from datetime import datetime as _dt
+    from pathlib import Path as _P
+    from onemancompany.core.config import PROJECTS_DIR, TASK_TREE_FILENAME
+    from onemancompany.core.task_lifecycle import TaskPhase
+    from onemancompany.core.task_tree import get_tree
+    from onemancompany.core.vessel import employee_manager
+
+    HANG_SECONDS = 600   # node has been PROCESSING at least this long
+    TRACE_STALE = 420    # AND no debug_trace write for this long -> confident hang
+    COOLDOWN = 480       # don't re-abort the same project within this window
+
+    if not PROJECTS_DIR.exists():
+        return None
+    now = _time.time()
+    recovered: list[str] = []
+    for tree_path in PROJECTS_DIR.rglob(TASK_TREE_FILENAME):
+        try:
+            tree = get_tree(str(tree_path))
+        except Exception:
+            continue
+        project_id = tree.project_id
+        if not project_id or (now - _hang_aborted_at.get(project_id, 0) < COOLDOWN):
+            continue
+        for node in tree.all_nodes():
+            if node.id == tree.root_id or not node.branch_active:
+                continue
+            if node.status != TaskPhase.PROCESSING.value:
+                continue
+            # Only touch pipeline-managed stage nodes (never EA / other agents)
+            if not (getattr(node, "metadata", None) or {}).get("pipeline_managed"):
+                continue
+            try:
+                started = _dt.fromisoformat(node.started_at).replace(tzinfo=None)
+                elapsed = (_dt.now() - started).total_seconds()
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if elapsed < HANG_SECONDS:
+                continue
+            # A healthy long run keeps writing its trace; a hung agent's trace is frozen.
+            pdir = _P(node.project_dir or tree_path.parent)
+            trace = pdir / "debug_trace.jsonl"
+            try:
+                if trace.exists() and (now - trace.stat().st_mtime) < TRACE_STALE:
+                    continue  # agent still active -> not hung
+            except OSError:
+                pass
+            logger.warning(
+                "[stage_hang_watchdog] project {} node {} stuck PROCESSING {:.0f}s + trace frozen -> abort for auto-retry",
+                project_id, node.id, elapsed,
+            )
+            try:
+                employee_manager.abort_project(project_id)
+                _hang_aborted_at[project_id] = now
+                recovered.append(project_id)
+            except Exception as e:
+                logger.error("[stage_hang_watchdog] abort failed for {}: {}", project_id, e)
+            break  # one abort per project per cycle
+    if recovered:
+        logger.info("[stage_hang_watchdog] auto-recovered {} hung stage(s): {}", len(recovered), recovered)
+    return None
+
+
 def clear_watchdog_nudge(project_id: str) -> None:
     """Clear the nudge flag for a project (call when EA starts working on it)."""
     _watchdog_nudged.discard(project_id)
