@@ -1096,7 +1096,9 @@ async def pipeline_status(project_id: str):
         disk = _load_state(pdir)
         if disk:
             for key in ("phase", "current_stage", "retries", "stage_results",
-                        "critic_result", "start_stage", "end_stage"):
+                        "critic_result", "start_stage", "end_stage",
+                        "failure_reason", "pending_run_ids",
+                        "pending_waiting_started_at", "result_loops"):
                 if key in disk:
                     engine.state[key] = disk[key]
 
@@ -1146,6 +1148,12 @@ async def pipeline_status(project_id: str):
         "attempt_timing": engine.state.get("attempt_timing", {}),
         "stage_results": engine.state.get("stage_results", {}),
         "critic_result": engine.state.get("critic_result", None),
+        # Diagnostics that explain a non-running phase (#8/#30): why a
+        # producer_b_waiting pipeline is parked, and why a failed one failed.
+        "failure_reason": engine.state.get("failure_reason"),
+        "pending_run_ids": engine.state.get("pending_run_ids", []),
+        "pending_waiting_started_at": engine.state.get("pending_waiting_started_at"),
+        "result_loops": engine.state.get("result_loops", {}),
         "stages": STAGES,
         "workspace_files": ws_files,
     }
@@ -2098,6 +2106,19 @@ async def abort_task(project_id: str) -> dict:
     from datetime import datetime as _dt
 
     pdir = get_project_dir(project_id)
+
+    # R5-1: terminally cancel the PIPELINE ENGINE *before* the node
+    # cancellations land. Otherwise the engine treats each cancelled node
+    # as an ordinary producer failure and re-dispatches — the aborted
+    # pipeline resurrects itself (zombie 76ad6534ed86 survived three
+    # aborts this way).
+    pipeline_cancelled = False
+    if pdir:
+        from onemancompany.core.pipeline_engine import get_or_load_pipeline
+        engine = get_or_load_pipeline(project_id, str(pdir))
+        if engine is not None:
+            engine.cancel(reason="CEO abort via /api/task/abort")
+            pipeline_cancelled = True
     if pdir:
         tree_path = _Path(pdir) / TASK_TREE_FILENAME
         if tree_path.exists():
@@ -2122,7 +2143,12 @@ async def abort_task(project_id: str) -> dict:
         CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
     )
 
-    return {"status": "ok", "cancelled": cancelled_count, "tree_nodes_cancelled": cancelled_tree_nodes}
+    return {
+        "status": "ok",
+        "cancelled": cancelled_count,
+        "tree_nodes_cancelled": cancelled_tree_nodes,
+        "pipeline_cancelled": pipeline_cancelled,
+    }
 
 
 @router.post("/api/employee/{employee_id}/abort")

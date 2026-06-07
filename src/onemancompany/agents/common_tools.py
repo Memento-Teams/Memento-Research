@@ -2171,7 +2171,8 @@ async def assemble_specialist_from_skill(
 
     Use when your roster lacks the methodological expertise needed for a debate
     or task. Workflow:
-      1. Call search_cloud_skills (from your fastskills MCP) to find candidate skills.
+      1. Call ``search_skillsmp`` (the native tool in this toolset; it wraps the
+         fastskills ``search_cloud_skills`` MCP search) to find candidate skills.
       2. Pick a skill's GitHub tree URL from the search results.
       3. Call this tool to create an employee built around that skill.
       4. Repeat for additional specialists if you need multiple perspectives.
@@ -2213,7 +2214,7 @@ async def assemble_specialist_from_skill(
     if not skill_github_url.startswith("https://github.com/"):
         return _tool_error(
             f"skill_github_url must be a github.com tree URL (got {skill_github_url!r}). "
-            "Pick the 'github:' link from search_cloud_skills output, not the skillsmp.com link.",
+            "Pick the 'github:' link from search_skillsmp output, not the skillsmp.com link.",
         )
 
     # Skill name from the URL — last path segment of the github tree URL.

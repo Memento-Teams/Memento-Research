@@ -195,6 +195,16 @@ export class PipelineController {
   }
 
   handleBreakpointHit({ stage, project_id, message }) {
+    // Per-project filter (#123): gate events are broadcast to every connected
+    // client, so a background run reaching its OWN gate (typically Stage 1, the
+    // first gate any new pipeline hits) would otherwise pop a breakpoint dialog
+    // on whatever project the user is currently viewing. Only honor a gate event
+    // whose project_id matches the project on screen. Compare base pids
+    // (strip the /iter_NNN suffix). When we can't tell (no project_id on the
+    // event, or no current project), fall through to the old behavior.
+    const cur = (window._currentProjectId || window._currentSessionId || '').split('/')[0];
+    const evtPid = (project_id || '').split('/')[0];
+    if (evtPid && cur && evtPid !== cur) return;  // gate belongs to another project — ignore
     const sid = stage || this.currentStage;
     if (!sid) return;
     this._triggerBreakpoint(sid);

@@ -101,6 +101,20 @@ def _load_state(project_dir: str) -> dict:
 # Terminal pipeline phases — never re-fire stage events.
 _WATCHDOG_TERMINAL_PHASES = frozenset({"done", "failed"})
 
+# Phases owned by ``run_tracker``'s remote-run poller, NOT by the OMC
+# task-node lifecycle. During ``producer_b_waiting`` the Stage 6b runner
+# node is already COMPLETED on disk — the runner submitted an interim
+# report and exited within its task budget — but the experiment is still
+# executing on remote infra. The disk-scanning watchdogs must leave this
+# phase alone: ``recover_stalled_pipelines`` would otherwise replay
+# ``on_task_complete`` on that completed node (no-op at best; at worst it
+# races with run_tracker flipping to ``producer_b_finalize`` and re-fires
+# the stale 6b result as a finalize completion, double-dispatching the
+# critic), and ``detect_stuck_pipelines`` would surface a spurious
+# PIPELINE_STUCK that conflicts with run_tracker's own
+# ``on_runs_wait_timeout`` deadline handling (#30).
+_WATCHDOG_RUN_TRACKER_PHASES = frozenset({"producer_b_waiting"})
+
 # Task-tree node statuses the watchdog treats as "stage producer finished
 # successfully — engine should advance". COMPLETED is the canonical state
 # right after submit_result; ACCEPTED / FINISHED are reached after the EA
@@ -155,7 +169,11 @@ def detect_stuck_pipelines(projects_root) -> list[dict]:
 
         active_node_id = state.get("active_node_id")
         phase = state.get("phase", "")
-        if not active_node_id or phase in _WATCHDOG_TERMINAL_PHASES:
+        if (
+            not active_node_id
+            or phase in _WATCHDOG_TERMINAL_PHASES
+            or phase in _WATCHDOG_RUN_TRACKER_PHASES
+        ):
             continue
 
         try:
@@ -227,7 +245,11 @@ def recover_stalled_pipelines(projects_root) -> int:
 
         active_node_id = state.get("active_node_id")
         phase = state.get("phase", "")
-        if not active_node_id or phase in _WATCHDOG_TERMINAL_PHASES:
+        if (
+            not active_node_id
+            or phase in _WATCHDOG_TERMINAL_PHASES
+            or phase in _WATCHDOG_RUN_TRACKER_PHASES
+        ):
             continue
 
         # Resolve project_id and project_dir from the layout
@@ -1373,7 +1395,17 @@ class PipelineEngine:
             # the FINAL report from the now-terminal run data.
             stage = self._stage_def()
             self.state["stage_results"][str(stage["id"])] = result
-            runs = self._parse_runner_report_runs(result)
+            # Parse run statuses from the CANONICAL on-disk report first
+            # (stage6_experimentalist.md), not the submit_result summary —
+            # the summary is lossy prose (run 1a255f1aaf3d wrote the runs
+            # as a Markdown table the line-pair parser can't read, so a
+            # still-running pilot went to the critic instead of parking).
+            # Same principle as the #27 gate fix. Fall back to the summary
+            # only when the file yields nothing.
+            report_text = self._read_stage_deliverable(stage["id"], fallback=result)
+            runs = self._parse_runner_report_runs(report_text)
+            if not runs and report_text is not result:
+                runs = self._parse_runner_report_runs(result)
             pending = self._pending_run_ids_from(runs)
             if pending:
                 from datetime import datetime, timezone
@@ -1758,6 +1790,22 @@ class PipelineEngine:
 
         async def _do_revert():
             try:
+                # R10-1 (run 59429240245f): the workspace legitimately holds
+                # post-stage artifacts (runner report, routing decision) that
+                # were never stage-committed; checkout_branch_from_stage's
+                # DirtyWorkspaceError guard would block the revert. Checkpoint
+                # them first — also preserves the forensics in git history.
+                try:
+                    from onemancompany.core import project_repo
+                    project_repo.commit_pending(
+                        self.project_dir,
+                        message=f"Result-loop checkpoint before revert to stage {stage}",
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "[PIPELINE] pre-revert checkpoint failed: {} — attempting revert anyway",
+                        exc,
+                    )
                 await self.revert_to_stage(stage=stage, instructions=instructions)
             except Exception as exc:  # noqa: BLE001 — never crash the callback
                 logger.warning(
@@ -2444,6 +2492,12 @@ class PipelineEngine:
         was the #19 false-verdict source (e.g. "Auto-REJECT trigger check")."""
         if not text:
             return None
+        # #138: strip Markdown emphasis FIRST so a bolded label parses. The
+        # label regex needs ``decision`` immediately followed by the ``:``
+        # separator, but ``- **Decision**: PASS`` has ``**`` between them, so
+        # the verdict was read as ambiguous → false REJECT → retries exhausted.
+        # Stripping ``*``/``_`` also normalises ``Decision: **PASS**``.
+        text = re.sub(r"[*_]", "", text)
         upper = text.upper()
         # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
         compact = re.sub(r"[\s|*_]+", " ", upper)
@@ -2528,26 +2582,48 @@ class PipelineEngine:
             return verdict
 
         # Ambiguous submit_result → the verdict is in the file on disk.
+        # The critic VERSIONS its reviews on retry cycles (it finds
+        # stage{N}_gate_review.md from the previous cycle and writes
+        # _v2 / _v3 instead of overwriting), so consulting the fixed name
+        # reads the PREVIOUS cycle's verdict — run e04df33b06bb's PASS-v2
+        # was shadowed by the stale v1 REJECT and a successful experiment
+        # died at retries-exhausted. Consult newest → oldest; the first
+        # file with a parseable verdict wins.
         stage_id = self.current_stage
-        gate_review = Path(self.project_dir) / f"stage{stage_id}_gate_review.md"
-        if gate_review.exists():
+        candidates = sorted(
+            # #138: the critic actually writes ``gate_review_stage{N}.md``;
+            # the old glob only matched the inverted ``stage{N}_gate_review*.md``
+            # so the on-disk PASS was never found → false REJECT. Match BOTH
+            # (newest by mtime wins, across both naming conventions).
+            [
+                *Path(self.project_dir).glob(f"gate_review_stage{stage_id}*.md"),
+                *Path(self.project_dir).glob(f"stage{stage_id}_gate_review*.md"),
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for gate_review in candidates:
             try:
                 file_text = gate_review.read_text(encoding="utf-8")
-                file_verdict = self._verdict_from_text(file_text)
-                if file_verdict is not None:
-                    logger.info(
-                        "[PIPELINE] Critic submit_result had no verdict — resolved {} "
-                        "from {} ({} bytes)",
-                        "PASS" if file_verdict else "REJECT", gate_review.name, len(file_text),
-                    )
-                    return file_verdict
             except OSError as exc:
                 logger.warning("[PIPELINE] Failed to read {}: {}", gate_review.name, exc)
+                continue
+            file_verdict = self._verdict_from_text(file_text)
+            if file_verdict is not None:
+                logger.info(
+                    "[PIPELINE] Critic submit_result had no verdict — resolved {} "
+                    "from {} ({} bytes, newest of {} review file(s))",
+                    "PASS" if file_verdict else "REJECT", gate_review.name,
+                    len(file_text), len(candidates),
+                )
+                return file_verdict
 
-        # Neither text nor file yielded a verdict → safer default is REJECT.
+        # Neither text nor any review file yielded a verdict → safer default
+        # is REJECT.
         logger.warning(
             "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT in submit_result "
-            "or {}) — defaulting to REJECT", gate_review.name,
+            "or any gate_review_stage{0}*.md / stage{0}_gate_review*.md) — "
+            "defaulting to REJECT", stage_id,
         )
         return False
 
@@ -2723,6 +2799,32 @@ class PipelineEngine:
             stage_id,
         )
         self.on_ceo_approve("")
+
+    def cancel(self, reason: str = "cancelled by user") -> None:
+        """Terminally cancel this pipeline (R5-1).
+
+        ``/api/task/<pid>/abort`` cancels the task-tree nodes, but without
+        a terminal engine phase the cancelled node's failure event is
+        indistinguishable from an ordinary producer crash — the engine
+        retried and the pipeline resurrected itself (zombie 76ad6534ed86
+        survived three aborts). Idempotent; no-op on already-terminal
+        pipelines so a late abort cannot stomp a ``done`` result.
+        """
+        if self.phase in ("done", "failed"):
+            return
+        stage_id = self.current_stage
+        logger.warning(
+            "[PIPELINE] Cancelled at stage {} phase {} (project={}): {}",
+            stage_id, self.phase, self.project_id, reason,
+        )
+        self.state["phase"] = "failed"
+        self.state["failure_reason"] = f"cancelled: {reason}"
+        self.state["active_node_id"] = None
+        self._save()
+        try:
+            self._emit_pipeline_failed(stage_id, f"cancelled: {reason}")
+        except Exception as exc:  # noqa: BLE001 — cancellation must never raise
+            logger.warning("[PIPELINE] cancel(): failed-event emit raised: {}", exc)
 
     def _emit_pipeline_failed(self, stage_id: int, reason: str):
         """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.

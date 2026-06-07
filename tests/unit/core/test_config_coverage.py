@@ -366,3 +366,41 @@ class TestLazyEmployeeConfigs:
         lazy = self._make_lazy(tmp_path, monkeypatch)
         lazy.update({"foo": "bar"})  # no-op
         assert len(lazy) == 1
+
+
+# ---------------------------------------------------------------------------
+# COMPLETION_CONSUMER_TIMEOUT_S env parsing (issue #103)
+# ---------------------------------------------------------------------------
+
+class TestCompletionConsumerTimeoutConfig:
+    """OMC_COMPLETION_CONSUMER_TIMEOUT is resolved once at import. Invalid
+    values must fall back to the 300s default rather than wedge the consumer:
+    a non-positive cap is meaningless, nan would make every wait_for "time out",
+    and inf would silently disable the cap."""
+
+    def _reload_with(self, monkeypatch, value):
+        import importlib
+        from onemancompany.core import config as config_mod
+        monkeypatch.setenv("OMC_COMPLETION_CONSUMER_TIMEOUT", value)
+        importlib.reload(config_mod)
+        try:
+            return config_mod.COMPLETION_CONSUMER_TIMEOUT_S
+        finally:
+            monkeypatch.delenv("OMC_COMPLETION_CONSUMER_TIMEOUT", raising=False)
+            importlib.reload(config_mod)
+
+    def test_valid_value_is_used(self, monkeypatch):
+        assert self._reload_with(monkeypatch, "120") == 120.0
+
+    def test_non_numeric_falls_back(self, monkeypatch):
+        assert self._reload_with(monkeypatch, "abc") == 300.0
+
+    def test_non_positive_falls_back(self, monkeypatch):
+        assert self._reload_with(monkeypatch, "0") == 300.0
+        assert self._reload_with(monkeypatch, "-5") == 300.0
+
+    def test_nan_falls_back(self, monkeypatch):
+        assert self._reload_with(monkeypatch, "nan") == 300.0
+
+    def test_inf_falls_back(self, monkeypatch):
+        assert self._reload_with(monkeypatch, "inf") == 300.0
