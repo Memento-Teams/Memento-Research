@@ -1275,6 +1275,18 @@ class TestEmployeeManagerProjectHistoryContext:
                             result = mgr._get_project_history_context("iter_002")
                             assert "Project Context" in result
 
+    def test_skips_system_projects(self):
+        # System-generated projects (_sys_ debate sub-agents, _auto_ projects)
+        # carry no useful history and the _sys_ ones are numerous during Stage
+        # 4/5 debates — scanning them while building a prompt is pure overhead
+        # (issue #103). Must short-circuit before touching the archive at all.
+        mgr = EmployeeManager()
+        for pid in ("_sys_a1b2c3d4", "_auto_12345"):
+            with patch("onemancompany.core.project_archive.load_named_project") as mock_load:
+                result = mgr._get_project_history_context(pid)
+                assert result == ""
+                mock_load.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # EmployeeManager — _get_project_workflow_context

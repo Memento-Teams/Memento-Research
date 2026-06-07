@@ -265,3 +265,79 @@ class TestRecoverySkipsCeoPrompt:
                     f"schedule_node should not be called for CEO (00001), got: {call}"
 
             _cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: orphan recovery is shared between restart and completion-timeout paths
+# ---------------------------------------------------------------------------
+
+class TestRecoverOrphanedCompletedNodesHelper:
+    """recover_orphaned_completed_nodes is the single source of truth for
+    auto-finishing COMPLETED nodes orphaned by an interrupted completion
+    propagation (server restart OR a timed-out completion handler)."""
+
+    def test_helper_auto_finishes_orphan_and_advances_ceo(self):
+        tree, orphan_id = _build_tree_with_orphan()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tree_path = Path(tmpdir) / "task_tree.yaml"
+            from onemancompany.core.task_tree import register_tree, _cache
+            register_tree(tree_path, tree)
+
+            from onemancompany.core.task_persistence import (
+                recover_orphaned_completed_nodes,
+            )
+            finished = recover_orphaned_completed_nodes(tree, tree_path)
+
+            # The orphan was auto-finished and returned to the caller.
+            assert orphan_id in {n.id for n in finished}
+            assert tree.get_node(orphan_id).status == TaskPhase.FINISHED.value
+            # Project is now complete → CEO root advanced past PENDING.
+            ceo = tree.get_node(tree.root_id)
+            assert ceo.status != TaskPhase.PENDING.value
+
+            _cache.pop(str(tree_path.resolve()), None)
+
+    def test_helper_noops_without_orphans(self):
+        tree = TaskTree(project_id="p1")
+        root = tree.create_root(employee_id="e1", description="root")
+        root.set_status(TaskPhase.PROCESSING)  # active, not an orphan
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tree_path = Path(tmpdir) / "task_tree.yaml"
+            from onemancompany.core.task_tree import register_tree, _cache
+            register_tree(tree_path, tree)
+
+            from onemancompany.core.task_persistence import (
+                recover_orphaned_completed_nodes,
+            )
+            assert recover_orphaned_completed_nodes(tree, tree_path) == []
+
+            _cache.pop(str(tree_path.resolve()), None)
+
+
+class TestRequeueOrphanRecovery:
+    """The completion-timeout requeue must perform the SAME orphan recovery as
+    restart — otherwise a child left COMPLETED-but-unpropagated when the handler
+    timed out keeps the run wedged until a manual restart (issue #103, HIGH)."""
+
+    def test_requeue_auto_finishes_completed_orphan(self):
+        tree, orphan_id = _build_tree_with_orphan()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tree_path = Path(tmpdir) / "task_tree.yaml"
+            tree.save(tree_path)
+            from onemancompany.core.task_tree import register_tree, _cache
+            register_tree(tree_path, tree)
+
+            from onemancompany.core.vessel import EmployeeManager, ScheduleEntry
+            mgr = EmployeeManager()
+            entry = ScheduleEntry(node_id=orphan_id, tree_path=str(tree_path))
+
+            mgr._requeue_node_after_timeout(entry)
+
+            # The orphan that the interrupted propagation never finished is now
+            # FINISHED — the run can advance without a restart.
+            assert tree.get_node(orphan_id).status == TaskPhase.FINISHED.value
+
+            _cache.pop(str(tree_path.resolve()), None)
