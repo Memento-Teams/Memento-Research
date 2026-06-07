@@ -2106,6 +2106,19 @@ async def abort_task(project_id: str) -> dict:
     from datetime import datetime as _dt
 
     pdir = get_project_dir(project_id)
+
+    # R5-1: terminally cancel the PIPELINE ENGINE *before* the node
+    # cancellations land. Otherwise the engine treats each cancelled node
+    # as an ordinary producer failure and re-dispatches — the aborted
+    # pipeline resurrects itself (zombie 76ad6534ed86 survived three
+    # aborts this way).
+    pipeline_cancelled = False
+    if pdir:
+        from onemancompany.core.pipeline_engine import get_or_load_pipeline
+        engine = get_or_load_pipeline(project_id, str(pdir))
+        if engine is not None:
+            engine.cancel(reason="CEO abort via /api/task/abort")
+            pipeline_cancelled = True
     if pdir:
         tree_path = _Path(pdir) / TASK_TREE_FILENAME
         if tree_path.exists():
@@ -2130,7 +2143,12 @@ async def abort_task(project_id: str) -> dict:
         CompanyEvent(type=EventType.STATE_SNAPSHOT, payload={}, agent=SYSTEM_AGENT)
     )
 
-    return {"status": "ok", "cancelled": cancelled_count, "tree_nodes_cancelled": cancelled_tree_nodes}
+    return {
+        "status": "ok",
+        "cancelled": cancelled_count,
+        "tree_nodes_cancelled": cancelled_tree_nodes,
+        "pipeline_cancelled": pipeline_cancelled,
+    }
 
 
 @router.post("/api/employee/{employee_id}/abort")

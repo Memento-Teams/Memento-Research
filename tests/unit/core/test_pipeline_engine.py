@@ -1281,6 +1281,56 @@ def test_parse_critic_pass_long_toolresult_stub_falls_back_to_disk(tmp_path):
     )
 
 
+def test_cancel_marks_pipeline_terminal_and_stops_retries(tmp_path, monkeypatch):
+    """REGRESSION (R5-1, zombie 76ad6534ed86): /api/task/<pid>/abort cancelled
+    the task-tree nodes but never told the pipeline engine — the engine saw
+    the cancellation as an ordinary producer failure and RE-DISPATCHED,
+    resurrecting the pipeline. Three aborts in a row could not kill it.
+
+    ``cancel()`` must put the pipeline in a terminal phase so subsequent
+    node-failure events are no-ops."""
+    dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer",
+        lambda self, feedback="": dispatched.append(feedback),
+    )
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None,
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer"
+    engine.state["active_node_id"] = "node-6a"
+
+    engine.cancel(reason="CEO abort")
+
+    assert engine.phase == "failed", "cancel must reach a terminal phase"
+    assert "cancel" in (engine.state.get("failure_reason") or "").lower()
+    assert engine.state.get("active_node_id") is None
+
+    # The cancelled node's failure event arrives AFTER the abort — must not
+    # resurrect the pipeline.
+    engine.on_task_failed("00103", "node-6a", "Cancelled by CEO (project aborted)")
+    assert dispatched == [], "a cancelled pipeline must never re-dispatch"
+    assert engine.phase == "failed"
+
+    # Idempotent.
+    engine.cancel(reason="again")
+    assert engine.phase == "failed"
+
+
+def test_cancel_noop_on_done_pipeline(tmp_path):
+    """cancel() must not stomp a pipeline that already finished."""
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 9
+    engine.state["phase"] = "done"
+
+    engine.cancel(reason="late abort")
+
+    assert engine.phase == "done", "a done pipeline stays done"
+
+
 def test_parse_critic_pass_consults_latest_versioned_review(tmp_path):
     """REGRESSION (run e04df33b06bb, Round-3 GSM8K e2e): on a retry cycle the
     critic sees ``stage6_gate_review.md`` already exists (the previous
