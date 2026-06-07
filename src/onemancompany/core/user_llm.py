@@ -33,6 +33,7 @@ current_user_llm: ContextVar[dict | None] = ContextVar("current_user_llm", defau
 
 _KEYS_FILE = DATA_ROOT / "user_llm_keys.json"
 _OWNERS_FILE = DATA_ROOT / "project_owners.json"
+_MODELS_FILE = DATA_ROOT / "project_models.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -107,6 +108,22 @@ def resolve_user_llm(user_id: str) -> dict | None:
     return None
 
 
+def set_project_model(project_id: str, cfg: dict) -> None:
+    """Pin a per-run LLM override {model, api_key, base_url} for this project."""
+    if not project_id or not cfg or not cfg.get("model"):
+        return
+    data = _read_json(_MODELS_FILE)
+    data[_base_pid(project_id)] = cfg
+    _write_json(_MODELS_FILE, data)
+
+
+def get_project_model(project_id: str) -> dict | None:
+    return _read_json(_MODELS_FILE).get(_base_pid(project_id))
+
+
 def resolve_for_project(project_id: str) -> dict | None:
     """Convenience: project_id → owner → per-user LLM override (or None)."""
+    _m = get_project_model(project_id)
+    if _m and _m.get("model") and _m.get("api_key"):
+        return _m
     return resolve_user_llm(get_project_owner(project_id))
