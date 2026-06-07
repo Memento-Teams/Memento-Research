@@ -264,8 +264,15 @@ class ToolRegistry:
             # vs a caller-identity parameter (optional, has default).
             # Business params (e.g. dispatch_child target) must NOT be overwritten.
             schema = getattr(tool, "args_schema", None)
+            # MCP tools (langchain-mcp-adapters) carry a raw JSON-schema *dict*,
+            # not a pydantic model — it has no .model_fields and no caller-identity
+            # param to strip, and it executes via its own (MCP) client. Pass it
+            # through unwrapped rather than crashing on schema.model_fields.
+            if schema is None or not hasattr(schema, "model_fields"):
+                proxied.append(tool)
+                continue
             _is_identity_param = False
-            if schema and "employee_id" in schema.model_fields:
+            if "employee_id" in schema.model_fields:
                 field = schema.model_fields["employee_id"]
                 _is_identity_param = not field.is_required()
 

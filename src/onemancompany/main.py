@@ -506,6 +506,15 @@ async def lifespan(app: FastAPI):
     from onemancompany.core.tool_registry import tool_registry
     tool_registry.load_asset_tools()
 
+    # Register aigraph (literature-conflict-graph) MCP tools for the Idea
+    # Generator (Stage 3). Safe no-op if the aigraph MCP is unreachable; relies
+    # on get_proxied_tools_for tolerating MCP dict schemas (same PR).
+    try:
+        from onemancompany.agents.aigraph_mcp_tools import register_aigraph_mcp_tools
+        register_aigraph_mcp_tools()
+    except Exception as _aig_e:  # noqa: BLE001
+        print(f"[startup] aigraph MCP registration skipped: {_aig_e}")
+
     # Validate AUTH_CHOICE_GROUPS ↔ PROVIDER_REGISTRY consistency
     from onemancompany.core.auth_choices import validate_registry_consistency
     _auth_warnings = validate_registry_consistency()
