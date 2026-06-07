@@ -281,7 +281,24 @@ async def write(
         result["lines_before"] = len(old_lines)
         result["lines_after"] = len(new_lines)
 
-    # Emit file_written event for frontend workspace panel
+    # Emit file_written event for frontend workspace panel.
+    # ``file_path`` must be relative to ``project_dir`` so the workspace
+    # tree groups files under their stage folder rather than under the
+    # absolute filesystem prefix (``/Users/.../projects/<id>/iterations/<iter>/``).
+    # Without this normalization the new folder-tree UI renders
+    # ``/``→``Users``→``yuzhengxu``→... as parent folders. The
+    # ``/api/pipeline/{id}/status`` snapshot already returns
+    # ``stage8_paper/main.pdf``; this keeps the live-write contract
+    # consistent with that snapshot.
+    rel_path: str = resolved.name
+    if project_dir:
+        try:
+            rel_path = str(resolved.relative_to(Path(project_dir)))
+        except ValueError:
+            # File lives outside the project tree (e.g. employee
+            # workspace). Falling back to the basename is safer than
+            # leaking the absolute path into the UI.
+            rel_path = resolved.name
     try:
         from onemancompany.core.events import event_bus, CompanyEvent, EventType
         from onemancompany.core.config import SYSTEM_AGENT
@@ -290,7 +307,7 @@ async def write(
             payload={
                 "type": "file_written",
                 "file_name": resolved.name,
-                "file_path": str(resolved),
+                "file_path": rel_path,
                 "full_path": str(resolved),
                 "size": len(content.encode("utf-8")),
                 "content": content,
