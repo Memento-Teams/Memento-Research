@@ -506,16 +506,6 @@ async def lifespan(app: FastAPI):
     from onemancompany.core.tool_registry import tool_registry
     tool_registry.load_asset_tools()
 
-    # Stage 3 aigraph grounding (#130 / #132): bind the aigraph (LCG) MCP
-    # query tools to the Idea Generator at runtime so Stage 3 ideas are
-    # aigraph-grounded (verbatim `get_idea_report`), not pure-LLM. No-op if
-    # the aigraph MCP server is unreachable or no Idea Generator is hired.
-    try:
-        from onemancompany.agents.aigraph_mcp_tools import register_aigraph_mcp_tools
-        register_aigraph_mcp_tools()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[aigraph-mcp] startup registration skipped: {}", exc)
-
     # Validate AUTH_CHOICE_GROUPS ↔ PROVIDER_REGISTRY consistency
     from onemancompany.core.auth_choices import validate_registry_consistency
     _auth_warnings = validate_registry_consistency()
