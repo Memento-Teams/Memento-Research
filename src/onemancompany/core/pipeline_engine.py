@@ -2492,6 +2492,12 @@ class PipelineEngine:
         was the #19 false-verdict source (e.g. "Auto-REJECT trigger check")."""
         if not text:
             return None
+        # #138: strip Markdown emphasis FIRST so a bolded label parses. The
+        # label regex needs ``decision`` immediately followed by the ``:``
+        # separator, but ``- **Decision**: PASS`` has ``**`` between them, so
+        # the verdict was read as ambiguous → false REJECT → retries exhausted.
+        # Stripping ``*``/``_`` also normalises ``Decision: **PASS**``.
+        text = re.sub(r"[*_]", "", text)
         upper = text.upper()
         # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
         compact = re.sub(r"[\s|*_]+", " ", upper)
@@ -2585,7 +2591,14 @@ class PipelineEngine:
         # file with a parseable verdict wins.
         stage_id = self.current_stage
         candidates = sorted(
-            Path(self.project_dir).glob(f"stage{stage_id}_gate_review*.md"),
+            # #138: the critic actually writes ``gate_review_stage{N}.md``;
+            # the old glob only matched the inverted ``stage{N}_gate_review*.md``
+            # so the on-disk PASS was never found → false REJECT. Match BOTH
+            # (newest by mtime wins, across both naming conventions).
+            [
+                *Path(self.project_dir).glob(f"gate_review_stage{stage_id}*.md"),
+                *Path(self.project_dir).glob(f"stage{stage_id}_gate_review*.md"),
+            ],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -2609,7 +2622,8 @@ class PipelineEngine:
         # is REJECT.
         logger.warning(
             "[PIPELINE] Critic verdict ambiguous (no PASS/REJECT in submit_result "
-            "or any stage{}_gate_review*.md) — defaulting to REJECT", stage_id,
+            "or any gate_review_stage{0}*.md / stage{0}_gate_review*.md) — "
+            "defaulting to REJECT", stage_id,
         )
         return False
 
