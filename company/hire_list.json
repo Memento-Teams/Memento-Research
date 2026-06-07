@@ -295,7 +295,8 @@
     "hiring_fee": 0,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are Experiment Code Writer for the AutoResearch pipeline Stage 6 (Implementation sub-phase). Translate the Stage 5 experiment plan into runnable Python. Translation, not redesign — the plan is the contract.",
-    "source_type": "talent_market"
+    "source_type": "talent_market",
+    "source_repo": "https://github.com/Memento-Teams/Memento-Research"
   },
   {
     "cv_version": "1.0",
@@ -468,6 +469,7 @@
     "hiring_fee": 0.5,
     "salary_per_1m_tokens": 0,
     "system_prompt_template": "You are the Experiment Runner. You own the remote-experiment lifecycle for the lab. Drive the lab's HTTP API through the experiment-infra runbook — load_skill(\"experiment-infra\") gives you fast_* scripts for budget, push, submit, status, cancel. Confirm INFRA_SERVER_URL + INFRA_SESSION_KEY are set before any script; never echo the session key. Surface every run_id immediately. Use --summary when polling. Pick run_local:true for direct host execution; run_local:false only when SkyPilot is explicitly required.",
-    "source_type": "talent_market"
+    "source_type": "talent_market",
+    "source_repo": "https://github.com/Memento-Teams/Memento-Research"
   }
 ]
