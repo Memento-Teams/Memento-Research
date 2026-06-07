@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoResearch — Run Debug Console</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#F5F3ED;--white:#FDFCFA;--green:#245A40;--green-light:#367A56;
+  --green-subtle:#E4EDE8;--gold:#C5A55A;--gold-subtle:#FAF5E8;--coral:#B85C4A;
+  --text:#1A1A18;--text2:#3D3B36;--text3:#746144;--border:#DDD9D0;
+  --mono:'JetBrains Mono','SF Mono',ui-monospace,monospace;
+  --sans:'DM Sans',-apple-system,system-ui,sans-serif;
+}
+html{font-size:14px}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;background:var(--green);color:#fff;flex:0 0 auto}
+header h1{font-size:1.05rem;font-weight:600;letter-spacing:.2px}
+header .sub{font-size:.78rem;opacity:.8}
+header .grow{flex:1}
+header label{font-size:.78rem;display:flex;align-items:center;gap:5px;cursor:pointer}
+header button{font:inherit;font-size:.8rem;background:var(--gold);border:0;color:#1a1a18;padding:6px 12px;border-radius:8px;cursor:pointer;font-weight:600}
+.main{flex:1;display:flex;min-height:0}
+.list{width:340px;flex:0 0 auto;overflow:auto;border-right:1px solid var(--border);background:var(--white)}
+.list .search{padding:8px;position:sticky;top:0;background:var(--white);border-bottom:1px solid var(--border)}
+.list input{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--border);border-radius:8px}
+.newrun{display:flex;gap:6px;padding:9px 8px;border-bottom:1px solid var(--border);background:var(--gold-subtle);position:sticky;top:0;z-index:2}
+.newrun input{flex:1;min-width:90px;font:inherit;padding:7px 9px;border:1px solid var(--border);border-radius:8px}
+.newrun select{font:inherit;font-size:.78rem;border:1px solid var(--border);border-radius:8px;padding:0 4px;background:var(--white);max-width:120px}
+.newrun button{font:inherit;font-size:.82rem;background:var(--green);color:#fff;border:0;border-radius:8px;padding:0 13px;cursor:pointer;font-weight:600;white-space:nowrap}
+.newrun button:disabled{opacity:.5;cursor:not-allowed}
+.toast{font-size:.74rem;color:var(--text3);padding:4px 9px}
+.run{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer}
+.run:hover{background:var(--green-subtle)}
+.run.active{background:var(--gold-subtle);border-left:3px solid var(--gold)}
+.run .name{font-weight:600;font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.run .meta{font-size:.7rem;color:var(--text3);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
+.badge{display:inline-block;padding:1px 6px;border-radius:6px;font-size:.66rem;font-weight:600;background:var(--green-subtle);color:var(--green)}
+.badge.pdf{background:var(--gold-subtle);color:var(--text3)}
+.badge.done{background:#dcefe4;color:var(--green)}
+.detail{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.tabs{display:flex;gap:2px;padding:8px 16px 0;background:var(--white);border-bottom:1px solid var(--border)}
+.tabs button{font:inherit;font-size:.82rem;background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;cursor:pointer;color:var(--text2)}
+.tabs button.active{border-bottom-color:var(--green);color:var(--green);font-weight:600}
+.body{flex:1;overflow:auto;padding:18px 22px}
+.body.split{display:flex;gap:0;padding:0}
+.tree{width:330px;flex:0 0 auto;overflow:auto;border-right:1px solid var(--border);padding:10px;background:var(--white)}
+.preview{flex:1;overflow:auto;padding:16px 20px;min-width:0}
+.card{background:var(--white);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.card h3{font-size:.82rem;text-transform:uppercase;letter-spacing:.6px;color:var(--text3);margin-bottom:10px}
+.kv{display:grid;grid-template-columns:160px 1fr;gap:4px 12px;font-size:.84rem}
+.kv dt{color:var(--text3)}
+.kv dd{word-break:break-word}
+table{width:100%;border-collapse:collapse;font-size:.8rem}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--border)}
+th{color:var(--text3);font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.4px}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono)}
+.chip{font-family:var(--mono);font-size:.74rem;background:var(--green-subtle);color:var(--green);padding:2px 7px;border-radius:6px;margin:2px 4px 2px 0;display:inline-block}
+.cat{font-size:.7rem;text-transform:uppercase;letter-spacing:.4px;color:var(--text3);margin:10px 0 3px;font-weight:600}
+.f{display:block;width:100%;text-align:left;font:inherit;font-size:.78rem;background:none;border:0;padding:3px 6px;border-radius:6px;cursor:pointer;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.f:hover{background:var(--green-subtle)}
+.f.active{background:var(--gold-subtle);color:var(--text)}
+.f .sz{float:right;color:var(--text3);font-size:.68rem;font-family:var(--mono)}
+pre{font-family:var(--mono);font-size:.78rem;white-space:pre-wrap;word-break:break-word;background:var(--white);border:1px solid var(--border);border-radius:10px;padding:12px;line-height:1.5}
+.empty{color:var(--text3);padding:40px;text-align:center;font-size:.9rem}
+a.dl{color:var(--green);font-weight:600;text-decoration:none}
+iframe{width:100%;height:78vh;border:1px solid var(--border);border-radius:10px;background:#fff}
+img.fig{max-width:100%;border:1px solid var(--border);border-radius:10px}
+.flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>AutoResearch · Run Debug Console</h1>
+  <span class="sub" id="serveVer"></span>
+  <span class="grow"></span>
+  <label><input type="checkbox" id="redact" checked> redact secrets</label>
+  <button id="refresh">↻ refresh</button>
+</header>
+<div class="main">
+  <div class="list" id="list">
+    <div class="newrun">
+      <input id="topic" placeholder="New paper topic → run full pipeline (Stage 1–9)…">
+      <select id="model" title="LLM model for this run">
+        <option value="">Model: default (Kimi-K2.6)</option>
+        <option value="Kimi-K2.6">Kimi-K2.6</option>
+        <option value="MiniMax-M2.7">MiniMax-M2.7</option>
+        <option value="DeepSeek-V4-Flash">DeepSeek-V4-Flash</option>
+      </select>
+      <button id="run" title="Start a full AutoResearch run with the default team talents (incl. aigraph)">▶ Run</button>
+    </div>
+    <div class="toast" id="toast"></div>
+    <div class="search"><input id="search" placeholder="filter runs…"></div>
+    <div id="runs"></div>
+  </div>
+  <div class="detail">
+    <div class="tabs">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="agents">Agents / Stages</button>
+      <button data-tab="files">Files &amp; artifacts</button>
+      <button data-tab="logs">Logs</button>
+    </div>
+    <div class="body" id="body"><div class="empty">Select a run on the left.</div></div>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const ESCMAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'};
+const esc = s => (s==null?'':String(s)).replace(/[&<>"'`]/g,c=>ESCMAP[c]);
+const fmt = n => (n==null?'—':Number(n).toLocaleString());
+const kb = n => n==null?'':(n<1024?n+'B':n<1048576?(n/1024).toFixed(1)+'K':(n/1048576).toFixed(1)+'M');
+let RUNS=[], CUR=null, TAB='overview';
+const rd = () => $('#redact').checked ? 1 : 0;
+const api = p => `/api/debug/${p}`;
+
+async function loadRuns(){
+  $('#runs').innerHTML='<div class="empty">loading…</div>';
+  try{
+    const r = await fetch(api('runs'));
+    RUNS = (await r.json()).runs||[];
+  }catch(e){ $('#runs').innerHTML='<div class="empty">failed to load</div>'; return; }
+  renderRuns();
+}
+function renderRuns(){
+  const q = ($('#search').value||'').toLowerCase();
+  const items = RUNS.filter(r=>!q || (r.name+r.project_id+r.task).toLowerCase().includes(q));
+  $('#runs').innerHTML = items.map(r=>{
+    const done = (r.phase==='done'||r.latest_iter_status==='completed');
+    return `<div class="run ${CUR===r.project_id?'active':''}" data-id="${esc(r.project_id)}">
+      <div class="name">${esc(r.name||r.project_id)}</div>
+      <div class="meta">
+        <span class="badge ${done?'done':''}">${esc(r.phase||r.status||'—')}</span>
+        ${r.current_stage!=null?`<span>S${esc(r.current_stage)}</span>`:''}
+        ${r.has_pdf?'<span class="badge pdf">PDF</span>':''}
+        <span>${fmt(r.tokens_total)} tok</span>
+        <span>$${(r.cost_usd||0).toFixed(2)}</span>
+      </div>
+      <div class="meta"><span style="font-family:var(--mono)">${esc(r.project_id)}</span></div>
+    </div>`;
+  }).join('') || '<div class="empty">no runs</div>';
+  document.querySelectorAll('.run').forEach(el=>el.onclick=()=>selectRun(el.dataset.id));
+}
+async function selectRun(id){ CUR=id; renderRuns(); render(); }
+
+function tab(name){ TAB=name; document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name)); render(); }
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
+
+async function render(){
+  if(!CUR){ $('#body').className='body'; $('#body').innerHTML='<div class="empty">Select a run on the left.</div>'; return; }
+  if(TAB==='overview') return renderOverview();
+  if(TAB==='agents') return renderAgents();
+  if(TAB==='files') return renderFiles();
+  if(TAB==='logs') return renderLogs();
+}
+
+async function renderOverview(){
+  $('#body').className='body'; $('#body').innerHTML='<div class="empty">loading…</div>';
+  let info;
+  try{
+    const r = await fetch(api(`run/${encodeURIComponent(CUR)}?redact=${rd()}`));
+    if(!r.ok){ $('#body').innerHTML=`<div class="empty">run not available (HTTP ${r.status})</div>`; return; }
+    info = await r.json();
+  }catch(e){ $('#body').innerHTML='<div class="empty">failed to load run — network error</div>'; return; }
+  if(!info || info.error){ $('#body').innerHTML=`<div class="empty">${esc((info&&info.error)||'no data')}</div>`; return; }
+  const sv = (info.meta&&info.meta.serve)||{};
+  $('#serveVer').textContent = `v${sv.app_version||'?'} · ${sv.git_sha||''} ${sv.git_branch||''}`;
+  const c=info.config, t=info.tokens, m=info.meta, sb=info.sandbox;
+  const empRows = (t.by_employee||[]).map(e=>`<tr><td>${esc(e.name||e.employee_id)}</td><td>${esc(e.role||'')}</td>
+     <td class="num">${fmt(e.input)}</td><td class="num">${fmt(e.output)}</td><td class="num">${fmt(e.total)}</td><td class="num">$${(e.cost_usd||0).toFixed(3)}</td></tr>`).join('');
+  const modelRows=(t.by_model||[]).map(e=>`<tr><td>${esc(e.model)}</td><td class="num">${fmt(e.calls)}</td><td class="num">${fmt(e.total)}</td><td class="num">$${(e.cost_usd||0).toFixed(3)}</td></tr>`).join('');
+  const runIds=(sb.all||[]).map(r=>`<span class="chip">${esc(r)}</span>`).join('')||'<span style="color:var(--text3)">none captured</span>';
+  $('#body').innerHTML=`
+   <div class="flex" style="justify-content:space-between">
+     <h2 style="font-size:1.1rem">${esc(m.name)}</h2>
+     <a class="dl" href="${api(`run/${encodeURIComponent(CUR)}/bundle?redact=${rd()}`)}">⬇ Download full bundle (.zip)</a>
+   </div>
+   <div class="card"><h3>Run / config</h3><dl class="kv">
+     <dt>project_id</dt><dd style="font-family:var(--mono)">${esc(m.project_id)} / ${esc(m.iteration_id||'')}</dd>
+     <dt>status · phase</dt><dd>${esc(m.status)} · ${esc(info.pipeline.phase||'')} (stage ${esc(info.pipeline.current_stage)})</dd>
+     <dt>topic</dt><dd>${esc(c.topic)}</dd>
+     <dt>stages</dt><dd>${esc(c.start_stage)}–${esc(c.end_stage)} · auto_approve=${esc(c.auto_approve)} · retries=${esc(info.pipeline.retries)}</dd>
+     <dt>stages done</dt><dd>${(info.pipeline.stages_completed||[]).map(s=>`<span class="chip">S${esc(s)}</span>`).join('')||'—'}</dd>
+     <dt>models</dt><dd>${(c.models||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join('')||'—'}</dd>
+     <dt>created</dt><dd>${esc(m.created_at)}</dd>
+     <dt>project_dir</dt><dd style="font-family:var(--mono);font-size:.75rem">${esc(m.project_dir)}</dd>
+   </dl></div>
+   <div class="card"><h3>LLM token consumption</h3>
+     <dl class="kv"><dt>total</dt><dd><b>${fmt(t.total.total)}</b> tokens (${fmt(t.total.input)} in / ${fmt(t.total.output)} out) · <b>$${(t.total.cost_usd||0).toFixed(4)}</b> · ${fmt(t.total.calls)} calls</dd></dl>
+     <table style="margin-top:10px"><thead><tr><th>agent</th><th>role</th><th class="num">in</th><th class="num">out</th><th class="num">total</th><th class="num">cost</th></tr></thead><tbody>${empRows||'<tr><td colspan=6>no breakdown</td></tr>'}</tbody></table>
+     <table style="margin-top:10px"><thead><tr><th>model</th><th class="num">calls</th><th class="num">tokens</th><th class="num">cost</th></tr></thead><tbody>${modelRows}</tbody></table>
+   </div>
+   <div class="card"><h3>Sandbox / infra runs</h3>
+     <div>${runIds}</div>
+     <dl class="kv" style="margin-top:8px"><dt>infra configured</dt><dd>${sb.infra_configured?'yes':'no'}</dd></dl>
+   </div>
+   <div class="card"><h3>Pipeline · latest critic</h3>
+     <pre>${esc(info.pipeline.critic_result||'(none)')}</pre>
+   </div>`;
+}
+
+async function renderAgents(){
+  $('#body').className='body'; $('#body').innerHTML='<div class="empty">loading…</div>';
+  let j;
+  try{
+    const r=await fetch(api(`run/${encodeURIComponent(CUR)}/agents`));
+    if(!r.ok){ $('#body').innerHTML=`<div class="empty">no agent data (HTTP ${r.status})</div>`; return; }
+    j=await r.json();
+  }catch(e){ $('#body').innerHTML='<div class="empty">failed to load agents</div>'; return; }
+  const ags=(j&&j.agents)||[];
+  if(!ags.length){ $('#body').innerHTML='<div class="empty">no agent activity recorded for this run</div>'; return; }
+  const rows=ags.map(a=>{
+    const spec=(a.specialized_tools||[]), decl=(a.declared_specialized||[]);
+    const top=Object.entries(a.tools_called||{}).sort((x,y)=>y[1]-x[1]).slice(0,8)
+      .map(([k,v])=>`<span class="chip">${esc(k)}×${v}</span>`).join('')||'<span style="color:var(--text3)">—</span>';
+    let badge;
+    if(a.verdict==='real') badge=`<span class="badge done">✅ real · ${spec.map(esc).join(', ')}</span>`;
+    else if(a.verdict==='broken') badge=`<span class="badge" style="background:#f6dada;color:#b3261e">⚠ placeholder · declares ${decl.map(esc).join(', ')} but called none</span>`;
+    else badge='<span class="badge" style="background:var(--green-subtle);color:var(--text3)">generic (prompt-only by design)</span>';
+    return `<tr>
+      <td class="num">${a.stage!=null?('S'+esc(a.stage)):'—'}</td>
+      <td><b>${esc(a.name||a.employee_id)}</b><div style="font-size:.7rem;color:var(--text3)">${esc(a.role||'')} · ${esc(a.talent_id||a.employee_id)}</div></td>
+      <td>${(a.models||[]).map(esc).join(', ')}</td>
+      <td class="num">${fmt(a.calls)}</td>
+      <td class="num">${fmt(a.tools_available)}</td>
+      <td>${badge}</td>
+      <td>${top}</td>
+    </tr>`;}).join('');
+  const nbroken=ags.filter(a=>a.verdict==='broken').length, nreal=ags.filter(a=>a.verdict==='real').length;
+  $('#body').innerHTML=`
+   <div class="card"><h3>Agents / talents that ran this pipeline</h3>
+     <p class="muted" style="font-size:.8rem;color:var(--text3)">Which employee ran each stage, the model, and the tools it actually called. <b>✅ real</b> = used its specialized/MCP tools · <b>⚠ placeholder</b> = declares tools but called none (e.g. aigraph not firing) · <b>generic</b> = prompt-only talent by design. <b>${nreal} real, ${nbroken} broken-placeholder</b> of ${ags.length}.</p>
+     <table style="margin-top:8px"><thead><tr>
+       <th class="num">stage</th><th>employee · role · talent</th><th>model</th>
+       <th class="num">LLM calls</th><th class="num">tools avail</th><th>verdict</th><th>tools called (top)</th>
+     </tr></thead><tbody>${rows}</tbody></table>
+   </div>`;
+}
+
+let TREE=[];
+async function renderFiles(){
+  $('#body').className='body split';
+  $('#body').innerHTML='<div class="tree" id="tree">loading…</div><div class="preview" id="preview"><div class="empty">Pick a file.</div></div>';
+  let j;
+  try{
+    const r = await fetch(api(`run/${encodeURIComponent(CUR)}/files?internal=1`));
+    if(!r.ok){ $('#tree').innerHTML=`<div class="empty">no file tree (HTTP ${r.status})</div>`; return; }
+    j = await r.json();
+  }catch(e){ $('#tree').innerHTML='<div class="empty">failed to load files</div>'; return; }
+  TREE=(j&&j.files)||[];
+  const order=['paper_pdf','stage_outputs','gate_reviews','transcripts','drafts','receipts','paper_sources','figures','trace','pipeline_state','engine_internals','other'];
+  const byCat={}; TREE.forEach(f=>(byCat[f.category]=byCat[f.category]||[]).push(f));
+  let html='';
+  order.filter(c=>byCat[c]).forEach(cat=>{
+    html+=`<div class="cat">${cat.replace(/_/g,' ')} (${byCat[cat].length})</div>`;
+    html+=byCat[cat].map(f=>`<button class="f" data-p="${esc(f.path)}" data-t="${f.is_text?1:0}">${esc(f.name)}<span class="sz">${kb(f.size)}</span></button>`).join('');
+  });
+  $('#tree').innerHTML=html||'<div class="empty">no files</div>';
+  document.querySelectorAll('.f').forEach(el=>el.onclick=()=>openFile(el.dataset.p, el.dataset.t==='1', el));
+}
+async function openFile(path,isText,el){
+  document.querySelectorAll('.f').forEach(x=>x.classList.remove('active')); if(el)el.classList.add('active');
+  const url=api(`run/${encodeURIComponent(CUR)}/file?path=${encodeURIComponent(path)}&redact=${rd()}`);
+  const low=path.toLowerCase();
+  const pv=$('#preview');
+  if(low.endsWith('.pdf')){ pv.innerHTML=`<div class="flex" style="margin-bottom:8px"><b>${esc(path)}</b><a class="dl" href="${url}" target="_blank">open ↗</a></div><iframe src="${url}"></iframe>`; return; }
+  // Only raster images render as <img>; .svg is served as inert text and shown as source.
+  if(/\.(png|jpe?g|gif|webp)$/.test(low)){ pv.innerHTML=`<div class="flex" style="margin-bottom:8px"><b>${esc(path)}</b></div><img class="fig" src="${url}">`; return; }
+  pv.innerHTML='<div class="empty">loading…</div>';
+  let txt;
+  try{
+    const r=await fetch(url);
+    if(!r.ok){ pv.innerHTML=`<div class="empty">cannot open (HTTP ${r.status})</div>`; return; }
+    txt=await r.text();
+  }catch(e){ pv.innerHTML='<div class="empty">failed to load file</div>'; return; }
+  pv.innerHTML=`<div class="flex" style="margin-bottom:8px"><b>${esc(path)}</b><a class="dl" href="${url}" download>download</a></div><pre>${esc(txt)}</pre>`;
+}
+
+async function renderLogs(){
+  $('#body').className='body'; $('#body').innerHTML='<div class="empty">loading…</div>';
+  let j;
+  try{
+    const r=await fetch(api(`run/${encodeURIComponent(CUR)}/logs?tail=600&redact=${rd()}`));
+    if(!r.ok){ $('#body').innerHTML=`<div class="empty">no logs (HTTP ${r.status})</div>`; return; }
+    j=await r.json();
+  }catch(e){ $('#body').innerHTML='<div class="empty">failed to load logs</div>'; return; }
+  if(!j || j.error){ $('#body').innerHTML=`<div class="empty">${esc((j&&j.error)||'no data')}</div>`; return; }
+  const tr=j.debug_trace||{};
+  $('#body').innerHTML=`
+   <div class="card"><h3>debug_trace.jsonl ${tr.present?`· ${fmt(tr.lines_returned)} lines`:'· (absent)'}</h3>
+     <pre>${esc((tr.lines||[]).join('\n')||'(no trace)')}</pre></div>
+   <div class="card"><h3>serve log (lines mentioning this run)</h3>
+     <pre>${esc(j.serve_log_tail||'(none)')}</pre></div>`;
+}
+
+// ── submit a new topic → full pipeline (default team talents incl. aigraph) ──
+async function submitRun(){
+  const t=$('#topic').value.trim(); if(!t) return;
+  const model=$('#model').value;
+  const btn=$('#run'), old=btn.textContent; btn.disabled=true; btn.textContent='…';
+  $('#toast').textContent='Starting…';
+  try{
+    const body={topic:t}; if(model) body.model=model;
+    const r=await fetch('/api/public/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(j && j.project_id){
+      $('#topic').value='';
+      $('#toast').textContent='Started: '+j.project_id+(model?(' ('+model+')'):'')+' — refresh and open it to watch';
+      setTimeout(loadRuns, 1500);
+    } else {
+      $('#toast').textContent='Failed: '+esc((j&&j.detail)||'unknown');
+    }
+  }catch(e){ $('#toast').textContent='Failed: network error'; }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+$('#run').onclick=submitRun;
+$('#topic').addEventListener('keydown',e=>{ if(e.key==='Enter') submitRun(); });
+
+$('#refresh').onclick=loadRuns;
+$('#search').oninput=renderRuns;
+$('#redact').onchange=()=>{ if(CUR) render(); };
+loadRuns();
+</script>
+</body>
+</html>

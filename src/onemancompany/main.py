@@ -844,6 +844,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="One Man Company", lifespan=lifespan)
 app.add_middleware(NoCacheStaticMiddleware)
 app.include_router(router)
+# Debug-access layer — full per-run artifact + telemetry exposure for analysis.
+# Additive; disable with OMC_DEBUG_ACCESS=0. Must precede the static catch-all
+# mount below so /api/debug/* wins.
+if os.environ.get("OMC_DEBUG_ACCESS", "1") != "0":
+    from onemancompany.api.debug_access import debug_router  # noqa: E402
+    app.include_router(debug_router)
+    if os.environ.get("AUTH_ENABLED") != "1":
+        print("[debug-access] /api/debug/* is PUBLIC (AUTH_ENABLED!=1); "
+              "secrets redacted by default; set OMC_DEBUG_ACCESS=0 to disable.")
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 # Optional login gate (no-op unless AUTH_ENABLED=1) — must run after the routes
