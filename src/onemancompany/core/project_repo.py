@@ -218,6 +218,32 @@ def commit_stage(
     return head_sha
 
 
+def commit_pending(repo_dir: str, *, message: str) -> bool:
+    """Commit any uncommitted workspace changes as a checkpoint commit
+    (no tag). Returns True if a commit was made, False if the tree was
+    already clean (or the repo is uninitialized).
+
+    Exists for the result-driven loop (R10-1, run 59429240245f): between
+    a stage's tag commit and a revert decision, the workspace legitimately
+    accumulates post-stage artifacts (runner report, routing decision,
+    gate reviews). ``checkout_branch_from_stage``'s DirtyWorkspaceError
+    guard would block the revert; checkpointing first both unblocks it
+    and preserves the forensics in git history.
+    """
+    if not _is_initialized(repo_dir):
+        logger.warning(
+            "[project_repo] commit_pending called on uninitialized repo at {}; skipping",
+            repo_dir,
+        )
+        return False
+    _run(repo_dir, "add", "-A")
+    if not _has_uncommitted_changes(repo_dir):
+        return False
+    _run(repo_dir, "commit", "--quiet", "-m", message)
+    logger.info("[project_repo] commit_pending: checkpointed dirty tree ({})", message)
+    return True
+
+
 def _gen_branch_name(stage: int) -> str:
     return f"feat-stage{stage}-{secrets.token_hex(3)}"
 

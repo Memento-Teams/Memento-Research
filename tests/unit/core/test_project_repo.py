@@ -376,3 +376,36 @@ def test_ensure_initialized_commits_baseline_for_truly_empty_workspace(tmp_path,
     assert (tmp_path / ".gitkeep").exists()
     tags = _git(tmp_path, "tag", "--list").splitlines()
     assert "iter_empty/init" in tags
+
+
+# ---------------------------------------------------------------------------
+# commit_pending — R10-1: the result-loop revert must not be blocked by a
+# dirty workspace
+# ---------------------------------------------------------------------------
+
+def test_commit_pending_commits_dirty_tree(tmp_path):
+    """REGRESSION (run 59429240245f): the Stage-7 result judge correctly
+    ordered REVERT to stage 6, but the workspace held post-stage artifacts
+    (runner report, routing decision) that were never stage-committed —
+    ``checkout_branch_from_stage`` raised DirtyWorkspaceError and the loop
+    degraded to ADVANCE, forcing Stage 8 to write a paper on a known-broken
+    result. ``commit_pending`` checkpoints the dirty tree so the revert can
+    proceed (and the forensics are preserved in git history)."""
+    pr.ensure_initialized(str(tmp_path), iteration="iter_001")
+    (tmp_path / "stage7_routing_decision.md").write_text("Action: REVERT\n")
+
+    committed = pr.commit_pending(str(tmp_path), message="pre-revert checkpoint")
+
+    assert committed is True
+    # Tree is now clean — the DirtyWorkspaceError guard would pass.
+    out = subprocess.run(["git", "status", "--short"], cwd=tmp_path,
+                         capture_output=True, text=True).stdout.strip()
+    assert out == ""
+    log = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=tmp_path,
+                         capture_output=True, text=True).stdout.strip()
+    assert log == "pre-revert checkpoint"
+
+
+def test_commit_pending_clean_tree_is_noop(tmp_path):
+    pr.ensure_initialized(str(tmp_path), iteration="iter_001")
+    assert pr.commit_pending(str(tmp_path), message="noop") is False
