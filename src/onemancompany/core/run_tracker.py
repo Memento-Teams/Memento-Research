@@ -157,6 +157,7 @@ def gc_orphan_runs(all_runs: list[dict[str, Any]] | None = None) -> int:
             try:
                 state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
             except (yaml.YAMLError, OSError):
+                logger.debug("[run_tracker] skip unreadable/invalid state file {}", state_file)
                 continue
             if not isinstance(state, dict):
                 continue

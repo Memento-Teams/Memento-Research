@@ -590,6 +590,7 @@ async def stage_hang_watchdog() -> list | None:
         try:
             tree = get_tree(str(tree_path))
         except Exception:
+            logger.debug("[stage_hang_watchdog] skip unreadable task tree {}", tree_path)
             continue
         project_id = tree.project_id
         if not project_id or (now - _hang_aborted_at.get(project_id, 0) < COOLDOWN):
@@ -606,6 +607,7 @@ async def stage_hang_watchdog() -> list | None:
                 started = _dt.fromisoformat(node.started_at).replace(tzinfo=None)
                 elapsed = (_dt.now() - started).total_seconds()
             except (ValueError, TypeError, AttributeError):
+                logger.debug("[stage_hang_watchdog] skip node with unparsable started_at")
                 continue
             if elapsed < HANG_SECONDS:
                 continue
@@ -616,7 +618,7 @@ async def stage_hang_watchdog() -> list | None:
                 if trace.exists() and (now - trace.stat().st_mtime) < TRACE_STALE:
                     continue  # agent still active -> not hung
             except OSError:
-                pass
+                logger.debug("[stage_hang_watchdog] trace stat failed; treating as possibly hung")
             logger.warning(
                 "[stage_hang_watchdog] project {} node {} stuck PROCESSING {:.0f}s + trace frozen -> abort for auto-retry",
                 project_id, node.id, elapsed,
