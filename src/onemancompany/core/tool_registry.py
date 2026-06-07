@@ -71,6 +71,27 @@ class ToolRegistry:
         """Return all registered tool names."""
         return list(self._tools.keys())
 
+    def audit_declared_tools(self, declared: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Cross-check hire_list-declared tool names against the registry (#130).
+
+        ``declared`` maps an employee label (talent_id / name) to the tool names
+        its CV declares. Returns the subset that did NOT resolve to a registered
+        tool — i.e. tools an agent will silently lack at runtime — and logs a
+        loud ERROR for each so a load gap self-announces instead of degrading
+        the talent to a generic placeholder.
+        """
+        unresolved: dict[str, list[str]] = {}
+        for label, names in declared.items():
+            missing = [n for n in (names or []) if n not in self._tools]
+            if missing:
+                unresolved[label] = missing
+                logger.error(
+                    "[asset-audit] talent {!r} declares tool(s) {} that are NOT "
+                    "registered — its agent will run without them (#130)",
+                    label, missing,
+                )
+        return unresolved
+
     # ------------------------------------------------------------------
     # Permission-based filtering
     # ------------------------------------------------------------------
@@ -171,25 +192,46 @@ class ToolRegistry:
         import yaml
         from langchain_core.tools import BaseTool
 
+        # Asset tools historically required tool.yaml + type: langchain_module +
+        # <folder>.py. Talent-packaged tools (#130) ship the equivalent
+        # in-process langchain @tool under a different convention — manifest.yaml,
+        # type: python, tool.py — and the old loader skipped them SILENTLY, so
+        # the declared talent tool never registered and the employee's agent ran
+        # tool-less (a "specialised talent as generic placeholder"). Accept both
+        # conventions, and make every skip LOUD so a load gap can't hide.
+        LOADABLE_TYPES = {"langchain_module", "python"}
         for entry in sorted(tools_dir.iterdir()):
             if not entry.is_dir():
                 continue
 
+            # Config file: tool.yaml (canonical) or manifest.yaml (talent).
             tool_yaml_path = entry / TOOL_YAML_FILENAME
             if not tool_yaml_path.exists():
-                continue
+                tool_yaml_path = entry / "manifest.yaml"
+            if not tool_yaml_path.exists():
+                continue  # not a tool directory
 
             with open_utf(tool_yaml_path) as f:
                 tool_conf = yaml.safe_load(f) or {}
 
-            # Only load Python-based tool modules
-            if tool_conf.get("type") != "langchain_module":
+            folder_name = entry.name
+            tool_type = tool_conf.get("type")
+            if tool_type not in LOADABLE_TYPES:
+                logger.warning(
+                    "Asset tool {!r} skipped: unsupported type {!r} (expected one of {})",
+                    folder_name, tool_type, sorted(LOADABLE_TYPES),
+                )
                 continue
 
-            folder_name = entry.name
+            # Python file: <folder>.py (canonical) or tool.py (talent).
             py_file = entry / f"{folder_name}.py"
             if not py_file.is_file():
-                logger.debug("No %s.py found in asset tool %s", folder_name, folder_name)
+                py_file = entry / "tool.py"
+            if not py_file.is_file():
+                logger.warning(
+                    "Asset tool {!r} skipped: no {}.py or tool.py found",
+                    folder_name, folder_name,
+                )
                 continue
 
             # Import the module and collect BaseTool instances. Pass
@@ -226,6 +268,7 @@ class ToolRegistry:
             # Talent-brought tools have source_talent in tool.yaml
             source = "talent" if tool_conf.get("source_talent") else "asset"
 
+            registered_here = 0
             for attr_name in dir(mod):
                 attr = getattr(mod, attr_name)
                 if isinstance(attr, BaseTool):
@@ -237,7 +280,13 @@ class ToolRegistry:
                         source=source,
                     )
                     self.register(attr, meta)
+                    registered_here += 1
                     logger.debug("Registered asset tool: {} (from {})", attr.name, folder_name)
+            if registered_here == 0:
+                logger.warning(
+                    "Asset tool {!r} imported but exposed no BaseTool instance — "
+                    "nothing registered", folder_name,
+                )
 
 
     # ------------------------------------------------------------------
