@@ -506,6 +506,23 @@ async def lifespan(app: FastAPI):
     from onemancompany.core.tool_registry import tool_registry
     tool_registry.load_asset_tools()
 
+    # #130: cross-check that every hire_list-declared tool actually registered.
+    # An unresolved declaration means the talent's agent silently lacks the tool
+    # (runs as a generic placeholder) — surface it loudly rather than invisibly.
+    try:
+        import json as _json
+        _hire_file = DATA_ROOT / "company" / HIRE_LIST_FILENAME
+        if _hire_file.exists():
+            _cvs = _json.loads(_hire_file.read_text(encoding="utf-8")) or []
+            _declared = {
+                (cv.get("talent_id") or cv.get("name") or "<unknown>"): cv.get("tools") or []
+                for cv in _cvs
+                if cv.get("tools")
+            }
+            tool_registry.audit_declared_tools(_declared)
+    except Exception as _audit_exc:  # noqa: BLE001
+        logger.warning("[asset-audit] declared-tool audit skipped: {}", _audit_exc)
+
     # Validate AUTH_CHOICE_GROUPS ↔ PROVIDER_REGISTRY consistency
     from onemancompany.core.auth_choices import validate_registry_consistency
     _auth_warnings = validate_registry_consistency()
