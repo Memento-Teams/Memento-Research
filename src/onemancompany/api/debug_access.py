@@ -528,11 +528,11 @@ def serve_version() -> dict:
             if r.returncode == 0:
                 out[label] = r.stdout.strip()
         except Exception:
-            pass
+            logger.debug("debug_access: best-effort op failed, ignored")
     try:
         out["host"] = socket.gethostname()
     except Exception:
-        pass
+        logger.debug("debug_access: best-effort op failed, ignored")
     return out
 
 
@@ -751,10 +751,12 @@ def _iter_files(pdir: Path, include_internal: bool):
             if p.is_symlink() or not p.is_file():
                 continue
         except OSError:
+            logger.debug("debug_access: best-effort op failed, ignored")
             continue
         try:
             rel_parts = p.relative_to(pdir).parts
         except ValueError:
+            logger.debug("debug_access: best-effort op failed, ignored")
             continue
         if set(rel_parts) & _NOISE_DIRS:
             continue
@@ -768,6 +770,7 @@ def _iter_files(pdir: Path, include_internal: bool):
         try:
             p.resolve().relative_to(root)
         except (OSError, ValueError):
+            logger.debug("debug_access: best-effort op failed, ignored")
             continue
         if not include_internal and rel.startswith("nodes/"):
             continue
@@ -879,7 +882,7 @@ def build_run_info(project_id: str, iteration: str, pdir: Path,
                 trace_info["lines"] = None
                 trace_info["line_count_skipped"] = "file too large"
         except OSError:
-            pass
+            logger.debug("debug_access: best-effort op failed, ignored")
 
     serve = serve_version()
     if redact:
@@ -1041,7 +1044,7 @@ def _agent_activity(pdir: Path) -> list[dict]:
         from onemancompany.core.pipeline_engine import STAGE_TALENT_DEFAULTS
         stage_by_talent = {v: k for k, v in STAGE_TALENT_DEFAULTS.items()}
     except Exception:
-        pass
+        logger.debug("debug_access: best-effort op failed, ignored")
     # talent_id -> declared specialized tools (from hire_list.json), so we can tell
     # "generic by design" apart from "declared tools but never used" (broken placeholder).
     declared_spec: dict = {}
@@ -1074,6 +1077,7 @@ def _agent_activity(pdir: Path) -> list[dict]:
         try:
             e = _json.loads(ln)
         except Exception:
+            logger.debug("debug_access: best-effort op failed, ignored")
             continue
         if not isinstance(e, dict):
             continue
@@ -1154,7 +1158,7 @@ def _has_pdf(pdir: Path) -> bool:
             if p.is_file() and not p.is_symlink():
                 return True
         except OSError:
-            pass
+            logger.debug("debug_access: best-effort op failed, ignored")
         if i >= 500:           # don't walk an unbounded tree for a missing pdf
             break
     return False
@@ -1410,6 +1414,7 @@ async def debug_run_bundle(project_id: str, request: Request, iteration: str = "
             try:
                 sz = p.stat().st_size
             except OSError:
+                logger.debug("debug_access: best-effort op failed, ignored")
                 continue
             if sz > _BUNDLE_MAX_MEMBER:        # skip oversized single members
                 dropped.append(f"{rel} (>{_BUNDLE_MAX_MEMBER} bytes)")
@@ -1429,6 +1434,7 @@ async def debug_run_bundle(project_id: str, request: Request, iteration: str = "
                 added += 1
                 total += sz
             except OSError:
+                logger.debug("debug_access: best-effort op failed, ignored")
                 continue
         manifest["_bundle"] = {"files_added": added, "approx_bytes": total,
                                "dropped_count": len(dropped), "dropped": dropped[:50]}
