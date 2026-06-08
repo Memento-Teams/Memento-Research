@@ -26,9 +26,12 @@ from onemancompany.core.research_memory import ResearchMemoryStore
 # Stage definitions
 # ---------------------------------------------------------------------------
 
+# Stages 1 (topic_refiner) and 2 (literature_surveyor) were removed: aigraph
+# grounds Stage 3 over the arxiv corpus (which subsumes the literature survey),
+# and the raw keyword topic feeds Stage 3 directly (no separate refinement). The
+# remaining stage ids are kept as 3..9 so all stage-specific handling keyed on
+# ``stage["id"] == 4/6/8`` stays valid; lookups are by id, not list position.
 STAGES = [
-    {"id": 1, "skill": "topic_refiner",        "name": "Topic Refinement"},
-    {"id": 2, "skill": "literature_surveyor",   "name": "Literature Survey"},
     {"id": 3, "skill": "idea_generator",        "name": "Idea Generation"},
     {"id": 4, "skill": "methodology_designer",  "name": "Methodology Design"},
     {"id": 5, "skill": "experiment_designer",   "name": "Experiment Design"},
@@ -37,6 +40,8 @@ STAGES = [
     {"id": 8, "skill": "paper_writer",          "name": "Paper Generation"},
     {"id": 9, "skill": "peer_reviewer",         "name": "Self-Review"},
 ]
+FIRST_STAGE_ID = STAGES[0]["id"]   # 3 — the pipeline entry (aigraph-grounded ideation)
+LAST_STAGE_ID = STAGES[-1]["id"]   # 9
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
@@ -450,9 +455,9 @@ class PipelineEngine:
         self.topic = topic
         self.state: dict = {
             "topic": topic,
-            "current_stage": 1,
-            "start_stage": 1,
-            "end_stage": 9,
+            "current_stage": FIRST_STAGE_ID,
+            "start_stage": FIRST_STAGE_ID,
+            "end_stage": LAST_STAGE_ID,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
             "phase": "producer",  # producer | producer_b | producer_b_waiting | producer_b_finalize | critic | gate | done | failed
@@ -501,7 +506,7 @@ class PipelineEngine:
 
     def _stage_def(self, stage_id: int = None) -> dict:
         sid = stage_id or self.current_stage
-        return STAGES[sid - 1] if 1 <= sid <= 9 else {}
+        return next((s for s in STAGES if s["id"] == sid), {})
 
     def _memory_store(self) -> ResearchMemoryStore:
         return ResearchMemoryStore(self.project_id, self.project_dir)
@@ -721,7 +726,7 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
+    def start(self, start_stage: int = FIRST_STAGE_ID, end_stage: int = LAST_STAGE_ID, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
         """Begin the pipeline from the given stage.
 
         ``auto_approve`` (headless/unattended mode): when True, every CEO gate
@@ -733,9 +738,9 @@ class PipelineEngine:
         earlier stages never see it. Persisted into pipeline_state.yaml so a
         revert to Stage 8 reuses the same target format.
         """
-        self.state["current_stage"] = max(1, min(start_stage, 9))
+        self.state["current_stage"] = max(FIRST_STAGE_ID, min(start_stage, LAST_STAGE_ID))
         self.state["start_stage"] = self.state["current_stage"]
-        self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, 9))
+        self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, LAST_STAGE_ID))
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
         self.state["auto_approve"] = bool(auto_approve)
@@ -808,17 +813,96 @@ class PipelineEngine:
                 return v
         return _json.dumps(d, ensure_ascii=False)
 
+    def _save_stage3_graph_artifacts(self, bundle) -> None:
+        """Persist the aigraph planet-graph artifacts to the workspace:
+        ``stage3_conflict_graph.html`` (self-contained D3 page, openable in a
+        browser) and ``stage3_conflict_graph.json`` (the {nodes, edges} data).
+        Best-effort; never raises."""
+        try:
+            pdir = Path(self.project_dir)
+            if getattr(bundle, "graph_html", ""):
+                (pdir / "stage3_conflict_graph.html").write_text(
+                    bundle.graph_html, encoding="utf-8"
+                )
+            if getattr(bundle, "graph", None):
+                import json as _json
+                (pdir / "stage3_conflict_graph.json").write_text(
+                    _json.dumps(bundle.graph, ensure_ascii=False), encoding="utf-8"
+                )
+            if bundle.dashboard_url or bundle.graph_url:
+                logger.info(
+                    "[aigraph] Stage 3 planet graph: dashboard={} graph={}",
+                    bundle.dashboard_url or "-", bundle.graph_url or "-",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[aigraph] could not save Stage 3 graph artifacts: {}", exc)
+
+    def _stage3_markdown_with_trace(self, bundle) -> str:
+        """Append an aigraph provenance footer (source/run/coverage/dashboard
+        links) to the report so the Stage 3 deliverable is self-documenting."""
+        md = bundle.markdown
+        try:
+            lines = [
+                "", "<!-- aigraph provenance -->",
+                f"<!-- source={bundle.source} status={bundle.status} run_id={bundle.run_id} "
+                f"coverage={bundle.n_matched}/{bundle.n_total} top_relevance={bundle.top_relevance} -->",
+            ]
+            if bundle.dashboard_url:
+                lines.append(f"<!-- dashboard: {bundle.dashboard_url} -->")
+            if bundle.graph_url:
+                lines.append(f"<!-- graph: {bundle.graph_url} -->")
+            if (Path(self.project_dir) / "stage3_conflict_graph.html").exists():
+                lines.append("<!-- planet graph saved: stage3_conflict_graph.html -->")
+            return md.rstrip() + "\n" + "\n".join(lines) + "\n"
+        except Exception:  # noqa: BLE001
+            return md
+
     def _fetch_aigraph_idea_report(self) -> str | None:
         """Deterministically fetch the aigraph (LCG) idea report for Stage 3.
 
-        Calls the registered ``aigraph_research_ideas`` asset tool directly
-        (in-process urllib JSON-RPC to the aigraph MCP). research_ideas is
-        topic-adaptive: with ``reuse=True`` it reuses the best matching frozen
-        corpus (no paid build) and synthesises grounded ideas over its claims —
-        the synthesis runs inside the operator-controlled aigraph service, not
-        the OMC producer (which was observed skipping the tool entirely and
-        fabricating ``#claim-N`` citations). Returns the markdown report, or
-        None if the tool is unregistered / unreachable / empty. Never raises."""
+        Primary path: a direct, registration-INDEPENDENT MCP call
+        (``aigraph_grounding.fetch_idea_report`` → aigraph's ``get_idea_report``
+        over the live streamable-http MCP session). This is the reliable path
+        because it does NOT depend on ``aigraph_research_ideas`` being registered
+        as an asset tool — that registration is the retired #132 startup binding,
+        so it is usually absent, which previously left Stage 3 silently
+        ungrounded. The MCP call runs in a dedicated thread's own event loop so
+        it is safe inside uvicorn's running loop (no anyio cancel-scope crash).
+
+        Fallback path: the registered ``aigraph_research_ideas`` asset tool, for
+        environments that still wire the MCP tools. Both return the markdown
+        report (0-LLM, arxiv-grounded), or None if unreachable/empty. Never
+        raises."""
+        # --- primary: one-shot research_e2e bundle (report + planet graph) ---
+        try:
+            from onemancompany.agents.aigraph_grounding import fetch_stage3_bundle
+            b = fetch_stage3_bundle(self.topic)
+            if b.ok and b.markdown and "arxiv:" in b.markdown:
+                self._save_stage3_graph_artifacts(b)
+                logger.info(
+                    "[PIPELINE] Stage 3 grounded via aigraph {} (status={}): {} chars, "
+                    "coverage={} {}/{}, graph_html={}b",
+                    b.source, b.status, len(b.markdown), b.strength or "?",
+                    b.n_matched, b.n_total, len(b.graph_html),
+                )
+                return self._stage3_markdown_with_trace(b)
+            if b.ok and b.is_weak and b.markdown:
+                self._save_stage3_graph_artifacts(b)
+                logger.warning(
+                    "[PIPELINE] aigraph weak corpus coverage for topic={!r} "
+                    "(matched={}); Stage 3 grounding sparse",
+                    (self.topic or "")[:80], b.n_matched,
+                )
+                return self._stage3_markdown_with_trace(b)
+            if not b.ok:
+                logger.debug(
+                    "[PIPELINE] aigraph bundle fetch failed ({}); trying registered tool", b.error,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[PIPELINE] aigraph bundle unavailable ({}); trying registered tool", exc,
+            )
+        # --- fallback: the registered aigraph_research_ideas asset tool ---
         try:
             from onemancompany.core.tool_registry import tool_registry
             tool = tool_registry.get_tool("aigraph_research_ideas")
@@ -826,7 +910,10 @@ class PipelineEngine:
             logger.debug("[PIPELINE] aigraph tool lookup failed: {}", exc)
             return None
         if tool is None:
-            logger.debug("[PIPELINE] aigraph_research_ideas not registered; Stage 3 ungrounded")
+            logger.debug(
+                "[PIPELINE] aigraph_research_ideas not registered and direct MCP "
+                "unavailable; Stage 3 ungrounded"
+            )
             return None
         try:
             result = tool.invoke({
@@ -846,6 +933,45 @@ class PipelineEngine:
             return None
         logger.info("[PIPELINE] aigraph grounding fetched for Stage 3: {} chars", len(report))
         return report
+
+    def _ensure_stage3_grounded(self, deliverable: "Path", result: str) -> str:
+        """Guarantee the Stage 3 deliverable is arxiv-grounded (augmentation backstop).
+
+        If the producer dropped the injected grounding (its deliverable carries
+        no ``arxiv:`` citations) but the engine fetched a grounded report in the
+        pre-step (``aigraph_grounding.md``), append the verbatim report so Stage 3
+        is grounded regardless of producer behavior — the deterministic backstop
+        for the LLM ignoring the injected grounding (#130). Never raises.
+        """
+        try:
+            grounding_path = Path(self.project_dir) / "aigraph_grounding.md"
+            if not grounding_path.exists():
+                return result
+            grounding = grounding_path.read_text(encoding="utf-8").strip()
+            if "arxiv:" not in grounding:
+                return result  # weak/empty grounding — nothing worth grafting
+            current = result or ""
+            if "arxiv:" in current and "# Selected Hypotheses" in current:
+                return result  # producer preserved the grounding — nothing to do
+            logger.warning(
+                "[aigraph] Stage 3 deliverable was not grounded — grafting the "
+                "deterministic aigraph report back in (producer dropped it)"
+            )
+            prefix = (current.rstrip() + "\n\n") if current.strip() else ""
+            merged = (
+                prefix
+                + "<!-- aigraph grounding grafted deterministically by the pipeline -->\n\n"
+                + grounding
+                + "\n"
+            )
+            try:
+                deliverable.write_text(merged, encoding="utf-8")
+            except OSError as exc:
+                logger.debug("[aigraph] could not rewrite Stage 3 deliverable: {}", exc)
+            return merged
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[aigraph] ensure-grounded step skipped: {}", exc)
+            return result
 
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
@@ -885,24 +1011,47 @@ class PipelineEngine:
         if stage["id"] == 3:
             aigraph_report = self._fetch_aigraph_idea_report()
             if aigraph_report:
-                deliverable = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
-                deliverable.write_text(aigraph_report, encoding="utf-8")
+                # AUGMENTATION: the engine deterministically fetched the
+                # arxiv-grounded report. Persist it for the producer-complete
+                # backstop, inject it verbatim, and let the producer synthesise
+                # ONE runnable pilot on top. The producer cannot fabricate the
+                # grounding away — _ensure_stage3_grounded grafts the verbatim
+                # report back into the deliverable if the producer drops it (#130).
+                try:
+                    (Path(self.project_dir) / "aigraph_grounding.md").write_text(
+                        aigraph_report, encoding="utf-8"
+                    )
+                except OSError as exc:
+                    logger.debug("[aigraph] could not persist Stage 3 grounding: {}", exc)
                 logger.info(
-                    "[PIPELINE] Stage 3 deliverable written deterministically from aigraph "
-                    "({} chars) -> {}; bypassing the LLM producer",
-                    len(aigraph_report), deliverable.name,
+                    "[PIPELINE] Stage 3 grounded deterministically ({} chars); producer "
+                    "will synthesise a pilot on top (augmentation)", len(aigraph_report),
                 )
-                self._dispatch_critic(aigraph_report)
-                return
-            desc += (
-                "\n## Stage 3 grounding (FALLBACK — aigraph unavailable)\n"
-                "The aigraph report could not be fetched by the engine. Call "
-                "`aigraph_get_idea_report(topic=<the refined topic>, "
-                "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
-                "and write its output verbatim. If it is still unavailable, write "
-                "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
-                "claim IDs — do NOT fabricate citations.\n"
-            )
+                desc += (
+                    "\n## AIGRAPH GROUNDING (verbatim, authoritative — do NOT hand-write or fabricate)\n"
+                    "The engine already fetched the arxiv-grounded Selected Hypotheses report "
+                    "below. Your ONLY job is to SYNTHESISE exactly ONE focused, "
+                    "single-GPU-runnable pilot hypothesis on top:\n"
+                    "  ## Primary Pilot Hypothesis\n"
+                    "  state H0/H1, ONE metric, a named dataset, sample size N, and the decoding "
+                    "setting — citing the arxiv claim ids (arxiv:NNNN.NNNNN#cNN) drawn from the "
+                    "report.\n"
+                    "Then PRESERVE the full report verbatim BELOW your pilot in "
+                    "stage3_idea_generator.md (it contains the '# Selected Hypotheses' section "
+                    "the downstream conflict graph and critic read). Do NOT invent citations or "
+                    "replace the grounded content.\n\n"
+                    f"{aigraph_report}\n"
+                )
+            else:
+                desc += (
+                    "\n## Stage 3 grounding (FALLBACK — aigraph unavailable)\n"
+                    "The aigraph report could not be fetched by the engine. Call "
+                    "`aigraph_get_idea_report(topic=<the refined topic>, "
+                    "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
+                    "and write its output verbatim. If it is still unavailable, write "
+                    "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
+                    "claim IDs — do NOT fabricate citations.\n"
+                )
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
@@ -1464,6 +1613,9 @@ class PipelineEngine:
                             result = file_text
                 except Exception as e:
                     logger.debug("[PIPELINE] Stage 3 file-content fallback failed: {}", e)
+                # Augmentation backstop: if the producer dropped the injected
+                # grounding, graft the deterministic aigraph report back in (#130).
+                result = self._ensure_stage3_grounded(deliverable, result)
 
             # Producer finished → store result, dispatch critic
             self.state["stage_results"][str(stage["id"])] = result
@@ -1957,7 +2109,7 @@ class PipelineEngine:
         # new branch with corrupt state and no in-flight task.
         # ``stage_assignments`` honours user overrides; otherwise the
         # engine resolves by skill from ``employee_configs``.
-        stage_def = STAGES[stage - 1]
+        stage_def = self._stage_def(stage)
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage_def["id"]))
         employee_id = assigned if assigned else _find_employee_by_skill(stage_def["skill"])
