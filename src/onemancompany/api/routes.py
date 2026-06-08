@@ -5114,20 +5114,29 @@ async def hire_from_cv(body: dict) -> dict:
                         onboard_result = await talent_market.onboard(talent_id)
                         repo_url = onboard_result.get("repo_url", "")
                     except Exception as e:
-                        # Pure-prompt talents (no tools) carry everything they need
-                        # in the CV (system_prompt_template + skills) and require no
-                        # repo assets. When the Talent Market is unreachable, degrade
-                        # gracefully to a CV-only hire instead of aborting, so the
-                        # AutoResearch roster still bootstraps offline. Talents that
-                        # DO declare tools genuinely need their repo → keep failing.
-                        if cv.get("tools"):
+                        # Pure-prompt talents (no tools AND no skills) carry
+                        # everything they need in the CV (system_prompt_template).
+                        # Talents that declare tools OR skills genuinely need the
+                        # repo — the CV only lists tool/skill *names*, the actual
+                        # implementations (tool.py, SKILL.md) live in the talent
+                        # repo. Issue #154 traced a real Stage 7 outage to this:
+                        # `result-analyst` has `tools: []` but `skills:
+                        # ["result_analyst"]`, where the skill body lives in
+                        # YihangChen9/result-analyst's
+                        # skills/result-analysis-runbook/SKILL.md. The prior gate
+                        # checked only tools, so a transient market failure
+                        # silently downgraded the hire to CV-only, HR generated a
+                        # placeholder skill, and the idempotent re-hire skip in
+                        # `_bootstrap_hire_list_employees` froze the employee in
+                        # that broken state forever.
+                        if cv.get("tools") or cv.get("skills"):
                             await _publish_cv_error(
                                 f"Failed to fetch repo URL for talent '{talent_id}' from Talent Market ({tm_url}): {e}"
                             )
                             return False
                         logger.warning(
                             "[cv_hire] Talent Market unreachable for '{}' ({}); it declares "
-                            "no tools, so registering from CV data only.", talent_id, e
+                            "no tools or skills, so registering from CV data only.", talent_id, e
                         )
                         repo_url = ""
                 if not repo_url:
