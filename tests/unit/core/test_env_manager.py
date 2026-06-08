@@ -426,6 +426,18 @@ class TestDefaultSkillCredentialFallback:
         )
         assert em._read_default_skill_credentials() == {}
 
+    def test_non_object_json_is_silent(self, env_path):
+        """Valid JSON but not an object (list / number / string) must
+        not crash credential resolution — would otherwise break every
+        agent that calls request_env."""
+        from onemancompany.core import env_manager as em
+        skills = env_path.parent / "default_skills" / "experiment-infra"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "experiment_infra_credentials.json").write_text(
+            '["server_url", "session_key"]', encoding="utf-8"
+        )
+        assert em._read_default_skill_credentials() == {}
+
     @pytest.mark.asyncio
     async def test_request_env_returns_default_skill_creds_without_blocking(self, env_path, monkeypatch):
         """The core of issue #150 — Stage 6 calls request_env for the

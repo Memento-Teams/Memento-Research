@@ -135,9 +135,13 @@ def _read_default_skill_credentials() -> dict[str, str]:
         path = base / skill / fname
         if path not in file_cache:
             try:
-                file_cache[path] = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                file_cache[path] = {}
+                data = {}
+            # Be defensive: a valid-JSON-but-non-object payload (list,
+            # number, string) would otherwise blow up at ``.get`` below
+            # and break credential resolution for every key.
+            file_cache[path] = data if isinstance(data, dict) else {}
         value = file_cache[path].get(json_key)
         if isinstance(value, str) and value:
             out[env_name] = value
