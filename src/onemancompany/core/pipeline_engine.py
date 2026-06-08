@@ -852,37 +852,34 @@ class PipelineEngine:
         user_feedback = self._consume_pending_feedback()
         if user_feedback:
             desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
-        # Stage 3 (Idea Generation): inject the aigraph (LCG) idea report
-        # deterministically as authoritative grounding. The producer LLM was
-        # observed skipping the aigraph tool and fabricating #claim-N citations
-        # out of the Stage-2 survey, so the engine fetches the real report
-        # itself (reliable 0-LLM direct call) and hands it over verbatim rather
-        # than trusting the agent to call the tool.
+        # Stage 3 (Idea Generation) is HARD-CODED to the aigraph (LCG) report.
+        # The producer LLM was observed ignoring even the verbatim-injected
+        # report and fabricating #claim-N citations from the Stage-2 survey, so
+        # "let the LLM generate ideas" is removed for Stage 3: the engine fetches
+        # the report (reliable 0-LLM call), writes it as the deliverable, and
+        # goes straight to the critic — no producer LLM, no chance to fabricate.
+        # Falls back to the LLM only if aigraph is unreachable.
         if stage["id"] == 3:
             aigraph_report = self._fetch_aigraph_idea_report()
             if aigraph_report:
-                desc += (
-                    "\n## AUTHORITATIVE GROUNDING — aigraph Literature-Conflict-Graph (REQUIRED)\n"
-                    "The aigraph idea report below was generated deterministically by the "
-                    "pipeline (0-LLM, from the frozen corpus). It IS your Stage 3 deliverable.\n"
-                    "You MUST write it to stage3_idea_generator.md **verbatim** — copy it "
-                    "character-for-character. Do NOT rewrite, rename hypotheses, paraphrase, "
-                    "add sections, or invent any citation. Every claim ID in your output must "
-                    "appear in this report; inventing `#claim-N` suffixes or citing papers "
-                    "not below is fabrication and an auto-REJECT.\n"
-                    f"\n----- BEGIN aigraph report -----\n{aigraph_report}\n"
-                    "----- END aigraph report -----\n"
+                deliverable = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
+                deliverable.write_text(aigraph_report, encoding="utf-8")
+                logger.info(
+                    "[PIPELINE] Stage 3 deliverable written deterministically from aigraph "
+                    "({} chars) -> {}; bypassing the LLM producer",
+                    len(aigraph_report), deliverable.name,
                 )
-            else:
-                desc += (
-                    "\n## Stage 3 grounding\n"
-                    "The aigraph report could not be pre-fetched by the engine. Call "
-                    "`aigraph_get_idea_report(topic=<the refined topic>, "
-                    "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
-                    "and write its output verbatim. If it is unavailable, write "
-                    "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
-                    "claim IDs — do NOT fabricate citations.\n"
-                )
+                self._dispatch_critic(aigraph_report)
+                return
+            desc += (
+                "\n## Stage 3 grounding (FALLBACK — aigraph unavailable)\n"
+                "The aigraph report could not be fetched by the engine. Call "
+                "`aigraph_get_idea_report(topic=<the refined topic>, "
+                "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
+                "and write its output verbatim. If it is still unavailable, write "
+                "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
+                "claim IDs — do NOT fabricate citations.\n"
+            )
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
