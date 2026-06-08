@@ -89,16 +89,74 @@ def _fallback_env_path() -> Path:
     return Path.cwd() / ".env"
 
 
+# ---------------------------------------------------------------------------
+# Default-skill credential fallback (issue #150)
+#
+# A handful of default skills (``experiment-infra`` so far) ship with their
+# operator-provisioned credentials at ``default_skills/<skill>/<name>.json``.
+# These are the secrets the host operator drops in before serving agents;
+# they must be reachable from the agent runtime via the documented env var
+# names (e.g. ``INFRA_SERVER_URL``) even when nothing has been written to
+# ``DATA_ROOT/.env`` and the employee skill copy only has the ``.example``
+# stub.
+#
+# We surface them through ``_read_env_file`` (lowest priority — any explicit
+# ``.env`` value still wins) so ``request_env`` resolves them without
+# blocking, and ``list_env`` shows the row as "set" rather than "pending".
+# Values are kept in-memory only — they're never written to ``DATA_ROOT/.env``.
+# ---------------------------------------------------------------------------
+
+def _default_skills_dir() -> Path:
+    """``src/onemancompany/default_skills`` — pulled into a function so
+    tests can monkeypatch the path."""
+    return Path(__file__).resolve().parent.parent / "default_skills"
+
+
+# Maps ``<env var name>`` -> ``(<skill dir name>, <credentials filename>, <json key>)``.
+# Adding a new mapping here exposes a fresh credential file as a default-skill
+# fallback without further wiring.
+_DEFAULT_SKILL_CREDENTIAL_MAP: dict[str, tuple[str, str, str]] = {
+    "INFRA_SERVER_URL": ("experiment-infra", "experiment_infra_credentials.json", "server_url"),
+    "INFRA_SESSION_KEY": ("experiment-infra", "experiment_infra_credentials.json", "session_key"),
+}
+
+
+def _read_default_skill_credentials() -> dict[str, str]:
+    """Return credential env vars sourced from ``default_skills/*/*.json``.
+
+    Silent on missing files / malformed JSON — this is a best-effort
+    fallback, not a configuration check."""
+    import json
+    base = _default_skills_dir()
+    # Cache reads of the same file within one call to avoid re-parsing.
+    file_cache: dict[Path, dict] = {}
+    out: dict[str, str] = {}
+    for env_name, (skill, fname, json_key) in _DEFAULT_SKILL_CREDENTIAL_MAP.items():
+        path = base / skill / fname
+        if path not in file_cache:
+            try:
+                file_cache[path] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                file_cache[path] = {}
+        value = file_cache[path].get(json_key)
+        if isinstance(value, str) and value:
+            out[env_name] = value
+    return out
+
+
 def _read_env_file() -> dict[str, str]:
     """Read merged env state.
 
     Canonical store is ``DATA_ROOT/.env`` (writes always go here). For
     convenience we also surface a project-root ``.env`` as a read-only
     fallback, so users who already stashed credentials there see them
-    in the ENV panel without having to re-paste. The canonical store
-    wins on conflict.
+    in the ENV panel without having to re-paste. Default-skill credential
+    JSONs are the lowest-priority fallback (issue #150). The canonical
+    store wins on conflict.
     """
     merged: dict[str, str] = {}
+    # Lowest priority — default-skill operator-provisioned credentials.
+    merged.update(_read_default_skill_credentials())
     canonical = _env_path()
     fallback = _fallback_env_path()
     try:
@@ -109,6 +167,17 @@ def _read_env_file() -> dict[str, str]:
     if canonical.exists():
         merged.update(_parse_env_text(canonical.read_text(encoding="utf-8")))
     return merged
+
+
+def bootstrap_default_skill_credentials() -> None:
+    """Push default-skill credentials into ``os.environ`` so non-async
+    callers (``run_tracker``, ``api.routes``) see them without going
+    through :func:`request_env`. Idempotent; never overrides an existing
+    value. Called from the FastAPI lifespan."""
+    for k, v in _read_default_skill_credentials().items():
+        if not os.environ.get(k):
+            os.environ[k] = v
+        _known_keys.add(k)
 
 
 def _write_env_file(updates: dict[str, str]) -> None:
