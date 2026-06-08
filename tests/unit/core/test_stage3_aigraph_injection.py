@@ -21,7 +21,9 @@ class _FakeTool:
         self._ret, self._exc = ret, exc
 
     def invoke(self, args):
-        assert args["run"] == "arxiv-reasoning-v0.7-540p-thaw1"  # run pinned, not LLM-chosen
+        assert args["topic"]                 # research_ideas is topic-driven
+        assert args.get("reuse") is True     # reuse matching corpus (no paid build)
+        assert args.get("as_markdown") is True
         if self._exc:
             raise self._exc
         return self._ret
@@ -56,6 +58,23 @@ def test_dict_result_is_unwrapped():
     big = "x" * 600
     with patch(_PATCH, return_value=_FakeTool(ret={"result": big})):
         assert _engine()._fetch_aigraph_idea_report() == big
+
+
+def test_research_ideas_markdown_envelope_dict():
+    """research_ideas returns {stats, ideas_markdown} — extract the markdown."""
+    md = "# Ideas — x\n## 1. foo _(critic-conflict, conf=0.9)_\n" + ("a" * 600)
+    ret = {"stats": {"n_ideas": 8}, "ideas_markdown": md}
+    with patch(_PATCH, return_value=_FakeTool(ret=ret)):
+        assert _engine()._fetch_aigraph_idea_report() == md
+
+
+def test_research_ideas_markdown_envelope_json_string():
+    """Same envelope arriving as a JSON string is parsed + unwrapped."""
+    import json
+    md = "# Ideas — x\n" + ("b" * 600)
+    ret = json.dumps({"stats": {"n_ideas": 8}, "ideas_markdown": md})
+    with patch(_PATCH, return_value=_FakeTool(ret=ret)):
+        assert _engine()._fetch_aigraph_idea_report() == md
 
 
 def test_stage3_writes_deliverable_and_bypasses_llm(tmp_path, monkeypatch):

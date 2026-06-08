@@ -781,44 +781,67 @@ class PipelineEngine:
             self._save()
         return text
 
+    @staticmethod
+    def _extract_aigraph_markdown(result) -> str:
+        """Pull the markdown out of an aigraph tool result, which may be a
+        markdown string or a JSON object carrying ``ideas_markdown`` /
+        ``markdown`` / ``report`` / ``result`` (research_ideas returns the
+        markdown wrapped in a JSON envelope alongside its stats)."""
+        import json as _json
+        d = None
+        if isinstance(result, dict):
+            d = result
+        elif isinstance(result, str):
+            s = result.strip()
+            if s.startswith("{"):
+                try:
+                    d = _json.loads(s)
+                except Exception:  # noqa: BLE001
+                    return result
+            else:
+                return result
+        else:
+            return str(result)
+        for key in ("ideas_markdown", "markdown", "report", "result"):
+            v = d.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
+        return _json.dumps(d, ensure_ascii=False)
+
     def _fetch_aigraph_idea_report(self) -> str | None:
         """Deterministically fetch the aigraph (LCG) idea report for Stage 3.
 
-        Calls the registered ``aigraph_get_idea_report`` asset tool directly
-        (reliable in-process urllib JSON-RPC, 0-LLM, ~200 ms) so Stage-3
-        grounding does NOT depend on the producer LLM choosing to call it — a
-        MiniMax-M2.7 Idea Generator was observed skipping the tool entirely and
-        fabricating ``#claim-N`` citations out of the Stage-2 survey. Returns
-        the markdown report, or None if the tool is unregistered / unreachable /
-        empty. Never raises and never fabricates; the caller degrades."""
+        Calls the registered ``aigraph_research_ideas`` asset tool directly
+        (in-process urllib JSON-RPC to the aigraph MCP). research_ideas is
+        topic-adaptive: with ``reuse=True`` it reuses the best matching frozen
+        corpus (no paid build) and synthesises grounded ideas over its claims —
+        the synthesis runs inside the operator-controlled aigraph service, not
+        the OMC producer (which was observed skipping the tool entirely and
+        fabricating ``#claim-N`` citations). Returns the markdown report, or
+        None if the tool is unregistered / unreachable / empty. Never raises."""
         try:
             from onemancompany.core.tool_registry import tool_registry
-            tool = tool_registry.get_tool("aigraph_get_idea_report")
+            tool = tool_registry.get_tool("aigraph_research_ideas")
         except Exception as exc:  # noqa: BLE001
             logger.debug("[PIPELINE] aigraph tool lookup failed: {}", exc)
             return None
         if tool is None:
-            logger.debug("[PIPELINE] aigraph_get_idea_report not registered; Stage 3 ungrounded")
+            logger.debug("[PIPELINE] aigraph_research_ideas not registered; Stage 3 ungrounded")
             return None
         try:
             result = tool.invoke({
                 "topic": self.topic,
-                "run": self.state.get("aigraph_run", "arxiv-reasoning-v0.7-540p-thaw1"),
-                "k": self.state.get("aigraph_k", 8),
-                "kind": self.state.get("aigraph_kind", "creator"),
+                "min_ideas": self.state.get("aigraph_min_ideas", 8),
+                "reuse": self.state.get("aigraph_reuse", True),
+                "as_markdown": True,
             })
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[PIPELINE] aigraph_get_idea_report invocation failed: {}", exc)
+            logger.warning("[PIPELINE] aigraph_research_ideas invocation failed: {}", exc)
             return None
-        if isinstance(result, str):
-            report = result
-        elif isinstance(result, dict):
-            report = result.get("result") or result.get("markdown") or ""
-        else:
-            report = str(result)
+        report = self._extract_aigraph_markdown(result)
         if not report or len(report) < 500:
             logger.warning(
-                "[PIPELINE] aigraph_get_idea_report returned empty/stub ({} chars); "
+                "[PIPELINE] aigraph_research_ideas returned empty/stub ({} chars); "
                 "Stage 3 left to agent fallback", len(report or ""))
             return None
         logger.info("[PIPELINE] aigraph grounding fetched for Stage 3: {} chars", len(report))
@@ -1097,28 +1120,29 @@ class PipelineEngine:
             f"3. Specific reasoning\n\n"
             f"If REJECT, explain exactly what needs to be improved.\n\n"
         )
-        # Stage 3 (Idea Generation) is produced by the literature-conflict-graph
-        # (aigraph) tool, so its deliverable is a `# Selected Hypotheses` report —
-        # NOT the generic idea-generation document. Grade it on that basis.
+        # Stage 3 (Idea Generation) is produced by the aigraph
+        # literature-conflict-graph tool, so its deliverable is an aigraph idea
+        # report — NOT a hand-written idea-generation document. Grade on that.
         if stage["id"] == 3:
             desc += (
-                "## STAGE 3 IS A LITERATURE-CONFLICT-GRAPH DELIVERABLE\n"
-                "The Stage 3 deliverable is generated by the aigraph "
-                "literature-conflict-graph tool. Its expected shape is a "
-                "`# Stage 3: Idea Generation — <topic>` heading followed by a "
-                "`# Selected Hypotheses` report with `### Anomaly a… —` and "
-                "hypothesis items grounded in real claim citations. Hypothesis "
-                "items appear as `### h… —` (critic / conflict-explanation ideas) "
-                "or `### a…#cr… —` (creator / new-method-proposal ideas); BOTH "
-                "are valid. This format is correct and intentional — it is NOT "
-                "hand-written prose.\n"
-                "PASS when: a topic heading is present, there is a "
-                "`# Selected Hypotheses` section, and it contains at least one "
-                "hypothesis (`### h…` or `### a…#cr…`) citing claim IDs. Do NOT require the "
+                "## STAGE 3 IS A LITERATURE-CONFLICT-GRAPH (aigraph) DELIVERABLE\n"
+                "The Stage 3 deliverable is generated by aigraph from its frozen "
+                "literature corpus — NOT hand-written prose. It comes in one of "
+                "two valid shapes, both correct and intentional:\n"
+                "  (a) a `# Ideas — <topic>` report: a summary line citing "
+                "N idea(s) from N papers / N claims, then `## <n>. <title> "
+                "_(…, conf=…)_` idea items, each with a `**TL;DR.**`, a concrete "
+                "mechanism, and arxiv-grounded evidence; or\n"
+                "  (b) a `# Selected Hypotheses` report with `### Anomaly a… —` "
+                "and `### h… —` / `### a…#cr… —` hypothesis items citing claim IDs.\n"
+                "PASS when: a topic / ideas heading is present AND the report "
+                "contains at least one grounded idea or hypothesis with corpus "
+                "evidence (arxiv references or claim IDs). Do NOT require the "
                 "generic idea-generation sections (evaluation architecture, "
                 "method pseudocode, risk tables, outcome scenarios) — those "
                 "belong to Stages 4–5, not here. Only REJECT if the report is "
-                "empty, has zero hypotheses, or says `_No matches for topic_`.\n\n"
+                "empty, has zero ideas/hypotheses, or says it found no matches "
+                "for the topic.\n\n"
             )
         # Stage 4 (Methodology Design) is graded against a CCF-A quality
         # checklist. Load the runbook first so the critic applies the same
