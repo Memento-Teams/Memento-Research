@@ -677,7 +677,12 @@ async def lifespan(app: FastAPI):
         from onemancompany.core.env_manager import (
             start_env_watcher,
             restore_pending_on_startup,
+            bootstrap_default_skill_credentials,
         )
+        # Surface operator-provisioned default-skill credentials (e.g.
+        # experiment-infra) into os.environ so Stage 6 / run_tracker see
+        # them without an agent having to hit request_env first (issue #150).
+        bootstrap_default_skill_credentials()
         start_env_watcher()
         await restore_pending_on_startup()
     except Exception as _exc:

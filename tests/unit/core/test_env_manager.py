@@ -37,6 +37,14 @@ def env_path(tmp_path, monkeypatch):
         "onemancompany.core.env_manager._fallback_env_path",
         lambda: fallback,
     )
+    # Isolate the default-skills credential dir so tests don't pick up
+    # operator-provisioned creds checked into the repo (issue #150).
+    skills_dir = tmp_path / "default_skills"
+    skills_dir.mkdir()
+    monkeypatch.setattr(
+        "onemancompany.core.env_manager._default_skills_dir",
+        lambda: skills_dir,
+    )
     # Fresh module state for each test.
     from onemancompany.core import env_manager as em
     em._pending.clear()
@@ -372,6 +380,104 @@ class TestPreFilledKeyReturnsImmediately:
             reason="t",
         ), timeout=1.0)
         assert result == {"PREFILLED": "preset"}
+
+
+class TestDefaultSkillCredentialFallback:
+    """Issue #150: experiment-infra credentials live in
+    ``default_skills/experiment-infra/experiment_infra_credentials.json``
+    on the operator host. The agent expects them as ``INFRA_SERVER_URL`` /
+    ``INFRA_SESSION_KEY`` env vars. env_manager has to bridge that or
+    Stage 6 blocks on request_env forever."""
+
+    def _write_infra_creds(self, env_path, url="http://infra.example", key="vk_test"):
+        import json
+        skills = env_path.parent / "default_skills" / "experiment-infra"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "experiment_infra_credentials.json").write_text(
+            json.dumps({"server_url": url, "session_key": key}),
+            encoding="utf-8",
+        )
+
+    def test_read_env_file_surfaces_default_skill_credentials(self, env_path):
+        from onemancompany.core import env_manager as em
+        self._write_infra_creds(env_path)
+        merged = em._read_env_file()
+        assert merged["INFRA_SERVER_URL"] == "http://infra.example"
+        assert merged["INFRA_SESSION_KEY"] == "vk_test"
+
+    def test_dotenv_overrides_default_skill_credentials(self, env_path):
+        from onemancompany.core import env_manager as em
+        self._write_infra_creds(env_path, url="http://default.example")
+        env_path.write_text("INFRA_SERVER_URL=http://override\n", encoding="utf-8")
+        merged = em._read_env_file()
+        assert merged["INFRA_SERVER_URL"] == "http://override"
+
+    def test_missing_default_skill_file_is_silent(self, env_path):
+        from onemancompany.core import env_manager as em
+        # No file written — should not raise, just return empty.
+        assert em._read_default_skill_credentials() == {}
+
+    def test_malformed_default_skill_file_is_silent(self, env_path):
+        from onemancompany.core import env_manager as em
+        skills = env_path.parent / "default_skills" / "experiment-infra"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "experiment_infra_credentials.json").write_text(
+            "{not valid json", encoding="utf-8"
+        )
+        assert em._read_default_skill_credentials() == {}
+
+    def test_non_object_json_is_silent(self, env_path):
+        """Valid JSON but not an object (list / number / string) must
+        not crash credential resolution — would otherwise break every
+        agent that calls request_env."""
+        from onemancompany.core import env_manager as em
+        skills = env_path.parent / "default_skills" / "experiment-infra"
+        skills.mkdir(parents=True, exist_ok=True)
+        (skills / "experiment_infra_credentials.json").write_text(
+            '["server_url", "session_key"]', encoding="utf-8"
+        )
+        assert em._read_default_skill_credentials() == {}
+
+    @pytest.mark.asyncio
+    async def test_request_env_returns_default_skill_creds_without_blocking(self, env_path, monkeypatch):
+        """The core of issue #150 — Stage 6 calls request_env for the
+        infra keys and gets resolved immediately by the default-skill
+        fallback instead of blocking on the user."""
+        from onemancompany.core import env_manager as em
+        self._write_infra_creds(env_path)
+        monkeypatch.delenv("INFRA_SERVER_URL", raising=False)
+        monkeypatch.delenv("INFRA_SESSION_KEY", raising=False)
+        result = await asyncio.wait_for(em.request_env(
+            keys=[
+                {"name": "INFRA_SERVER_URL"},
+                {"name": "INFRA_SESSION_KEY"},
+            ],
+            requested_by="00016",
+            reason="stage6",
+        ), timeout=1.0)
+        assert result["INFRA_SERVER_URL"] == "http://infra.example"
+        assert result["INFRA_SESSION_KEY"] == "vk_test"
+
+    def test_bootstrap_pushes_to_os_environ(self, env_path, monkeypatch):
+        """run_tracker and api.routes read os.environ directly, not via
+        request_env — bootstrap exists so they see the creds too."""
+        import os
+        from onemancompany.core import env_manager as em
+        self._write_infra_creds(env_path)
+        monkeypatch.delenv("INFRA_SERVER_URL", raising=False)
+        monkeypatch.delenv("INFRA_SESSION_KEY", raising=False)
+        em.bootstrap_default_skill_credentials()
+        assert os.environ.get("INFRA_SERVER_URL") == "http://infra.example"
+        assert os.environ.get("INFRA_SESSION_KEY") == "vk_test"
+
+    def test_bootstrap_does_not_override_existing(self, env_path, monkeypatch):
+        import os
+        from onemancompany.core import env_manager as em
+        self._write_infra_creds(env_path)
+        monkeypatch.setenv("INFRA_SERVER_URL", "http://preset")
+        em.bootstrap_default_skill_credentials()
+        # Preserved — operator-set values win over the file fallback.
+        assert os.environ["INFRA_SERVER_URL"] == "http://preset"
 
 
 class TestThreadSafeResolution:
