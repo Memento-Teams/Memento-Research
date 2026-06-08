@@ -813,6 +813,50 @@ class PipelineEngine:
                 return v
         return _json.dumps(d, ensure_ascii=False)
 
+    def _save_stage3_graph_artifacts(self, bundle) -> None:
+        """Persist the aigraph planet-graph artifacts to the workspace:
+        ``stage3_conflict_graph.html`` (self-contained D3 page, openable in a
+        browser) and ``stage3_conflict_graph.json`` (the {nodes, edges} data).
+        Best-effort; never raises."""
+        try:
+            pdir = Path(self.project_dir)
+            if getattr(bundle, "graph_html", ""):
+                (pdir / "stage3_conflict_graph.html").write_text(
+                    bundle.graph_html, encoding="utf-8"
+                )
+            if getattr(bundle, "graph", None):
+                import json as _json
+                (pdir / "stage3_conflict_graph.json").write_text(
+                    _json.dumps(bundle.graph, ensure_ascii=False), encoding="utf-8"
+                )
+            if bundle.dashboard_url or bundle.graph_url:
+                logger.info(
+                    "[aigraph] Stage 3 planet graph: dashboard={} graph={}",
+                    bundle.dashboard_url or "-", bundle.graph_url or "-",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[aigraph] could not save Stage 3 graph artifacts: {}", exc)
+
+    def _stage3_markdown_with_trace(self, bundle) -> str:
+        """Append an aigraph provenance footer (source/run/coverage/dashboard
+        links) to the report so the Stage 3 deliverable is self-documenting."""
+        md = bundle.markdown
+        try:
+            lines = [
+                "", "<!-- aigraph provenance -->",
+                f"<!-- source={bundle.source} status={bundle.status} run_id={bundle.run_id} "
+                f"coverage={bundle.n_matched}/{bundle.n_total} top_relevance={bundle.top_relevance} -->",
+            ]
+            if bundle.dashboard_url:
+                lines.append(f"<!-- dashboard: {bundle.dashboard_url} -->")
+            if bundle.graph_url:
+                lines.append(f"<!-- graph: {bundle.graph_url} -->")
+            if (Path(self.project_dir) / "stage3_conflict_graph.html").exists():
+                lines.append("<!-- planet graph saved: stage3_conflict_graph.html -->")
+            return md.rstrip() + "\n" + "\n".join(lines) + "\n"
+        except Exception:  # noqa: BLE001
+            return md
+
     def _fetch_aigraph_idea_report(self) -> str | None:
         """Deterministically fetch the aigraph (LCG) idea report for Stage 3.
 
@@ -829,33 +873,34 @@ class PipelineEngine:
         environments that still wire the MCP tools. Both return the markdown
         report (0-LLM, arxiv-grounded), or None if unreachable/empty. Never
         raises."""
-        # --- primary: direct MCP call, no tool registration required ---
+        # --- primary: one-shot research_e2e bundle (report + planet graph) ---
         try:
-            from onemancompany.agents.aigraph_grounding import fetch_idea_report
-            g = fetch_idea_report(self.topic)
-            if g.ok and g.markdown and "arxiv:" in g.markdown:
+            from onemancompany.agents.aigraph_grounding import fetch_stage3_bundle
+            b = fetch_stage3_bundle(self.topic)
+            if b.ok and b.markdown and "arxiv:" in b.markdown:
+                self._save_stage3_graph_artifacts(b)
                 logger.info(
-                    "[PIPELINE] aigraph grounding via direct MCP for Stage 3: "
-                    "{} chars (coverage={}, matched={}/{})",
-                    len(g.markdown), g.strength or "?", g.n_matched, g.n_total,
+                    "[PIPELINE] Stage 3 grounded via aigraph {} (status={}): {} chars, "
+                    "coverage={} {}/{}, graph_html={}b",
+                    b.source, b.status, len(b.markdown), b.strength or "?",
+                    b.n_matched, b.n_total, len(b.graph_html),
                 )
-                return g.markdown
-            if g.ok and g.is_weak and g.markdown:
+                return self._stage3_markdown_with_trace(b)
+            if b.ok and b.is_weak and b.markdown:
+                self._save_stage3_graph_artifacts(b)
                 logger.warning(
                     "[PIPELINE] aigraph weak corpus coverage for topic={!r} "
                     "(matched={}); Stage 3 grounding sparse",
-                    (self.topic or "")[:80], g.n_matched,
+                    (self.topic or "")[:80], b.n_matched,
                 )
-                return g.markdown
-            if not g.ok:
+                return self._stage3_markdown_with_trace(b)
+            if not b.ok:
                 logger.debug(
-                    "[PIPELINE] direct aigraph MCP fetch failed ({}); trying registered tool",
-                    g.error,
+                    "[PIPELINE] aigraph bundle fetch failed ({}); trying registered tool", b.error,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
-                "[PIPELINE] direct aigraph grounding unavailable ({}); trying registered tool",
-                exc,
+                "[PIPELINE] aigraph bundle unavailable ({}); trying registered tool", exc,
             )
         # --- fallback: the registered aigraph_research_ideas asset tool ---
         try:

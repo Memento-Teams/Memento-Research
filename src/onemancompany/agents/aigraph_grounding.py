@@ -24,10 +24,11 @@ no anyio teardown error.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Defaults — the URL is env-overridable so no bare IP is ever hard-coded.
 # On the box, loopback resolves to the box's own (latest) aigraph deployment.
@@ -35,6 +36,13 @@ DEFAULT_MCP_URL = "http://127.0.0.1:8765/mcp/"
 DEFAULT_RUN = "arxiv-reasoning-v0.7-540p-thaw1"
 DEFAULT_K = 8
 _TOOL = "get_idea_report"
+
+# research_e2e (one-shot Stage-3 bundle) build handling. When a topic has no
+# reusable corpus, research_e2e returns status="building" with a run_id; we poll
+# get_run_status up to this budget, then re-call research_e2e(reuse=True). Set to
+# 0 to skip building entirely and go straight to the fast fixed-run fallback.
+DEFAULT_BUILD_WAIT = int(os.environ.get("AIGRAPH_BUILD_WAIT_SECONDS", "600"))
+_POLL_INTERVAL = 15.0
 
 # Matches the report's coverage banner, e.g.
 #   "> **Corpus coverage: strong** (36/78 hypotheses matched, top relevance 3)."
@@ -159,4 +167,188 @@ def fetch_idea_report(
         n_matched=cov.get("n_matched", 0),
         n_total=cov.get("n_total", 0),
         top_relevance=cov.get("top_relevance", 0),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# research_e2e — one-shot Stage-3 bundle (report + planet graph + ideas + links)
+# ─────────────────────────────────────────────────────────────────────────────
+@dataclass
+class Stage3Bundle:
+    """Everything Stage 3 needs from aigraph in one call.
+
+    ``markdown`` is the verbatim Idea-Generation report (written to the
+    deliverable). ``graph_html`` is a self-contained D3 "planet graph" page
+    (saved as stage3_conflict_graph.html). ``dashboard_url``/``graph_url`` point
+    back into the aigraph backend for traceability. Never-raises: a failure comes
+    back as ``ok=False`` with ``error`` set.
+    """
+
+    ok: bool
+    source: str = ""            # "research_e2e" | "fallback"
+    status: str = ""            # done | building | error
+    markdown: str = ""          # idea_report_markdown
+    ideas_markdown: str = ""
+    graph: dict = field(default_factory=dict)   # {nodes, edges}
+    graph_html: str = ""
+    strength: str = ""
+    n_matched: int = 0
+    n_total: int = 0
+    top_relevance: int = 0
+    dashboard_url: str = ""
+    graph_url: str = ""
+    run_id: str = ""
+    error: str = ""
+
+    @property
+    def is_grounded(self) -> bool:
+        return self.ok and bool(self.markdown) and "arxiv:" in self.markdown
+
+    @property
+    def is_weak(self) -> bool:
+        return self.ok and (self.strength.lower() in _WEAK_STRENGTHS or self.n_matched == 0)
+
+
+def _payload_from_result(res) -> tuple[dict | None, str]:
+    """Pull a JSON object out of an MCP call result (structuredContent or text)."""
+    sc = getattr(res, "structuredContent", None)
+    if isinstance(sc, dict):
+        # FastMCP wraps a non-dict return under {"result": ...}; unwrap a dict.
+        if set(sc.keys()) == {"result"}:
+            inner = sc["result"]
+            if isinstance(inner, dict):
+                return inner, ""
+        else:
+            return sc, ""
+    text = "".join(getattr(c, "text", "") or "" for c in res.content)
+    if text.strip().startswith("{"):
+        try:
+            return json.loads(text), text
+        except Exception:  # noqa: BLE001
+            return None, text
+    return None, text
+
+
+async def _bundle_async(topic, max_papers, min_ideas, k, run, url, build_wait):
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with streamablehttp_client(url) as streams:
+        async with ClientSession(streams[0], streams[1]) as session:
+            await session.initialize()
+            tool_names = {t.name for t in (await session.list_tools()).tools}
+
+            async def call(name, args):
+                res = await session.call_tool(name, args)
+                payload, text = _payload_from_result(res)
+                return payload, bool(getattr(res, "isError", False)), text
+
+            # ---- primary: research_e2e (one-shot bundle) ----
+            if "research_e2e" in tool_names:
+                args = {"topic": topic, "max_papers": max_papers, "min_ideas": min_ideas,
+                        "k": k, "reuse": True, "wait_seconds": 0}
+                payload, _err, _ = await call("research_e2e", args)
+                if isinstance(payload, dict):
+                    status = (payload.get("status") or "").lower()
+                    if status == "done":
+                        return "research_e2e", payload
+                    if status == "building" and payload.get("run_id") and build_wait > 0:
+                        run_id = payload["run_id"]
+                        waited = 0.0
+                        while waited < build_wait:
+                            await asyncio.sleep(_POLL_INTERVAL)
+                            waited += _POLL_INTERVAL
+                            sp, _s, _ = await call("get_run_status", {"run_id": run_id})
+                            s_status = ((sp or {}).get("status") or "").lower() if isinstance(sp, dict) else ""
+                            if s_status in ("done", "ready", "complete", "completed", "finished"):
+                                p2, _e2, _ = await call("research_e2e", args)
+                                if isinstance(p2, dict) and (p2.get("status") or "").lower() == "done":
+                                    return "research_e2e", p2
+                                break
+                            if s_status in ("error", "failed", "cancelled", "canceled"):
+                                break
+                    # building timed out / errored → fall through to fallback
+
+            # ---- fallback: get_idea_report + get_conflict_graph (old aigraph) ----
+            report = ""
+            graph: dict = {}
+            if "get_idea_report" in tool_names:
+                rp, _r, rtext = await call("get_idea_report", {"topic": topic, "run": run, "k": k})
+                report = (rp.get("markdown") if isinstance(rp, dict) else "") or rtext or ""
+            if "get_conflict_graph" in tool_names:
+                gp, _g, _ = await call("get_conflict_graph", {"topic": topic, "run": run, "k": k})
+                if isinstance(gp, dict):
+                    graph = gp
+            return "fallback", {"idea_report_markdown": report, "graph": graph, "status": "done"}
+
+
+def fetch_stage3_bundle(
+    topic: str,
+    *,
+    max_papers: int = 30,
+    min_ideas: int = 5,
+    k: int = DEFAULT_K,
+    run: str = DEFAULT_RUN,
+    url: str | None = None,
+    build_wait: int | None = None,
+) -> Stage3Bundle:
+    """One-shot Stage-3 grounding bundle via aigraph ``research_e2e``.
+
+    Tries ``research_e2e`` (report + planet-graph HTML + ideas + coverage +
+    dashboard links); on ``status="building"`` it polls ``get_run_status`` up to
+    ``build_wait`` seconds and re-calls; if research_e2e is absent (old aigraph)
+    or the build doesn't finish, it falls back to ``get_idea_report`` +
+    ``get_conflict_graph``. Thread-isolated and never-raises.
+    """
+    url = url or os.environ.get("AIGRAPH_MCP_URL", DEFAULT_MCP_URL)
+    if build_wait is None:
+        build_wait = DEFAULT_BUILD_WAIT
+    topic = (topic or "").strip()
+    if not topic:
+        return Stage3Bundle(ok=False, error="empty topic")
+
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["res"] = asyncio.run(
+                _bundle_async(topic, max_papers, min_ideas, k, run, url, build_wait)
+            )
+        except Exception as exc:  # noqa: BLE001
+            box["err"] = f"{type(exc).__name__}: {exc}"
+
+    t = threading.Thread(target=_worker, name="aigraph-research-e2e", daemon=True)
+    t.start()
+    t.join(timeout=build_wait + 120.0)
+
+    if t.is_alive():
+        return Stage3Bundle(ok=False, error=f"timeout after ~{int(build_wait) + 120}s")
+    if "err" in box:
+        return Stage3Bundle(ok=False, error=box["err"])
+
+    source, payload = box["res"]
+    payload = payload or {}
+    md = payload.get("idea_report_markdown", "") or ""
+    cov = payload.get("coverage") or {}
+    if not cov and md:
+        cov = _parse_coverage(md)
+    ideas_md = payload.get("ideas_markdown", "") or ""
+    if not ideas_md and isinstance(payload.get("ideas"), str):
+        ideas_md = payload["ideas"]
+    return Stage3Bundle(
+        ok=bool(md),
+        source=source,
+        status=(payload.get("status") or "done"),
+        markdown=md,
+        ideas_markdown=ideas_md,
+        graph=payload.get("graph") or {},
+        graph_html=payload.get("graph_html", "") or "",
+        strength=str(cov.get("strength", "") or ""),
+        n_matched=int(cov.get("n_matched", 0) or 0),
+        n_total=int(cov.get("n_total", 0) or 0),
+        top_relevance=int(cov.get("top_relevance", 0) or 0),
+        dashboard_url=payload.get("dashboard_url", "") or "",
+        graph_url=payload.get("graph_url", "") or "",
+        run_id=payload.get("run_id", "") or "",
+        error="" if md else "no idea_report_markdown returned",
     )
