@@ -811,14 +811,48 @@ class PipelineEngine:
     def _fetch_aigraph_idea_report(self) -> str | None:
         """Deterministically fetch the aigraph (LCG) idea report for Stage 3.
 
-        Calls the registered ``aigraph_research_ideas`` asset tool directly
-        (in-process urllib JSON-RPC to the aigraph MCP). research_ideas is
-        topic-adaptive: with ``reuse=True`` it reuses the best matching frozen
-        corpus (no paid build) and synthesises grounded ideas over its claims —
-        the synthesis runs inside the operator-controlled aigraph service, not
-        the OMC producer (which was observed skipping the tool entirely and
-        fabricating ``#claim-N`` citations). Returns the markdown report, or
-        None if the tool is unregistered / unreachable / empty. Never raises."""
+        Primary path: a direct, registration-INDEPENDENT MCP call
+        (``aigraph_grounding.fetch_idea_report`` → aigraph's ``get_idea_report``
+        over the live streamable-http MCP session). This is the reliable path
+        because it does NOT depend on ``aigraph_research_ideas`` being registered
+        as an asset tool — that registration is the retired #132 startup binding,
+        so it is usually absent, which previously left Stage 3 silently
+        ungrounded. The MCP call runs in a dedicated thread's own event loop so
+        it is safe inside uvicorn's running loop (no anyio cancel-scope crash).
+
+        Fallback path: the registered ``aigraph_research_ideas`` asset tool, for
+        environments that still wire the MCP tools. Both return the markdown
+        report (0-LLM, arxiv-grounded), or None if unreachable/empty. Never
+        raises."""
+        # --- primary: direct MCP call, no tool registration required ---
+        try:
+            from onemancompany.agents.aigraph_grounding import fetch_idea_report
+            g = fetch_idea_report(self.topic)
+            if g.ok and g.markdown and "arxiv:" in g.markdown:
+                logger.info(
+                    "[PIPELINE] aigraph grounding via direct MCP for Stage 3: "
+                    "{} chars (coverage={}, matched={}/{})",
+                    len(g.markdown), g.strength or "?", g.n_matched, g.n_total,
+                )
+                return g.markdown
+            if g.ok and g.is_weak and g.markdown:
+                logger.warning(
+                    "[PIPELINE] aigraph weak corpus coverage for topic={!r} "
+                    "(matched={}); Stage 3 grounding sparse",
+                    (self.topic or "")[:80], g.n_matched,
+                )
+                return g.markdown
+            if not g.ok:
+                logger.debug(
+                    "[PIPELINE] direct aigraph MCP fetch failed ({}); trying registered tool",
+                    g.error,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[PIPELINE] direct aigraph grounding unavailable ({}); trying registered tool",
+                exc,
+            )
+        # --- fallback: the registered aigraph_research_ideas asset tool ---
         try:
             from onemancompany.core.tool_registry import tool_registry
             tool = tool_registry.get_tool("aigraph_research_ideas")
@@ -826,7 +860,10 @@ class PipelineEngine:
             logger.debug("[PIPELINE] aigraph tool lookup failed: {}", exc)
             return None
         if tool is None:
-            logger.debug("[PIPELINE] aigraph_research_ideas not registered; Stage 3 ungrounded")
+            logger.debug(
+                "[PIPELINE] aigraph_research_ideas not registered and direct MCP "
+                "unavailable; Stage 3 ungrounded"
+            )
             return None
         try:
             result = tool.invoke({
