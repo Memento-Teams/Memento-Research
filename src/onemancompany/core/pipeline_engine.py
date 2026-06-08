@@ -781,6 +781,49 @@ class PipelineEngine:
             self._save()
         return text
 
+    def _fetch_aigraph_idea_report(self) -> str | None:
+        """Deterministically fetch the aigraph (LCG) idea report for Stage 3.
+
+        Calls the registered ``aigraph_get_idea_report`` asset tool directly
+        (reliable in-process urllib JSON-RPC, 0-LLM, ~200 ms) so Stage-3
+        grounding does NOT depend on the producer LLM choosing to call it — a
+        MiniMax-M2.7 Idea Generator was observed skipping the tool entirely and
+        fabricating ``#claim-N`` citations out of the Stage-2 survey. Returns
+        the markdown report, or None if the tool is unregistered / unreachable /
+        empty. Never raises and never fabricates; the caller degrades."""
+        try:
+            from onemancompany.core.tool_registry import tool_registry
+            tool = tool_registry.get_tool("aigraph_get_idea_report")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[PIPELINE] aigraph tool lookup failed: {}", exc)
+            return None
+        if tool is None:
+            logger.debug("[PIPELINE] aigraph_get_idea_report not registered; Stage 3 ungrounded")
+            return None
+        try:
+            result = tool.invoke({
+                "topic": self.topic,
+                "run": self.state.get("aigraph_run", "arxiv-reasoning-v0.7-540p-thaw1"),
+                "k": self.state.get("aigraph_k", 8),
+                "kind": self.state.get("aigraph_kind", "creator"),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[PIPELINE] aigraph_get_idea_report invocation failed: {}", exc)
+            return None
+        if isinstance(result, str):
+            report = result
+        elif isinstance(result, dict):
+            report = result.get("result") or result.get("markdown") or ""
+        else:
+            report = str(result)
+        if not report or len(report) < 500:
+            logger.warning(
+                "[PIPELINE] aigraph_get_idea_report returned empty/stub ({} chars); "
+                "Stage 3 left to agent fallback", len(report or ""))
+            return None
+        logger.info("[PIPELINE] aigraph grounding fetched for Stage 3: {} chars", len(report))
+        return report
+
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
         if self.phase != "critic":
@@ -809,6 +852,37 @@ class PipelineEngine:
         user_feedback = self._consume_pending_feedback()
         if user_feedback:
             desc += f"\nDirect guidance from CEO (received during the previous attempt):\n{user_feedback}\n"
+        # Stage 3 (Idea Generation): inject the aigraph (LCG) idea report
+        # deterministically as authoritative grounding. The producer LLM was
+        # observed skipping the aigraph tool and fabricating #claim-N citations
+        # out of the Stage-2 survey, so the engine fetches the real report
+        # itself (reliable 0-LLM direct call) and hands it over verbatim rather
+        # than trusting the agent to call the tool.
+        if stage["id"] == 3:
+            aigraph_report = self._fetch_aigraph_idea_report()
+            if aigraph_report:
+                desc += (
+                    "\n## AUTHORITATIVE GROUNDING — aigraph Literature-Conflict-Graph (REQUIRED)\n"
+                    "The aigraph idea report below was generated deterministically by the "
+                    "pipeline (0-LLM, from the frozen corpus). It IS your Stage 3 deliverable.\n"
+                    "You MUST write it to stage3_idea_generator.md **verbatim** — copy it "
+                    "character-for-character. Do NOT rewrite, rename hypotheses, paraphrase, "
+                    "add sections, or invent any citation. Every claim ID in your output must "
+                    "appear in this report; inventing `#claim-N` suffixes or citing papers "
+                    "not below is fabrication and an auto-REJECT.\n"
+                    f"\n----- BEGIN aigraph report -----\n{aigraph_report}\n"
+                    "----- END aigraph report -----\n"
+                )
+            else:
+                desc += (
+                    "\n## Stage 3 grounding\n"
+                    "The aigraph report could not be pre-fetched by the engine. Call "
+                    "`aigraph_get_idea_report(topic=<the refined topic>, "
+                    "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
+                    "and write its output verbatim. If it is unavailable, write "
+                    "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
+                    "claim IDs — do NOT fabricate citations.\n"
+                )
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
