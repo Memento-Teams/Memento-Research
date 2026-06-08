@@ -884,6 +884,45 @@ class PipelineEngine:
         logger.info("[PIPELINE] aigraph grounding fetched for Stage 3: {} chars", len(report))
         return report
 
+    def _ensure_stage3_grounded(self, deliverable: "Path", result: str) -> str:
+        """Guarantee the Stage 3 deliverable is arxiv-grounded (augmentation backstop).
+
+        If the producer dropped the injected grounding (its deliverable carries
+        no ``arxiv:`` citations) but the engine fetched a grounded report in the
+        pre-step (``aigraph_grounding.md``), append the verbatim report so Stage 3
+        is grounded regardless of producer behavior — the deterministic backstop
+        for the LLM ignoring the injected grounding (#130). Never raises.
+        """
+        try:
+            grounding_path = Path(self.project_dir) / "aigraph_grounding.md"
+            if not grounding_path.exists():
+                return result
+            grounding = grounding_path.read_text(encoding="utf-8").strip()
+            if "arxiv:" not in grounding:
+                return result  # weak/empty grounding — nothing worth grafting
+            current = result or ""
+            if "arxiv:" in current and "# Selected Hypotheses" in current:
+                return result  # producer preserved the grounding — nothing to do
+            logger.warning(
+                "[aigraph] Stage 3 deliverable was not grounded — grafting the "
+                "deterministic aigraph report back in (producer dropped it)"
+            )
+            prefix = (current.rstrip() + "\n\n") if current.strip() else ""
+            merged = (
+                prefix
+                + "<!-- aigraph grounding grafted deterministically by the pipeline -->\n\n"
+                + grounding
+                + "\n"
+            )
+            try:
+                deliverable.write_text(merged, encoding="utf-8")
+            except OSError as exc:
+                logger.debug("[aigraph] could not rewrite Stage 3 deliverable: {}", exc)
+            return merged
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[aigraph] ensure-grounded step skipped: {}", exc)
+            return result
+
     def _dispatch_producer(self, feedback: str = ""):
         """Dispatch the current stage's producer. Uses user assignment if set."""
         if self.phase != "critic":
@@ -922,24 +961,47 @@ class PipelineEngine:
         if stage["id"] == 3:
             aigraph_report = self._fetch_aigraph_idea_report()
             if aigraph_report:
-                deliverable = Path(self.project_dir) / f"stage{stage['id']}_{stage['skill']}.md"
-                deliverable.write_text(aigraph_report, encoding="utf-8")
+                # AUGMENTATION: the engine deterministically fetched the
+                # arxiv-grounded report. Persist it for the producer-complete
+                # backstop, inject it verbatim, and let the producer synthesise
+                # ONE runnable pilot on top. The producer cannot fabricate the
+                # grounding away — _ensure_stage3_grounded grafts the verbatim
+                # report back into the deliverable if the producer drops it (#130).
+                try:
+                    (Path(self.project_dir) / "aigraph_grounding.md").write_text(
+                        aigraph_report, encoding="utf-8"
+                    )
+                except OSError as exc:
+                    logger.debug("[aigraph] could not persist Stage 3 grounding: {}", exc)
                 logger.info(
-                    "[PIPELINE] Stage 3 deliverable written deterministically from aigraph "
-                    "({} chars) -> {}; bypassing the LLM producer",
-                    len(aigraph_report), deliverable.name,
+                    "[PIPELINE] Stage 3 grounded deterministically ({} chars); producer "
+                    "will synthesise a pilot on top (augmentation)", len(aigraph_report),
                 )
-                self._dispatch_critic(aigraph_report)
-                return
-            desc += (
-                "\n## Stage 3 grounding (FALLBACK — aigraph unavailable)\n"
-                "The aigraph report could not be fetched by the engine. Call "
-                "`aigraph_get_idea_report(topic=<the refined topic>, "
-                "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
-                "and write its output verbatim. If it is still unavailable, write "
-                "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
-                "claim IDs — do NOT fabricate citations.\n"
-            )
+                desc += (
+                    "\n## AIGRAPH GROUNDING (verbatim, authoritative — do NOT hand-write or fabricate)\n"
+                    "The engine already fetched the arxiv-grounded Selected Hypotheses report "
+                    "below. Your ONLY job is to SYNTHESISE exactly ONE focused, "
+                    "single-GPU-runnable pilot hypothesis on top:\n"
+                    "  ## Primary Pilot Hypothesis\n"
+                    "  state H0/H1, ONE metric, a named dataset, sample size N, and the decoding "
+                    "setting — citing the arxiv claim ids (arxiv:NNNN.NNNNN#cNN) drawn from the "
+                    "report.\n"
+                    "Then PRESERVE the full report verbatim BELOW your pilot in "
+                    "stage3_idea_generator.md (it contains the '# Selected Hypotheses' section "
+                    "the downstream conflict graph and critic read). Do NOT invent citations or "
+                    "replace the grounded content.\n\n"
+                    f"{aigraph_report}\n"
+                )
+            else:
+                desc += (
+                    "\n## Stage 3 grounding (FALLBACK — aigraph unavailable)\n"
+                    "The aigraph report could not be fetched by the engine. Call "
+                    "`aigraph_get_idea_report(topic=<the refined topic>, "
+                    "run='arxiv-reasoning-v0.7-540p-thaw1', k=8, kind='creator')` yourself "
+                    "and write its output verbatim. If it is still unavailable, write "
+                    "'FALLBACK: agent-generated (ungrounded)' in the header and cite ZERO "
+                    "claim IDs — do NOT fabricate citations.\n"
+                )
         # Stage 4 (Methodology Design) must run a multi-agent debate before
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
@@ -1501,6 +1563,9 @@ class PipelineEngine:
                             result = file_text
                 except Exception as e:
                     logger.debug("[PIPELINE] Stage 3 file-content fallback failed: {}", e)
+                # Augmentation backstop: if the producer dropped the injected
+                # grounding, graft the deterministic aigraph report back in (#130).
+                result = self._ensure_stage3_grounded(deliverable, result)
 
             # Producer finished → store result, dispatch critic
             self.state["stage_results"][str(stage["id"])] = result
