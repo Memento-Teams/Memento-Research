@@ -1938,126 +1938,15 @@ function renderApTab(tab,stageId,producerText){
 }
 
 async function startDemo(){
-  const btn=document.getElementById('launchBtn');
-  if(btn.disabled)return;
-  btn.disabled=true;btn.textContent='Running...';
-  startTime=Date.now();
-  document.getElementById('heroSection').style.display='none';
-  const es=document.getElementById('eventStream'); if(es) es.innerHTML='';
-  document.getElementById('meetingsArea').innerHTML='';
-
-  const topic=document.getElementById('topicInput').value||'Sparse attention with mixture-of-experts routing';
-  if(!document.getElementById('topicInput').value)document.getElementById('topicInput').value=topic;
-
-
-  // ── Stage 1: Topic Refinement ──
-  postNotice('Research Director received topic. Delegating Stage 1.','info');
-  setStage(1,'running');
-  await sleep(600);
-
-  const c1=getStageCard('s1','Stage 1 — Topic Refinement','Topic Refiner','TR');
-  await sleep(800);
-
-  updateProducer('s1','Refined: "Hybrid sparse-attention with learned routing for sub-quadratic long-context reasoning, evaluated on RULER, LongBench, SCROLLS."');
-  addEvent('ttag','Topic Refiner produced output.');
-  await sleep(1000);
-
-  updateCritic('s1','Specific and tractable. Evaluation suite well-chosen. Minor: define "sub-quadratic" formally. <strong>PASS.</strong>');
-  addCardConf('s1',78);
-  setCardStatus('s1','done');
-  setStage(1,'done');
-  document.getElementById('sc-1')?.classList.add('done');
-  addEvent('gtag','PASS (78%)');
-  document.getElementById('c1').textContent='78%';
-
-  if(STAGES[0].bp){setStage(1,'paused');addActionBar(null,1);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(1,'done')}
-
-  await sleep(500);
-
-  // ── Stage 2: Literature Survey ──
-  postNotice('Delegating Stage 2: Literature Survey','info');
-  setStage(2,'running');
-  await sleep(600);
-
-  getStageCard('s2','Stage 2 — Literature Survey','Lit. Surveyor','LS');
-  await sleep(800);
-
-  updateProducer('s2','Found <strong>47 papers</strong> in 3 clusters. Gap: no work combines <strong>learned routing</strong> with sparse attention for long-context.');
-  await sleep(1000);
-
-  updateCritic('s2','47/47 citations verified. Gap partially addressed by Chen et al. (2025) with <strong>static</strong> routing. Gap is real. <strong>PASS.</strong>');
-  addCardConf('s2',72);
-  setCardStatus('s2','done');
-  setStage(2,'done');
-  document.getElementById('sc-2')?.classList.add('done');
-  addEvent('gtag','PASS (72%)');
-  document.getElementById('c2').textContent='72%';
-
-  if(STAGES[1].bp){setStage(2,'paused');addActionBar(null,2);addEvent('stag','Breakpoint hit.');await waitForUser();setStage(2,'done')}
-
-  await sleep(500);
-
-  // ── Stage 3: Idea Generation (default breakpoint) ──
-  postNotice('Delegating Stage 3: Idea Generation','info');
-  setStage(3,'running');
-  await sleep(600);
-
-  getStageCard('s3','Stage 3 — Idea Generation','Idea Generator','IG');
-  await sleep(800);
-
-  updateProducer('s3','Hypothesis: A <strong>learned routing mechanism</strong> that dynamically selects sparse attention patterns per-head/per-layer outperforms fixed patterns by 3-5% at O(n√n).');
-  addEvent('ttag','Idea Generator proposed hypothesis.');
-  await sleep(1200);
-
-  updateCritic('s3','<span class="error-text">HIGH:</span> 3 papers with similarity >0.7. Chen et al. at 0.74.\n<span class="error-text">HIGH:</span> "Static vs learned" is incremental without evidence of qualitative difference.\n<span class="error-text">MED:</span> 3-5% claim unjustified.');
-  addCardConf('s3',45);
-  setCardStatus('s3','rejected');
-  setStage(3,'failed');
-  addEvent('gtag','REJECTED (45%)');
-  document.getElementById('c3').textContent='45%';
-
-  await sleep(800);
-
-  // Retry
-  postNotice('Research Director: Retry 1/3 — incorporating critic feedback.','info');
-  setCardStatus('s3','running');
-  setStage(3,'running');
-  await sleep(1200);
-
-  updateProducer('s3','Revised: Input-dependent sparsity via per-layer routing gates. Key differentiator: routing is conditioned on input statistics (not fixed patterns). Evaluation includes ablation against Chen et al. baseline.');
-  await sleep(1000);
-
-  updateCritic('s3','Differentiation from Chen et al. is now clear. Ablation design addresses prior concern. <strong>PASS.</strong>');
-  // Remove old conf and add new
-  const oldConf=document.querySelector('#sc-s3 .sc-conf');
-  if(oldConf)oldConf.remove();
-  addCardConf('s3',71);
-  setCardStatus('s3','done');
-  document.getElementById('c3').textContent='71%';
-  addEvent('gtag','PASS on retry (71%)');
-
-  // Breakpoint
-  if(STAGES[2].bp){
-    setStage(3,'paused');
-    postNotice('Breakpoint at Stage 3. Review the hypothesis before continuing.','info');
-    addActionBar(null,3);
-    await waitForUser();
-    removeActionBar();
-    postNotice('User approved. Continuing pipeline.','ok');
-    await sleep(500);
-  }
-
-  setStage(3,'done');
-  document.getElementById('sc-3')?.classList.add('done');
-
-  document.getElementById('calM').textContent='4';
-  document.getElementById('calP').textContent='75%';
-  document.getElementById('calR').textContent='1';
-
-  await sleep(300);
-  postNotice('Remaining: 6 stages queued. Next: Methodology Designer.','info');
-  postNotice('Demo complete. Connect OMC backend for full 9-stage pipeline.','info');
-  btn.disabled=false;btn.textContent='Launch Pipeline';
+  // The demo now runs the REAL pipeline (live, WebSocket-driven) instead of a
+  // scripted fake — so it reflects the actual shortened flow (Stage 3 -> 9,
+  // aigraph-grounded). Uses the topic input, or a sensible default keyword.
+  const topicEl=document.getElementById('topicInput');
+  const t=((topicEl&&topicEl.value)||'').trim()||'test-time compute scaling for reasoning';
+  const outEl=document.getElementById('paperOutput');
+  const o=outEl?outEl.value:undefined;
+  if(window.launchPipeline) return window.launchPipeline(t,o);
+  console.warn('launchPipeline not available');
 }
 
 
