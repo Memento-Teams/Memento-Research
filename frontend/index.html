@@ -602,9 +602,10 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 // the dropdown's default label looks up the hired employee by talent_id so
 // the UI shows the canonical agent (e.g. "Topic Refiner") instead of
 // "Auto" when the user hasn't manually overridden the stage assignment.
+// Stages 1 (Topic Refinement) and 2 (Literature Survey) removed — aigraph grounds
+// Stage 3 over the arxiv corpus (subsumes the survey) and the raw keyword feeds it
+// directly. Ids kept at 3..9; lookups are by id, not array position.
 const STAGES = [
-  {id:1,name:'Topic Refinement',talent:'topic-refiner',skill:'topic-refinement',bp:false,assignee:null},
-  {id:2,name:'Literature Survey',talent:'literature-surveyor',skill:'literature-survey',bp:false,assignee:null},
   {id:3,name:'Idea Generation',talent:'idea-generator',skill:'idea-generation',bp:true,assignee:null},
   {id:4,name:'Methodology Design',talent:'methodology-designer',skill:'methodology-design',bp:false,assignee:null},
   {id:5,name:'Experiment Design',talent:'experiment-designer',skill:'experiment-design',bp:false,assignee:null},
@@ -742,7 +743,7 @@ async function hydrateProjectFromBackend(pid) {
     status.workspace_files.forEach(f => addWorkspaceFile(f));
   } else {
     const stageSkillMap = {
-      1: 'topic_refiner', 2: 'literature_surveyor', 3: 'idea_generator',
+      3: 'idea_generator',
       4: 'methodology_designer', 5: 'experiment_designer', 6: 'experimentalist',
       7: 'result_analyst', 8: 'paper_writer', 9: 'self_reviewer',
     };
@@ -965,7 +966,7 @@ Object.defineProperty(window, '_activeProjectId', {
 
 // ── Pipeline Progress Bar (backend-driven) ──
 
-let _pipelineStart = 1, _pipelineEnd = 9;
+let _pipelineStart = 3, _pipelineEnd = 9;
 
 function renderPipelineBar(){
   const el=document.getElementById('pipelineStages');
@@ -980,10 +981,10 @@ function renderPipelineBar(){
   // Show range info — only if no active stage is running (don't overwrite animated status)
   const statusEl=document.getElementById('pipelineStatus');
   if(statusEl && !statusEl.classList.contains('st-running') && !statusEl.classList.contains('st-reviewing')){
-    const startName=STAGES[_pipelineStart-1]?.name||'';
-    const endName=STAGES[_pipelineEnd-1]?.name||'';
-    if(_pipelineStart===1 && _pipelineEnd===9){
-      statusEl.textContent='Full pipeline (Stage 1–9)';
+    const startName=STAGES.find(s=>s.id===_pipelineStart)?.name||'';
+    const endName=STAGES.find(s=>s.id===_pipelineEnd)?.name||'';
+    if(_pipelineStart===3 && _pipelineEnd===9){
+      statusEl.textContent='Full pipeline (Stage 3–9)';
     } else {
       statusEl.textContent=`Stage ${_pipelineStart} (${startName}) → Stage ${_pipelineEnd} (${endName})`;
     }
@@ -1002,7 +1003,7 @@ function setStage(id,status){
   // Update status bar with color-coded state
   const statusEl=document.getElementById('pipelineStatus');
   if(statusEl){
-    const stageName=STAGES[id-1]?STAGES[id-1].name:`Stage ${id}`;
+    const stageName=STAGES.find(s=>s.id===id)?STAGES.find(s=>s.id===id).name:`Stage ${id}`;
     const labels={done:'Complete',running:'Running',gate:'Waiting for your approval',failed:'Rejected — retrying',reviewing:'Critic reviewing'};
     const stClass={done:'st-done',running:'st-running',gate:'st-gate',failed:'st-failed',reviewing:'st-reviewing'};
     statusEl.className='pipeline-status '+(stClass[status]||'');
@@ -1780,7 +1781,7 @@ function removeActionBar() {
 function addActionBar(card,stageId){
   removeActionBar();
 
-  const stageName=STAGES[stageId-1]?.name||'Stage '+stageId;
+  const stageName=STAGES.find(s=>s.id===stageId)?.name||'Stage '+stageId;
   const producerText='';
 
   const panel=document.createElement('div');

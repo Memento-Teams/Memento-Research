@@ -26,9 +26,12 @@ from onemancompany.core.research_memory import ResearchMemoryStore
 # Stage definitions
 # ---------------------------------------------------------------------------
 
+# Stages 1 (topic_refiner) and 2 (literature_surveyor) were removed: aigraph
+# grounds Stage 3 over the arxiv corpus (which subsumes the literature survey),
+# and the raw keyword topic feeds Stage 3 directly (no separate refinement). The
+# remaining stage ids are kept as 3..9 so all stage-specific handling keyed on
+# ``stage["id"] == 4/6/8`` stays valid; lookups are by id, not list position.
 STAGES = [
-    {"id": 1, "skill": "topic_refiner",        "name": "Topic Refinement"},
-    {"id": 2, "skill": "literature_surveyor",   "name": "Literature Survey"},
     {"id": 3, "skill": "idea_generator",        "name": "Idea Generation"},
     {"id": 4, "skill": "methodology_designer",  "name": "Methodology Design"},
     {"id": 5, "skill": "experiment_designer",   "name": "Experiment Design"},
@@ -37,6 +40,8 @@ STAGES = [
     {"id": 8, "skill": "paper_writer",          "name": "Paper Generation"},
     {"id": 9, "skill": "peer_reviewer",         "name": "Self-Review"},
 ]
+FIRST_STAGE_ID = STAGES[0]["id"]   # 3 — the pipeline entry (aigraph-grounded ideation)
+LAST_STAGE_ID = STAGES[-1]["id"]   # 9
 
 CRITIC_SKILL = "adversarial_review"
 MAX_RETRIES = 3
@@ -450,9 +455,9 @@ class PipelineEngine:
         self.topic = topic
         self.state: dict = {
             "topic": topic,
-            "current_stage": 1,
-            "start_stage": 1,
-            "end_stage": 9,
+            "current_stage": FIRST_STAGE_ID,
+            "start_stage": FIRST_STAGE_ID,
+            "end_stage": LAST_STAGE_ID,
             "prior_context": "",
             "stage_assignments": {},  # stage_id (str) → employee_id override
             "phase": "producer",  # producer | producer_b | producer_b_waiting | producer_b_finalize | critic | gate | done | failed
@@ -501,7 +506,7 @@ class PipelineEngine:
 
     def _stage_def(self, stage_id: int = None) -> dict:
         sid = stage_id or self.current_stage
-        return STAGES[sid - 1] if 1 <= sid <= 9 else {}
+        return next((s for s in STAGES if s["id"] == sid), {})
 
     def _memory_store(self) -> ResearchMemoryStore:
         return ResearchMemoryStore(self.project_id, self.project_dir)
@@ -721,7 +726,7 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = 1, end_stage: int = 9, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
+    def start(self, start_stage: int = FIRST_STAGE_ID, end_stage: int = LAST_STAGE_ID, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
         """Begin the pipeline from the given stage.
 
         ``auto_approve`` (headless/unattended mode): when True, every CEO gate
@@ -733,9 +738,9 @@ class PipelineEngine:
         earlier stages never see it. Persisted into pipeline_state.yaml so a
         revert to Stage 8 reuses the same target format.
         """
-        self.state["current_stage"] = max(1, min(start_stage, 9))
+        self.state["current_stage"] = max(FIRST_STAGE_ID, min(start_stage, LAST_STAGE_ID))
         self.state["start_stage"] = self.state["current_stage"]
-        self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, 9))
+        self.state["end_stage"] = max(self.state["current_stage"], min(end_stage, LAST_STAGE_ID))
         self.state["prior_context"] = prior_context
         self.state["stage_assignments"] = stage_assignments or {}
         self.state["auto_approve"] = bool(auto_approve)
@@ -2059,7 +2064,7 @@ class PipelineEngine:
         # new branch with corrupt state and no in-flight task.
         # ``stage_assignments`` honours user overrides; otherwise the
         # engine resolves by skill from ``employee_configs``.
-        stage_def = STAGES[stage - 1]
+        stage_def = self._stage_def(stage)
         assignments = self.state.get("stage_assignments", {})
         assigned = assignments.get(str(stage_def["id"]))
         employee_id = assigned if assigned else _find_employee_by_skill(stage_def["skill"])
