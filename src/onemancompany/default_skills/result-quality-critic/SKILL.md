@@ -123,12 +123,25 @@ For every claim in Stage 7's confirmatory section:
   Stage 4-5. Notation matches Stage 4's lock.
 - ❌ Non-English document → auto-REJECT.
 
+### D11 — Result Figures
+- ✅ At least one ``stage7_*.png`` figure exists in the project workspace
+  AND is embedded in the report with a caption (``![Figure N: …](stage7_….png)``)
+  AND the figure's values match the numbers in the Section-3 confirmatory tables.
+- ❌ Numeric confirmatory results present but NO figures and no explicit
+  "rendering impossible" note in §8 Limitations → confidence drop.
+- ❌ A figure whose values contradict the tables → treat as a D2
+  Evidence Provenance FAIL (figure is a view of the data, not a new
+  analysis; value mismatch = fabrication risk).
+- NOTE: the result-analysis-runbook Phase 5.5 instructs the analyst to
+  render figures via the ``result-figures`` skill. If figures are absent,
+  check whether Phase 5.5 was skipped before raising confidence.
+
 ## How to Run the Review
 
 1. Read all five artifacts (Stage 4, 5, 5-assignments, 6, 7).
 2. Reconstruct the pre-registration contract from Stage 4/5 (do NOT
    trust Stage 7's contract table; verify it against the source).
-3. Walk D1-D10. For each, write a one-sentence justification.
+3. Walk D1-D11. For each, write a one-sentence justification.
 4. Decide PASS / REJECT. State the failing dimension(s) on REJECT.
 
 ## Output Format
@@ -150,6 +163,7 @@ Per-dimension scoring:
   D8 Sensitivity Robustness       : PASS / FAIL — <one sentence>
   D9 Provenance Citations         : PASS / FAIL — <one sentence>
   D10 Language & Style            : PASS / FAIL — <one sentence>
+  D11 Result Figures              : PASS / FAIL — <one sentence>
 
 Rationale: <2-4 sentences summarising the verdict and pointing the
 producer at any failing dimension>
