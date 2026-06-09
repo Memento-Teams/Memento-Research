@@ -61,6 +61,11 @@ filterwarnings = [
     "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
+[tool.coverage.run]
+# Trace worker threads so the thread-isolated MCP / infra calls
+# (aigraph_grounding, stage6_infra) are measured when tests exercise them.
+concurrency = ["thread"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",

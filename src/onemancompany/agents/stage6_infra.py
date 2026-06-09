@@ -25,6 +25,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from loguru import logger
+
 # The Stage-6a receipt's "Runnable Entrypoint" section. We pull the first code
 # line under a "Smoke" / "Full" heading, and the local code dir + remote dest.
 _SMOKE_HEADER = re.compile(r"^#+.*\bsmoke\b", re.IGNORECASE | re.MULTILINE)
@@ -130,8 +132,8 @@ def _extract_run_id(out: str) -> str:
         d = _json.loads(out)
         if isinstance(d, dict) and d.get("run_id"):
             return str(d["run_id"])
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[stage6] run_id JSON parse failed ({}); trying regex", exc)
     m = re.search(r'"run_id"\s*:\s*"([^"]+)"', out) or re.search(r"\b(run_[0-9a-f]{8,})\b", out)
     return m.group(1) if m else ""
 

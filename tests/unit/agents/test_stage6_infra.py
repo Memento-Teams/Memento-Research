@@ -6,6 +6,8 @@ scripts are missing (the engine must HOLD, not crash).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from onemancompany.agents import stage6_infra as s6
@@ -107,3 +109,112 @@ def test_submit_full_uses_full_cmd(monkeypatch):
     scripts = {"fast_push_code.sh": "a", "fast_submit.sh": "b", "fast_query_exp_status.sh": "c"}
     r = s6.submit(s6.parse_receipt(RECEIPT, project_id="p"), scripts, "/tmp/base.conf.json", kind="full")
     assert r.ok and r.run_id == "run_full9999" and r.kind == "full"
+
+
+def test_submit_no_cmd_for_kind(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.setattr(s6, "_run", lambda *a, **k: (0, ""))
+    # a receipt with only a smoke command -> requesting "full" has no command
+    r = s6.submit(s6.parse_receipt("### Smoke\npython x.py --smoke\n", project_id="p"),
+                  {"fast_push_code.sh": "a", "fast_submit.sh": "b", "fast_query_exp_status.sh": "c"},
+                  "/c", kind="full")
+    assert r.ok is False and "no full command" in r.error
+
+
+def test_submit_push_failure_holds(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.delenv("STAGE6_SKIP_PUSH", raising=False)
+
+    def fake_run(args, env, timeout=320.0):
+        if args[1].endswith("fast_push_code.sh"):
+            return 1, "push boom"
+        return 0, '{"run_id": "run_x"}'
+
+    monkeypatch.setattr(s6, "_run", fake_run)
+    r = s6.submit(s6.parse_receipt(RECEIPT, project_id="p"),
+                  {"fast_push_code.sh": "/s/fast_push_code.sh", "fast_submit.sh": "/s/fast_submit.sh",
+                   "fast_query_exp_status.sh": "/s/q.sh"}, "/c", kind="smoke")
+    assert r.ok is False and "push failed" in r.error
+
+
+def test_submit_no_run_id_holds(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.setenv("STAGE6_SKIP_PUSH", "push")
+    monkeypatch.setattr(s6, "_run", lambda *a, **k: (0, '{"success": true}'))  # no run_id
+    r = s6.submit(s6.parse_receipt(RECEIPT, project_id="p"),
+                  {"fast_push_code.sh": "a", "fast_submit.sh": "b", "fast_query_exp_status.sh": "c"},
+                  "/c", kind="smoke")
+    assert r.ok is False and "submit failed" in r.error
+
+
+# ----- _run (subprocess wrapper) ----------------------------------------------
+
+def test_run_captures_output(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout="out", stderr="err"))
+    rc, out = s6._run(["echo", "hi"], {})
+    assert rc == 0 and "out" in out and "err" in out
+
+
+def test_run_swallows_exception(monkeypatch):
+    import subprocess
+    def boom(*a, **k):
+        raise OSError("no such binary")
+    monkeypatch.setattr(subprocess, "run", boom)
+    rc, out = s6._run(["nope"], {})
+    assert rc == 1 and "OSError" in out
+
+
+# ----- query_status -----------------------------------------------------------
+
+def test_query_status_single_run(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.setattr(s6, "_run", lambda *a, **k: (0, '{"run_id": "r1", "status": "succeeded"}'))
+    d = s6.query_status("r1", {"fast_query_exp_status.sh": "q"})
+    assert d.get("status") == "succeeded"
+
+
+def test_query_status_from_runs_list(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.setattr(s6, "_run", lambda *a, **k: (0, '{"runs": [{"run_id": "r1", "status": "running"}]}'))
+    assert s6.query_status("r1", {"fast_query_exp_status.sh": "q"}).get("status") == "running"
+
+
+def test_query_status_no_creds_returns_empty(monkeypatch):
+    monkeypatch.delenv("INFRA_SERVER_URL", raising=False)
+    monkeypatch.delenv("INFRA_SESSION_KEY", raising=False)
+    assert s6.query_status("r1", {"fast_query_exp_status.sh": "q"}) == {}
+
+
+def test_query_status_bad_json_returns_empty(monkeypatch):
+    monkeypatch.setenv("INFRA_SERVER_URL", "http://infra")
+    monkeypatch.setenv("INFRA_SESSION_KEY", "k")
+    monkeypatch.setattr(s6, "_run", lambda *a, **k: (0, "not json"))
+    assert s6.query_status("r1", {"fast_query_exp_status.sh": "q"}) == {}
+
+
+# ----- find_infra_scripts -----------------------------------------------------
+
+def test_find_infra_scripts_from_dir(tmp_path):
+    for n in ("fast_push_code.sh", "fast_submit.sh", "fast_query_exp_status.sh"):
+        (tmp_path / n).write_text("#!/bin/sh\n")
+    found = s6.find_infra_scripts(str(tmp_path))
+    assert set(found) == {"fast_push_code.sh", "fast_submit.sh", "fast_query_exp_status.sh"}
+
+
+def test_find_infra_scripts_via_env(tmp_path, monkeypatch):
+    for n in ("fast_push_code.sh", "fast_submit.sh", "fast_query_exp_status.sh"):
+        (tmp_path / n).write_text("#!/bin/sh\n")
+    monkeypatch.setenv("EXPERIMENT_INFRA_SCRIPTS", str(tmp_path))
+    assert s6.find_infra_scripts() != {}
+
+
+def test_find_infra_scripts_missing_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.delenv("EXPERIMENT_INFRA_SCRIPTS", raising=False)
+    assert s6.find_infra_scripts(str(tmp_path)) == {}
