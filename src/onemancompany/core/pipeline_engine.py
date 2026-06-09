@@ -1125,8 +1125,19 @@ class PipelineEngine:
         # writing the methodology. The convener skill is the runbook.
         if stage["id"] == 4:
             desc += (
-                "\n## REQUIRED FIRST STEP\n"
-                'Before doing anything else, call load_skill("methodology-debate-convener") '
+                "\n## READING RESEARCH MATERIALS\n"
+                "Before starting, gather all available research context:\n"
+                "- If the project workspace contains any PDF files (*.pdf), use the "
+                "`read_pdf` tool to extract their content — these may be reference papers "
+                "or prior work that should inform the methodology.\n"
+                "- If the Stage 2 (Literature Survey) output references specific paper URLs "
+                "or DOIs, use the `fetch` or `web_search` tool to retrieve their abstracts "
+                "or full text from arXiv/Semantic Scholar. This grounds the methodology in "
+                "real published work rather than recalled knowledge.\n"
+                "- URLs in the format `https://arxiv.org/abs/...` can be fetched directly "
+                "to get the abstract; `https://arxiv.org/pdf/...` for the full paper.\n\n"
+                "## REQUIRED FIRST STEP\n"
+                'After reading available materials, call load_skill("methodology-debate-convener") '
                 "and follow the runbook exactly. It walks you through the full "
                 "draft → debate → revise flow: assemble a diverse team, write a v1 "
                 "methodology draft, convene a debate that critiques the draft, save "

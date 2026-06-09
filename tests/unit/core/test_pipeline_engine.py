@@ -1489,6 +1489,33 @@ async def test_event_emitters_publish_payloads_in_running_loop(tmp_path, monkeyp
     assert payloads[4] == {"type": "pipeline_complete", "project_id": "p1", "stages_completed": 1, "pipeline_managed": True}
 
 
+def test_dispatch_producer_stage4_injects_pdf_url_reading_instructions(tmp_path, monkeypatch):
+    """Stage 4 task description must instruct the methodology_designer to
+    read any PDF files and fetch referenced URLs (arXiv etc.) before starting
+    the debate. This grounds the methodology in real literature rather than
+    recalled knowledge."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-meth" if skill == "methodology_designer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine._dispatch_producer()
+
+    assert dispatched
+    desc = dispatched[0][1]
+    assert "read_pdf" in desc, "Stage 4 must instruct the producer to read any PDF files"
+    assert "fetch" in desc or "web_search" in desc, (
+        "Stage 4 must instruct the producer to fetch URLs from arXiv / literature survey"
+    )
+    assert "arxiv.org" in desc, "Stage 4 must mention arXiv as the primary literature source"
+
+
 def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_path, monkeypatch):
     """Stage 4 (Methodology Design) task description must instruct the
     methodology_designer to load the methodology-debate-convener skill
