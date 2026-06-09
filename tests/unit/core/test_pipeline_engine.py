@@ -16,6 +16,18 @@ def clear_pipeline_registry():
     pe._active_pipelines.clear()
 
 
+@pytest.fixture(autouse=True)
+def _stub_stage3_aigraph(monkeypatch):
+    """Stage 3 is the pipeline entry (Stages 1/2 were removed). Its
+    ``_dispatch_producer`` fetches aigraph grounding over the network; keep that
+    off the wire in unit tests so Stage 3 behaves as a plain producer dispatch
+    (returns None -> LLM-producer fallback). Tests that exercise grounding
+    monkeypatch ``_fetch_aigraph_idea_report`` themselves and override this."""
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_fetch_aigraph_idea_report", lambda self: None, raising=False
+    )
+
+
 def _employee_config(name: str, skills: list[str]) -> SimpleNamespace:
     return SimpleNamespace(name=name, skills=skills)
 
@@ -101,7 +113,7 @@ def test_dispatch_producer_with_feedback_uses_skill_lookup(tmp_path, monkeypatch
     dispatched = []
     emitted = []
 
-    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic" if skill == "topic_refiner" else None)
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic" if skill == "idea_generator" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: emitted.append((args, kwargs)))
@@ -112,7 +124,7 @@ def test_dispatch_producer_with_feedback_uses_skill_lookup(tmp_path, monkeypatch
     assert dispatched[0][0] == "emp-topic"
     assert "Feedback from previous review" in dispatched[0][1]
     assert "tighten the framing" in dispatched[0][1]
-    assert emitted == [(("stage_start", 1), {"employee_name": "emp-topic", "employee_id": "emp-topic"})]
+    assert emitted == [(("stage_start", 3), {"employee_name": "emp-topic", "employee_id": "emp-topic"})]
 
 
 def test_queue_pending_feedback_appends_and_persists(tmp_path):
@@ -166,7 +178,7 @@ def test_dispatch_producer_without_pending_feedback_unchanged(tmp_path, monkeypa
 def test_dispatch_producer_injects_research_memory_guidance(tmp_path, monkeypatch):
     dispatched = []
 
-    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic" if skill == "topic_refiner" else None)
+    monkeypatch.setattr(pe, "_find_employee_by_skill", lambda skill: "emp-topic" if skill == "idea_generator" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee", lambda self, *args: dispatched.append(args))
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *args, **kwargs: None)
@@ -189,7 +201,7 @@ def test_dispatch_producer_injects_research_memory_guidance(tmp_path, monkeypatc
 
     assert "--- Retrieved Research Memory ---" in dispatched[0][1]
     assert "Useful prior memories" in dispatched[0][1]
-    assert engine.state["memory_retrievals"]["1"]["ids"]
+    assert engine.state["memory_retrievals"]["3"]["ids"]
 
 
 def test_dispatch_to_employee_uses_ea_child_as_parent_and_schedules(tmp_path, monkeypatch):
@@ -234,9 +246,9 @@ def test_producer_completion_stores_result_and_dispatches_critic(tmp_path, monke
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.on_task_complete("emp", "node", "producer output")
 
-    assert engine.state["stage_results"]["1"] == "producer output"
+    assert engine.state["stage_results"]["3"] == "producer output"
     assert calls == ["producer output"]
-    assert emitted == [(("stage_reviewing", 1), {})]
+    assert emitted == [(("stage_reviewing", 3), {})]
 
 
 def test_critic_completion_pass_moves_to_gate(tmp_path, monkeypatch):
@@ -250,14 +262,14 @@ def test_critic_completion_pass_moves_to_gate(tmp_path, monkeypatch):
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["phase"] = "critic"
-    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["stage_results"] = {"3": "producer output"}
     engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.82")
 
     assert engine.phase == "gate"
     assert engine.state["critic_result"].startswith("PASS")
-    assert critic_events == [((1, "PASS\nConfidence Score: 0.82", True, 0.82), {})]
-    assert stage_events == [(("stage_complete", 1), {"confidence": 0.82})]
-    assert gate_events == [((1, 0.82), {})]
+    assert critic_events == [((3, "PASS\nConfidence Score: 0.82", True, 0.82), {})]
+    assert stage_events == [(("stage_complete", 3), {"confidence": 0.82})]
+    assert gate_events == [((3, 0.82), {})]
 
 
 def test_critic_completion_records_research_memory(tmp_path, monkeypatch):
@@ -267,7 +279,7 @@ def test_critic_completion_records_research_memory(tmp_path, monkeypatch):
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["phase"] = "critic"
-    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["stage_results"] = {"3": "producer output"}
     engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.82")
 
     store = pe.ResearchMemoryStore("p1", str(tmp_path))
@@ -275,7 +287,7 @@ def test_critic_completion_records_research_memory(tmp_path, monkeypatch):
     assert len(records) == 1
     assert records[0]["outcome"] == "critic_pass"
     assert records[0]["reward"] == 0.82
-    assert engine.state["memory_episodes"]["1"] == records[0]["id"]
+    assert engine.state["memory_episodes"]["3"] == records[0]["id"]
 
 
 def test_critic_reject_retries_with_feedback(tmp_path, monkeypatch):
@@ -293,8 +305,8 @@ def test_critic_reject_retries_with_feedback(tmp_path, monkeypatch):
 
     assert engine.state["retries"] == 1
     assert producer_feedback == ["REJECT\nconfidence: 0.41\nNeeds tighter scope"]
-    assert stage_events == [(("stage_failed", 1), {"confidence": 0.41})]
-    assert critic_events == [((1, "REJECT\nconfidence: 0.41\nNeeds tighter scope", False, 0.41), {})]
+    assert stage_events == [(("stage_failed", 3), {"confidence": 0.41})]
+    assert critic_events == [((3, "REJECT\nconfidence: 0.41\nNeeds tighter scope", False, 0.41), {})]
 
 
 def test_critic_reject_exhausted_waits_for_ceo(tmp_path, monkeypatch):
@@ -308,7 +320,7 @@ def test_critic_reject_exhausted_waits_for_ceo(tmp_path, monkeypatch):
     engine.on_task_complete("critic", "node", "REJECT confidence: 0.2")
 
     assert engine.phase == "gate"
-    assert gate_events == [((1, 0.2), {"exhausted": True})]
+    assert gate_events == [((3, 0.2), {"exhausted": True})]
 
 
 @pytest.mark.asyncio
@@ -978,8 +990,8 @@ def test_dispatch_critic_without_critic_auto_passes(tmp_path, monkeypatch):
     engine._dispatch_critic("producer output")
 
     assert engine.phase == "gate"
-    assert stage_events == [(("stage_complete", 1), {"confidence": None})]
-    assert gate_events == [((1, None), {})]
+    assert stage_events == [(("stage_complete", 3), {"confidence": None})]
+    assert gate_events == [((3, None), {})]
 
 
 def test_dispatch_critic_sends_review_task_to_critic(tmp_path, monkeypatch):
@@ -993,9 +1005,9 @@ def test_dispatch_critic_sends_review_task_to_critic(tmp_path, monkeypatch):
 
     assert engine.phase == "critic"
     assert dispatched[0][0] == "critic-1"
-    assert "Gate Review: Stage 1" in dispatched[0][1]
+    assert "Gate Review: Stage 3" in dispatched[0][1]
     assert "--- Producer Output ---\nproducer output" in dispatched[0][1]
-    assert dispatched[0][2] == "Gate Review: Stage 1"
+    assert dispatched[0][2] == "Gate Review: Stage 3"
 
 
 def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
@@ -1006,19 +1018,19 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: completed.append(self.project_id))
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["current_stage"] = 2
-    engine.state["end_stage"] = 3
+    engine.state["current_stage"] = 4
+    engine.state["end_stage"] = 5
     engine.state["retries"] = 2
     engine.state["critic_result"] = "old"
 
     engine.on_ceo_approve("please REVISE the method")
     assert engine.state["retries"] == 0
-    assert producer_feedback == [(2, "please REVISE the method")]
+    assert producer_feedback == [(4, "please REVISE the method")]
 
     engine.on_ceo_approve()
-    assert engine.current_stage == 3
+    assert engine.current_stage == 5
     assert engine.state["critic_result"] is None
-    assert producer_feedback[-1] == (3, "")
+    assert producer_feedback[-1] == (5, "")
 
     engine.on_ceo_approve()
     assert engine.phase == "done"
@@ -1030,7 +1042,7 @@ def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": producer_feedback.append(feedback))
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["stage_results"] = {"3": "producer output"}
     memory_id = engine._record_stage_memory(
         pe.STAGES[0],
         producer_result="producer output",
@@ -1047,7 +1059,7 @@ def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
     assert producer_feedback == ["please REVISE with stricter scope"]
     assert records[memory_id]["ceo_approved"] is False
     assert records[memory_id]["reward"] < 0.8
-    assert engine.state["memory_feedback"]["1"]["episode_id"] == memory_id
+    assert engine.state["memory_feedback"]["3"]["episode_id"] == memory_id
 
 
 def test_record_stage_memory_persists_phase_elapsed_seconds(tmp_path):
@@ -1089,11 +1101,11 @@ def test_on_task_complete_updates_attempt_timing_and_records_it(tmp_path, monkey
     monkeypatch.setattr(pe.time, "time", fake_time)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["current_stage"] = 1
+    engine.state["current_stage"] = 3
     engine.state["phase"] = "producer"
     engine.state["active_task_started_at"] = 970.0
     engine.state["attempt_timing"] = {"producer_elapsed_seconds": 0.0, "critic_elapsed_seconds": None}
-    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["stage_results"] = {"3": "producer output"}
 
     now["t"] = 1000.0
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, _result: None)
@@ -1124,10 +1136,10 @@ def test_critic_retry_persists_attempt_timing_before_reset(tmp_path, monkeypatch
     monkeypatch.setattr(pe.PipelineEngine, "_record_stage_memory", fake_record)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["current_stage"] = 1
+    engine.state["current_stage"] = 3
     engine.state["phase"] = "critic"
     engine.state["retries"] = 0
-    engine.state["stage_results"] = {"1": "producer output"}
+    engine.state["stage_results"] = {"3": "producer output"}
     engine.state["attempt_timing"] = {"producer_elapsed_seconds": 41.0, "critic_elapsed_seconds": 9.0}
 
     engine.on_task_complete("00014", "n2", "REJECT confidence: 0.2")
@@ -1174,7 +1186,7 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
     monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["current_stage"] = 2
+    engine.state["current_stage"] = 4
     engine.state["end_stage"] = 9
     initial_stage = engine.current_stage
 
@@ -1509,7 +1521,7 @@ def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, mon
     dispatched = []
 
     monkeypatch.setattr(pe, "_find_employee_by_skill",
-                        lambda skill: "emp-topic" if skill == "topic_refiner" else None)
+                        lambda skill: "emp-topic" if skill == "idea_generator" else None)
     monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
     monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
                         lambda self, *args: dispatched.append(args))
@@ -1517,7 +1529,7 @@ def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, mon
                         lambda self, *args, **kwargs: None)
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
-    engine.state["current_stage"] = 1
+    engine.state["current_stage"] = 3
     engine._dispatch_producer()
 
     assert dispatched, "producer must dispatch"
@@ -1611,7 +1623,7 @@ def test_dispatch_critic_stage5_injects_experiment_quality_critic_skill(tmp_path
 
 def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monkeypatch):
     """Triggers should be stage-id-scoped — Stage 5 trigger must not appear
-    in Stage 4 producer (which has its own methodology trigger) or Stage 1."""
+    in Stage 4 producer (which has its own methodology trigger) or Stage 3."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
                         lambda skill: f"emp-{skill}" if skill else None)
@@ -1621,7 +1633,7 @@ def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monke
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
                         lambda self, *args, **kwargs: None)
 
-    for stage_id in (1, 4):
+    for stage_id in (3, 4):
         dispatched.clear()
         engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
         engine.state["current_stage"] = stage_id
@@ -2279,9 +2291,9 @@ async def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(
     discards uncommitted workspace changes from it, and proceeds with the
     checkout — the user no longer has to wait for the next gate."""
     sink = _stub_revert_environment(monkeypatch, restored_state={
-        "topic": "t", "current_stage": 1, "phase": "gate",
+        "topic": "t", "current_stage": 3, "phase": "gate",
         "stage_results": {}, "retries": 0, "end_stage": 9,
-    }, branch="feat-stage2-deadbe")
+    }, branch="feat-stage3-deadbe")
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 4
@@ -2290,13 +2302,13 @@ async def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(
     engine.state["active_node_id"] = "node-abc"
     engine._save()
 
-    branch = await engine.revert_to_stage(stage=2, instructions="redo with X")
+    branch = await engine.revert_to_stage(stage=3, instructions="redo with X")
 
     assert sink["aborted"] == ["emp-007"], "active employee's task must be cancelled before checkout"
     assert sink["discarded"] == [str(tmp_path)], "uncommitted workspace changes must be discarded mid-flight"
     assert sink["checkout_calls"], "checkout must run after cancel + discard"
-    assert branch == "feat-stage2-deadbe"
-    assert engine.state["current_stage"] == 2
+    assert branch == "feat-stage3-deadbe"
+    assert engine.state["current_stage"] == 3
     assert engine.state["phase"] == "producer"
     assert engine.state["active_node_id"] is None
     assert engine.state["active_employee_id"] is None
@@ -2306,7 +2318,7 @@ async def test_revert_to_stage_cancels_active_task_and_discards_dirty_workspace(
 async def test_revert_to_stage_cancels_critic_phase_task(tmp_path, monkeypatch):
     """phase=critic is also mid-flight — cancel path must run."""
     sink = _stub_revert_environment(monkeypatch, restored_state={
-        "topic": "t", "current_stage": 1, "phase": "gate",
+        "topic": "t", "current_stage": 3, "phase": "gate",
         "stage_results": {}, "retries": 0, "end_stage": 9,
     })
 
@@ -2316,7 +2328,7 @@ async def test_revert_to_stage_cancels_critic_phase_task(tmp_path, monkeypatch):
     engine.state["active_employee_id"] = "critic-emp"
     engine._save()
 
-    await engine.revert_to_stage(stage=2, instructions="x")
+    await engine.revert_to_stage(stage=3, instructions="x")
 
     assert sink["aborted"] == ["critic-emp"], "critic-phase revert must cancel the critic task"
     assert sink["discarded"] == [str(tmp_path)], "critic-phase revert must scrub the workspace too"
@@ -2329,7 +2341,7 @@ async def test_revert_at_gate_preserves_manual_workspace_edits(tmp_path, monkeyp
     edits the user made between gates. The downstream checkout's
     DirtyWorkspaceError should be the loud signal instead."""
     sink = _stub_revert_environment(monkeypatch, restored_state={
-        "topic": "t", "current_stage": 1, "phase": "gate",
+        "topic": "t", "current_stage": 3, "phase": "gate",
         "stage_results": {}, "retries": 0, "end_stage": 9,
     })
 
@@ -2339,7 +2351,7 @@ async def test_revert_at_gate_preserves_manual_workspace_edits(tmp_path, monkeyp
     engine.state["active_employee_id"] = "stale-id"  # leftover, not actually running
     engine._save()
 
-    await engine.revert_to_stage(stage=2, instructions="x")
+    await engine.revert_to_stage(stage=3, instructions="x")
 
     assert sink["aborted"] == [], "no cancel at a gate"
     assert sink["discarded"] == [], "no destructive workspace scrub at a gate"
@@ -2476,37 +2488,37 @@ async def test_revert_real_git_restores_state_and_prunes_stage_results(tmp_path,
 
     # Manually walk through two passed stages, emulating what
     # vessel.py + the producer/critic loop would do.
-    (iter_dir / "stage1.md").write_text("v1 stage 1 output\n")
-    engine.state["current_stage"] = 1
-    engine.state["stage_results"] = {"1": "stage 1 result"}
+    (iter_dir / "stage3.md").write_text("v1 stage 3 output\n")
+    engine.state["current_stage"] = 3
+    engine.state["stage_results"] = {"3": "stage 3 result"}
     engine._save()
     # ensure_initialized + first commit happen on first _on_critic_pass.
     from onemancompany.core import project_repo
     project_repo.ensure_initialized(str(iter_dir), iteration="iter_001")
-    engine._on_critic_pass("stage 1 result")
+    engine._on_critic_pass("stage 3 result")
 
-    (iter_dir / "stage2.md").write_text("v1 stage 2 output\n")
-    engine.state["current_stage"] = 2
-    engine.state["stage_results"] = {"1": "stage 1 result", "2": "stage 2 result"}
+    (iter_dir / "stage4.md").write_text("v1 stage 4 output\n")
+    engine.state["current_stage"] = 4
+    engine.state["stage_results"] = {"3": "stage 3 result", "4": "stage 4 result"}
     engine._save()
-    engine._on_critic_pass("stage 2 result")
+    engine._on_critic_pass("stage 4 result")
 
     # Sanity: both files present on the main branch.
-    assert (iter_dir / "stage1.md").exists()
-    assert (iter_dir / "stage2.md").exists()
+    assert (iter_dir / "stage3.md").exists()
+    assert (iter_dir / "stage4.md").exists()
 
-    # Now revert to stage 2. Expected: branch from iter_001/stage-1's
-    # commit, so stage2.md disappears from the workspace.
-    branch = await engine.revert_to_stage(stage=2, instructions="please rewrite stage 2 to use approach Y")
+    # Now revert to stage 4. Expected: branch from iter_001/stage-3's
+    # commit, so stage4.md disappears from the workspace.
+    branch = await engine.revert_to_stage(stage=4, instructions="please rewrite stage 4 to use approach Y")
 
-    assert branch.startswith("feat-stage2-"), branch
-    assert (iter_dir / "stage1.md").exists(), "stage 1's output must survive the revert"
-    assert not (iter_dir / "stage2.md").exists(), "stage 2's output must be checked-out away"
+    assert branch.startswith("feat-stage4-"), branch
+    assert (iter_dir / "stage3.md").exists(), "stage 3's output must survive the revert"
+    assert not (iter_dir / "stage4.md").exists(), "stage 4's output must be checked-out away"
 
     # Reloaded state has only stage_results from BEFORE the revert.
-    assert "1" in engine.state["stage_results"]
-    assert "2" not in engine.state["stage_results"]
-    assert engine.state["current_stage"] == 2
+    assert "3" in engine.state["stage_results"]
+    assert "4" not in engine.state["stage_results"]
+    assert engine.state["current_stage"] == 4
     assert engine.state["phase"] == "producer"
     assert engine.state["retries"] == 0
 
@@ -2579,7 +2591,7 @@ def test_dispatch_critic_stage7_injects_result_quality_critic(tmp_path, monkeypa
 
 
 def test_dispatch_producer_stage7_not_in_other_stages(tmp_path, monkeypatch):
-    """The Stage 7 trigger must be stage-scoped — Stages 1/4/5/6 producers
+    """The Stage 7 trigger must be stage-scoped — Stages 3/4/5/6 producers
     must not carry the result-analysis-runbook trigger."""
     dispatched = []
     monkeypatch.setattr(pe, "_find_employee_by_skill",
@@ -2590,7 +2602,7 @@ def test_dispatch_producer_stage7_not_in_other_stages(tmp_path, monkeypatch):
     monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
                         lambda self, *args, **kwargs: None)
 
-    for stage_id in (1, 4, 5, 6):
+    for stage_id in (3, 4, 5, 6):
         dispatched.clear()
         engine = pe.PipelineEngine(f"p{stage_id}", str(tmp_path), "topic")
         engine.state["current_stage"] = stage_id
@@ -2681,7 +2693,7 @@ def test_stage_talent_defaults_maps_each_stage_to_hire_list_talent():
     import json
     from pathlib import Path
 
-    expected_stages = {1, 2, 3, 4, 5, 6, 7, 8, 9}
+    expected_stages = {3, 4, 5, 6, 7, 8, 9}
     assert set(pe.STAGE_TALENT_DEFAULTS.keys()) == expected_stages
 
     hire_list_path = Path(pe.__file__).resolve().parents[3] / "company" / "hire_list.json"
@@ -2735,11 +2747,11 @@ def test_find_employee_for_stage_prefers_canonical_talent(monkeypatch):
         pe,
         "load_employee_configs",
         lambda: {
-            "emp-clone": _talent_config("Clone", ["topic_refiner"], talent_id=""),
-            "emp-canon": _talent_config("Canon", ["topic_refiner"], talent_id="topic-refiner"),
+            "emp-clone": _talent_config("Clone", ["idea_generator"], talent_id=""),
+            "emp-canon": _talent_config("Canon", ["idea_generator"], talent_id="idea-generator"),
         },
     )
-    assert pe._find_employee_for_stage(1, "topic_refiner") == "emp-canon"
+    assert pe._find_employee_for_stage(3, "idea_generator") == "emp-canon"
 
 
 def test_find_employee_for_stage_falls_back_to_skill_when_no_canonical(monkeypatch):
@@ -2871,7 +2883,7 @@ def test_stage3_uses_file_deliverable_when_present(tmp_path, monkeypatch):
                         lambda self, *args, **kwargs: None)
 
     # Stage 3 deliverable file with the expected header
-    stage_skill = pe.STAGES[2]["skill"]  # stage 3 is index 2 (0-based)
+    stage_skill = pe.STAGES[0]["skill"]  # stage 3 is the entry stage (index 0)
     (tmp_path / f"stage3_{stage_skill}.md").write_text(
         "# Selected Hypotheses\n\nH1: ...\nH2: ...\n",
         encoding="utf-8",

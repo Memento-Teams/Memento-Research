@@ -77,14 +77,16 @@ def test_research_ideas_markdown_envelope_json_string():
         assert _engine()._fetch_aigraph_idea_report() == md
 
 
-def test_stage3_writes_deliverable_and_bypasses_llm(tmp_path, monkeypatch):
-    """Stage 3 is hard-coded to aigraph: the engine writes the report as the
-    deliverable and goes straight to the critic — the LLM producer is never
-    dispatched (so it cannot fabricate)."""
+def test_stage3_injects_grounding_and_dispatches_producer(tmp_path, monkeypatch):
+    """Stage 3 augmentation: the engine fetches the aigraph grounding, persists
+    it (for the backstop), injects it verbatim into the producer prompt, and
+    dispatches the producer to synthesise a pilot on top — it does NOT bypass the
+    LLM or go straight to the critic. The injected report is the verbatim, no
+    fabrication contract."""
     import onemancompany.core.pipeline_engine as pe
 
     eng = PipelineEngine("p_test", str(tmp_path), "multi-agent debate for LLM reasoning")
-    report = "# Stage 3: Idea Generation — x\n# Selected Hypotheses\n" + ("a" * 600)
+    report = "# Stage 3: Idea Generation — x\n# Selected Hypotheses\narxiv:2404.1#c1\n" + ("a" * 600)
 
     monkeypatch.setattr(eng, "_stage_def", lambda *a, **k: {"id": 3, "name": "Idea Generation", "skill": "idea_generator"})
     monkeypatch.setattr(eng, "_reset_attempt_timing", lambda: None)
@@ -92,8 +94,10 @@ def test_stage3_writes_deliverable_and_bypasses_llm(tmp_path, monkeypatch):
     monkeypatch.setattr(eng, "_retrieve_memory_guidance", lambda *a, **k: "")
     monkeypatch.setattr(eng, "_consume_pending_feedback", lambda: "")
     monkeypatch.setattr(eng, "_save", lambda: None)
+    monkeypatch.setattr(eng, "_emit_stage_event", lambda *a, **k: None)
     monkeypatch.setattr(eng, "_fetch_aigraph_idea_report", lambda: report)
     monkeypatch.setattr(pe, "_find_employee_for_stage", lambda *a, **k: "00017")
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
 
     calls = {}
     monkeypatch.setattr(eng, "_dispatch_critic", lambda r: calls.__setitem__("critic", r))
@@ -101,11 +105,15 @@ def test_stage3_writes_deliverable_and_bypasses_llm(tmp_path, monkeypatch):
 
     eng._dispatch_producer()
 
-    deliverable = tmp_path / "stage3_idea_generator.md"
-    assert deliverable.exists()
-    assert deliverable.read_text(encoding="utf-8") == report   # verbatim, no LLM
-    assert calls.get("critic") == report                       # critic got the report
-    assert "producer" not in calls                             # LLM producer NOT dispatched
+    # grounding persisted for the producer-complete backstop
+    grounding = tmp_path / "aigraph_grounding.md"
+    assert grounding.exists()
+    assert grounding.read_text(encoding="utf-8") == report
+    # producer IS dispatched, with the verbatim grounding injected into its prompt
+    assert "producer" in calls
+    assert report in calls["producer"][1]
+    # critic is NOT called directly (the producer runs first, then the critic)
+    assert "critic" not in calls
 
 
 def test_stage3_falls_back_to_llm_when_aigraph_down(tmp_path, monkeypatch):

@@ -30,7 +30,8 @@ from onemancompany.core.research_memory import ResearchMemoryStore
 # grounds Stage 3 over the arxiv corpus (which subsumes the literature survey),
 # and the raw keyword topic feeds Stage 3 directly (no separate refinement). The
 # remaining stage ids are kept as 3..9 so all stage-specific handling keyed on
-# ``stage["id"] == 4/6/8`` stays valid; lookups are by id, not list position.
+# the stage-specific handling for ids 4 / 6 / 8 stays valid; lookups are by id,
+# not list position.
 STAGES = [
     {"id": 3, "skill": "idea_generator",        "name": "Idea Generation"},
     {"id": 4, "skill": "methodology_designer",  "name": "Methodology Design"},
@@ -57,8 +58,8 @@ MAX_RESULT_LOOPS = 2
 # from the canonical talent_id wins. Falls back to skill-based lookup if
 # the canonical talent is not on the roster.
 STAGE_TALENT_DEFAULTS = {
-    1: "topic-refiner",
-    2: "literature-surveyor",
+    # Stages 1 (topic-refiner) + 2 (literature-surveyor) removed — aigraph grounds
+    # Stage 3 over the arxiv corpus and the keyword feeds it directly.
     3: "idea-generator",
     4: "methodology-designer",
     5: "experiment-designer",
