@@ -1,7 +1,12 @@
 """When the Talent Market is unreachable, `hire-from-cv` must still register
-pure-prompt talents (no tools) from CV data, while talents that declare tools
-(which genuinely need their repo) keep failing. Regression for the offline
-AutoResearch-roster bootstrap."""
+pure-prompt talents (no tools AND no skills) from CV data, while talents that
+declare tools OR skills (which genuinely need their repo for tool.py / SKILL.md
+implementations) keep failing.
+
+Issue #154 expanded the gate to include ``skills``: `result-analyst` had
+``tools: []`` but ``skills: ["result_analyst"]`` where the skill body lives in
+the talent repo. The old tools-only gate silently downgraded it to a CV-only
+hire and HR generated a placeholder skill, breaking Stage 7."""
 import asyncio
 from unittest.mock import AsyncMock, patch
 
@@ -36,27 +41,42 @@ def _run_captured(body):
     return exec_mock, publish_mock
 
 
-def _cv(tools):
+def _cv(*, tools, skills):
     return {
         "name": "Topic Refiner", "role": "Researcher",
         "talent_id": "topic-refiner", "hosting": "company",
-        "skills": ["topic_refiner"], "tools": tools,
+        "skills": skills, "tools": tools,
         "system_prompt_template": "You refine topics.",
         "source_type": "talent_market",
     }
 
 
 def test_pure_prompt_talent_hires_when_market_down():
-    """tools=[] → market failure degrades to CV-only hire (execute_hire called)."""
-    exec_mock, publish_mock = _run_captured(_cv(tools=[]))
+    """tools=[] AND skills=[] → truly pure-prompt → market failure degrades
+    to CV-only hire (execute_hire called)."""
+    exec_mock, publish_mock = _run_captured(_cv(tools=[], skills=[]))
     assert exec_mock.await_count == 1, "pure-prompt talent should still be hired offline"
     # no repo-fetch error surfaced
     errs = [c for c in publish_mock.await_args_list
             if "Failed to fetch repo URL" in str(c)]
-    assert not errs, "should not publish a repo-fetch error for a tools=0 talent"
+    assert not errs, "should not publish a repo-fetch error for a tools=0 skills=0 talent"
 
 
 def test_tooled_talent_still_fails_when_market_down():
     """tools=[...] → genuinely needs repo → still aborts (no hire)."""
-    exec_mock, publish_mock = _run_captured(_cv(tools=[{"name": "do_thing"}]))
+    exec_mock, publish_mock = _run_captured(_cv(tools=[{"name": "do_thing"}], skills=[]))
     assert exec_mock.await_count == 0, "tooled talent must NOT be hired without its repo"
+
+
+def test_skilled_talent_fails_when_market_down():
+    """tools=[] but skills=[...] → SKILL.md lives in the repo → must NOT
+    silently degrade to placeholder CV-only hire. Regression for issue #154."""
+    exec_mock, publish_mock = _run_captured(_cv(tools=[], skills=["result_analyst"]))
+    assert exec_mock.await_count == 0, (
+        "skilled-but-tool-less talent must NOT be hired without its repo — "
+        "the prior tools-only gate let result-analyst through and Stage 7 ran "
+        "with an HR-generated placeholder skill (#154)"
+    )
+    errs = [c for c in publish_mock.await_args_list
+            if "Failed to fetch repo URL" in str(c)]
+    assert errs, "must publish a repo-fetch error so the outage is visible"

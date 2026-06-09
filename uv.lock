@@ -1886,7 +1886,7 @@ wheels = [
 
 [[package]]
 name = "onemancompany"
-version = "0.8.72"
+version = "0.8.73"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
