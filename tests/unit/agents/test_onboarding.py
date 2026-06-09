@@ -219,6 +219,175 @@ class TestCopyTalentAssets:
 
 
 # ---------------------------------------------------------------------------
+# Talent-bundled tool scope (issue #130)
+# ---------------------------------------------------------------------------
+
+class TestTalentToolScopeBundling:
+    """Regression tests for issue #130: talent-bundled tools must scope to
+    the talent's employee, not silently widen to all employees.
+
+    The bug PR #51 introduced: ``copy_talent_assets`` was rewritten to copy
+    talent tool subdirs into ``assets/tools/`` but did not generate a
+    ``tool.yaml``. Both ``register_tool_user`` (which writes
+    ``allowed_users``) and ``tool_registry.load_asset_tools`` (which checks
+    ``source_talent`` to decide whether to enforce scope) key off
+    ``tool.yaml`` — without it, scope writes silent-no-op and the tool
+    registers as a company-wide asset visible to everyone."""
+
+    def _make_talent_with_bundled_tool(self, tmp_path):
+        talent_dir = tmp_path / "talents" / "idea-generator"
+        tool_subdir = talent_dir / "tools" / "aigraph_get_idea_report"
+        tool_subdir.mkdir(parents=True)
+        (talent_dir / "tools" / "manifest.yaml").write_text(
+            "builtin_tools: []\ncustom_tools:\n- aigraph_get_idea_report\n"
+        )
+        (tool_subdir / "manifest.yaml").write_text(
+            "name: aigraph_get_idea_report\ntype: python\ncommand: python tool.py\n"
+        )
+        (tool_subdir / "tool.py").write_text(
+            "from langchain_core.tools import tool\n"
+            "@tool\n"
+            "def aigraph_get_idea_report(topic: str) -> str:\n"
+            "    return f'stub for {topic}'\n"
+        )
+        return talent_dir
+
+    def test_tool_yaml_generated_after_copy(self, tmp_path, monkeypatch):
+        """After copy_talent_assets, the central tool dir must contain a
+        tool.yaml so the rest of the pipeline (register_tool_user,
+        load_asset_tools) can key off it."""
+        from onemancompany.agents import onboarding
+        import yaml
+
+        talent_dir = self._make_talent_with_bundled_tool(tmp_path)
+        emp_dir = tmp_path / "company" / "human_resource" / "employees" / "00017"
+        emp_dir.mkdir(parents=True)
+        monkeypatch.setattr(onboarding, "TOOLS_DIR", tmp_path / "assets" / "tools")
+
+        onboarding.copy_talent_assets(talent_dir, emp_dir)
+
+        tool_yaml = tmp_path / "assets" / "tools" / "aigraph_get_idea_report" / "tool.yaml"
+        assert tool_yaml.exists(), "tool.yaml must be generated alongside the copy"
+        meta = yaml.safe_load(tool_yaml.read_text())
+        assert meta["source_talent"] == "idea-generator", (
+            "source_talent is the field load_asset_tools reads to decide whether "
+            "to enforce talent scope — must point at the bringing talent"
+        )
+
+    def test_employee_added_to_allowed_users(self, tmp_path, monkeypatch):
+        """register_tool_user must succeed (it was silently no-op'ing before
+        the fix because tool.yaml didn't exist)."""
+        from onemancompany.agents import onboarding
+        import yaml
+
+        talent_dir = self._make_talent_with_bundled_tool(tmp_path)
+        emp_dir = tmp_path / "company" / "human_resource" / "employees" / "00017"
+        emp_dir.mkdir(parents=True)
+        monkeypatch.setattr(onboarding, "TOOLS_DIR", tmp_path / "assets" / "tools")
+
+        onboarding.copy_talent_assets(talent_dir, emp_dir)
+
+        tool_yaml = tmp_path / "assets" / "tools" / "aigraph_get_idea_report" / "tool.yaml"
+        meta = yaml.safe_load(tool_yaml.read_text())
+        assert "00017" in meta.get("allowed_users", []), (
+            "the bringing employee must end up in allowed_users — this is the "
+            "scope-write step that was silently failing before the fix"
+        )
+
+    def test_second_talent_appends_user_not_overwrites(self, tmp_path, monkeypatch):
+        """When a second talent brings the same tool subdir, the existing
+        whitelist must be preserved (the new employee added, the prior one
+        kept). Guards against the new tool.yaml-generation step trampling
+        an existing whitelist."""
+        from onemancompany.agents import onboarding
+        import yaml
+
+        talent_dir_a = self._make_talent_with_bundled_tool(tmp_path)
+        emp_a = tmp_path / "emp_a"; emp_a.mkdir()
+        # Rename emp dir to use realistic numeric ids the rest of the system uses.
+        emp_00017 = tmp_path / "00017"; emp_00017.mkdir()
+        emp_00099 = tmp_path / "00099"; emp_00099.mkdir()
+        monkeypatch.setattr(onboarding, "TOOLS_DIR", tmp_path / "assets" / "tools")
+
+        onboarding.copy_talent_assets(talent_dir_a, emp_00017)
+
+        # Simulate a second talent bringing the same subdir (e.g. literature-
+        # researcher also bundling aigraph_get_idea_report). It must NOT
+        # overwrite the existing tool.yaml.
+        talent_dir_b = tmp_path / "talents" / "literature-researcher"
+        tool_subdir = talent_dir_b / "tools" / "aigraph_get_idea_report"
+        tool_subdir.mkdir(parents=True)
+        (talent_dir_b / "tools" / "manifest.yaml").write_text(
+            "builtin_tools: []\ncustom_tools: []\n"
+        )
+        (tool_subdir / "manifest.yaml").write_text("name: aigraph_get_idea_report\ntype: python\n")
+        (tool_subdir / "tool.py").write_text(
+            "from langchain_core.tools import tool\n"
+            "@tool\n"
+            "def aigraph_get_idea_report(topic: str) -> str:\n"
+            "    return 'stub'\n"
+        )
+        onboarding.copy_talent_assets(talent_dir_b, emp_00099)
+
+        tool_yaml = tmp_path / "assets" / "tools" / "aigraph_get_idea_report" / "tool.yaml"
+        meta = yaml.safe_load(tool_yaml.read_text())
+        users = meta.get("allowed_users", [])
+        assert "00017" in users and "00099" in users, (
+            f"both employees must be in allowed_users, got {users}"
+        )
+        # source_talent records the first talent that brought it — must not
+        # have been overwritten by the second.
+        assert meta["source_talent"] == "idea-generator"
+
+
+class TestEnsureTalentToolYaml:
+    def test_writes_expected_fields(self, tmp_path):
+        from onemancompany.agents import onboarding
+        import yaml
+
+        tool_dir = tmp_path / "my_tool"
+        tool_dir.mkdir()
+        (tool_dir / "manifest.yaml").write_text("name: my_tool\ntype: python\n")
+
+        onboarding._ensure_talent_tool_yaml(tool_dir, "my_tool", "my-talent")
+
+        tool_yaml = tool_dir / "tool.yaml"
+        assert tool_yaml.exists()
+        meta = yaml.safe_load(tool_yaml.read_text())
+        assert meta == {
+            "id": "my_tool",
+            "name": "my_tool",
+            "type": "langchain_module",
+            "added_by": "talent:my-talent",
+            "source_talent": "my-talent",
+            "allowed_users": [],
+        }
+
+    def test_idempotent_does_not_overwrite_existing(self, tmp_path):
+        """If tool.yaml already exists (operator-curated or a second talent
+        brought the same tool), keep the existing one and its whitelist."""
+        from onemancompany.agents import onboarding
+
+        tool_dir = tmp_path / "my_tool"
+        tool_dir.mkdir()
+        existing = (
+            "id: my_tool\n"
+            "name: my_tool\n"
+            "type: langchain_module\n"
+            "source_talent: other-talent\n"
+            "allowed_users:\n- '00010'\n"
+        )
+        (tool_dir / "tool.yaml").write_text(existing)
+
+        onboarding._ensure_talent_tool_yaml(tool_dir, "my_tool", "new-talent")
+
+        assert (tool_dir / "tool.yaml").read_text() == existing, (
+            "existing tool.yaml must not be trampled — would lose whitelist "
+            "for other employees the prior talent had granted"
+        )
+
+
+# ---------------------------------------------------------------------------
 # execute_hire
 # ---------------------------------------------------------------------------
 

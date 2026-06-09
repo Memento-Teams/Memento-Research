@@ -218,6 +218,48 @@ def register_tool_user(tool_name: str, employee_id: str) -> None:
     _update_tool_allowed_users(tool_name, employee_id, add=True)
 
 
+def _ensure_talent_tool_yaml(tool_dir: Path, tool_name: str, talent_dir_name: str) -> None:
+    """Generate ``tool.yaml`` for a talent-bundled tool if it's missing.
+
+    Talent packages ship tool dirs with ``manifest.yaml`` (type: python) but no
+    ``tool.yaml`` — yet both ``register_tool_user`` (which writes
+    ``allowed_users``) and ``tool_registry.load_asset_tools`` (which reads
+    ``source_talent`` to decide whether scope enforcement applies) key off
+    ``tool.yaml``. Without this step the tool silently registers as a company-
+    wide asset visible to every employee (issue #130).
+
+    Mirrors the ``tool.yaml`` emitted by ``install_talent_functions`` for the
+    ``functions/`` flow — same ``source_talent`` field, same ``langchain_module``
+    convention. ``allowed_users`` is initialised empty here; the per-employee
+    grant is appended later by ``register_tool_user``.
+
+    Idempotent: if ``tool.yaml`` already exists (operator-curated tool, or a
+    second talent that brought the same subdir), this is a no-op so the
+    existing whitelist isn't trampled.
+    """
+    tool_yaml = tool_dir / TOOL_YAML_FILENAME
+    if tool_yaml.exists():
+        return
+    tool_meta = {
+        "id": tool_name,
+        "name": tool_name,
+        "type": "langchain_module",
+        "added_by": f"talent:{talent_dir_name}",
+        "source_talent": talent_dir_name,
+        "allowed_users": [],
+    }
+    try:
+        with open_utf(tool_yaml, "w") as f:
+            yaml.dump(tool_meta, f, default_flow_style=False, allow_unicode=True)
+    except OSError as exc:
+        # Don't abort onboarding — the tool is still importable; only the
+        # scope-enforcement field is missing. Loud-log so the gap surfaces.
+        logger.warning(
+            "_ensure_talent_tool_yaml: failed to write {}: {} — tool will register as "
+            "company-wide asset until tool.yaml is added", tool_yaml, exc,
+        )
+
+
 def unregister_tool_user(tool_name: str, employee_id: str) -> None:
     """Revoke *employee_id*'s access to a central LangChain tool."""
     _update_tool_allowed_users(tool_name, employee_id, add=False)
@@ -955,14 +997,26 @@ def copy_talent_assets(talent_dir: Path, emp_dir) -> None:
 
         # Move each named tool subdir to assets/tools/ if not already there,
         # then register the employee. Do NOT keep a local tools/ folder.
+        #
+        # Talent-bundled tool dirs ship with ``manifest.yaml`` (type: python)
+        # but no ``tool.yaml``. ``register_tool_user`` and ``load_asset_tools``
+        # both key off ``tool.yaml`` (the ``source_talent`` field decides whether
+        # ``_is_allowed`` enforces ``allowed_users`` or treats it as a company-
+        # wide asset). Without a generated ``tool.yaml`` the tool silently
+        # registers as a company asset visible to every employee, defeating the
+        # whole "tool follows the talent that brought it" model. So we generate
+        # one alongside the copy, mirroring what ``install_talent_functions``
+        # already does for the ``functions/manifest.yaml`` flow (issue #130).
         for entry in talent_tools.iterdir():
             if entry.name == "manifest.yaml":
                 continue
             if entry.is_dir():
                 dst_tool = TOOLS_DIR / entry.name
-                if not dst_tool.exists():
+                newly_installed = not dst_tool.exists()
+                if newly_installed:
                     shutil.copytree(str(entry), str(dst_tool), ignore=shutil.ignore_patterns("*.pyc", "__pycache__"))
                     logger.info("Installed tool '{}' from talent {} to assets/tools/", entry.name, talent_dir.name)
+                _ensure_talent_tool_yaml(dst_tool, entry.name, talent_dir.name)
                 register_tool_user(entry.name, employee_id)
             elif entry.is_file() and entry.suffix not in (".py", ".pyc"):
                 # Loose non-Python files (e.g. config.yaml) stay in emp/tools/
