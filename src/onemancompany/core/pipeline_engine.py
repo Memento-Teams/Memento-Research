@@ -1098,19 +1098,28 @@ class PipelineEngine:
         # and submits the actual runs — see _dispatch_producer_b().
         elif stage["id"] == 6:
             desc += (
-                "\n## REQUIRED FIRST STEP\n"
-                'Before doing anything else, call load_skill("code-implementation-runbook") '
+                "\n## REQUIRED INPUTS — READ BEFORE ANYTHING ELSE\n"
+                "Read these three files from the project workspace before loading "
+                "the runbook or touching any code:\n"
+                "  read('stage4_methodology_designer.md')  # immutable contract: "
+                "IVs, DVs, evaluation metrics, statistical tests — every hardcoded "
+                "value in your implementation must match this document exactly\n"
+                "  read('stage5_experiment_designer.md')   # locked parameter "
+                "values: seeds, sample sizes, decoding params, n_conditions\n"
+                "  read('stage5_codebase_pin.md')          # upstream repo + "
+                "adaptation surface\n"
+                "\n## REQUIRED IMPLEMENTATION STEP\n"
+                'Then call load_skill("code-implementation-runbook") '
                 "and follow it. This is Stage 6a (Implementation). The runbook's "
-                "Phase 0 walks you through reading stage5_codebase_pin.md, cloning "
-                "the upstream repo at the pinned commit, running the upstream test "
-                "suite on a clean checkout, applying only the patches the pin's "
-                "Adaptation surface table lists, and re-running the tests. Phase 5 "
-                "produces stage6_implementation_receipt.md naming the runnable "
-                "entrypoint command. ADAPT, do not REWRITE — the upstream pin "
-                "exists precisely to avoid from-scratch code. The exception path "
-                "(NO USABLE UPSTREAM FOUND in the pin) is allowed but triggers "
-                "extra critic scrutiny. The Stage 6b runner depends on your "
-                "receipt; do not skip it.\n"
+                "Phase 0 walks you through cloning the upstream repo at the pinned "
+                "commit, running the upstream test suite on a clean checkout, "
+                "applying only the patches the pin's Adaptation surface table "
+                "lists, and re-running the tests. Phase 5 produces "
+                "stage6_implementation_receipt.md naming the runnable entrypoint "
+                "command. ADAPT, do not REWRITE — the upstream pin exists precisely "
+                "to avoid from-scratch code. The exception path (NO USABLE UPSTREAM "
+                "FOUND in the pin) is allowed but triggers extra critic scrutiny. "
+                "The Stage 6b runner depends on your receipt; do not skip it.\n"
             )
         # Stage 7 (Result Analysis) reads the Stage 4 methodology, the
         # Stage 5 experiment plan + assignments, and the Stage 6

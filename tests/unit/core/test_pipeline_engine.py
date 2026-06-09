@@ -1717,6 +1717,39 @@ def test_dispatch_producer_stage6_injects_code_implementation_runbook_trigger(tm
     )
 
 
+def test_dispatch_producer_stage6_injects_stage4_methodology_as_required_input(tmp_path, monkeypatch):
+    """Stage 6a dispatch must instruct the agent to read stage4_methodology_designer.md
+    before loading the runbook. The Stage 4 doc is the immutable contract for IVs/DVs/
+    metrics — without reading it, the pin-path self-check (Step 0.1.5 #6) cannot be
+    performed, leading to silent parameter mismatches (e.g. run be7144a49333)."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-coder-027" if skill == "code_implementer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine._dispatch_producer()
+
+    assert dispatched, "Stage 6a producer must dispatch"
+    desc = dispatched[0][1]
+    assert "stage4_methodology_designer.md" in desc, (
+        "Stage 6a dispatch must instruct the agent to read stage4_methodology_designer.md "
+        "as the immutable contract before any implementation work"
+    )
+    assert "stage5_experiment_designer.md" in desc, (
+        "Stage 6a dispatch must also require reading stage5_experiment_designer.md "
+        "for locked parameter values"
+    )
+    assert "immutable contract" in desc.lower() or "IVs" in desc or "metrics" in desc, (
+        "Stage 6a dispatch must convey that Stage 4 is the parameter contract"
+    )
+
+
 def test_dispatch_producer_stage6_routes_to_code_implementer_employee(tmp_path, monkeypatch):
     """Stage 6's first dispatch resolves to the code_implementer
     (not the experiment_runner — that comes in the 6b second pass)."""
