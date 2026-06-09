@@ -1,19 +1,13 @@
-"""R9-1: a locally-dead pipeline must not leak its remote runs.
+"""run_tracker regression tests (R13-2).
 
-When a pipeline fails (or is cancelled) while parked on
-``pending_run_ids``, nothing watches those runs any more — they keep
-executing on the infra for hours and eat the 4-slot concurrency quota.
-Real incident: Round-7's pilot ``run_0569b7feb018`` ran 2h+ after its
-pipeline died and (with unrelated neighbours) starved Round 9's
-submissions into ``Concurrent run limit reached 4/4``.
-
-``gc_orphan_runs`` walks terminal pipelines that still carry
-``pending_run_ids``, cancels every run the infra listing does not show
-terminal, persists the forensics, and clears the pending list so the GC
-is one-shot per project."""
+The orphan-GC suite for R9-1 lives on the #126 branch; this file carries
+the R13-2 waiting-transition regression independently so it runs on main.
+"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import yaml
 
@@ -30,88 +24,36 @@ def _mk_project(root: Path, pid: str, state: dict) -> Path:
     return iter_dir / "pipeline_state.yaml"
 
 
-def _read(state_file: Path) -> dict:
-    return yaml.safe_load(state_file.read_text(encoding="utf-8"))
-
-
-def test_gc_cancels_active_runs_of_failed_pipeline(tmp_path, monkeypatch):
+def test_waiting_transition_fires_even_when_run_map_unchanged(tmp_path, monkeypatch):
+    """REGRESSION (run df3fd56612e5): the project's run was ALREADY terminal
+    when it parked, so the tracker's per-project map never changed after the
+    first poll — and the old 'no change, skip' early-continue sat ABOVE the
+    producer_b_waiting branch, starving the transition forever (5.5h parked
+    on a succeeded run; only the 12h deadline would have ended it)."""
     import onemancompany.core.config as cfg
     monkeypatch.setattr(cfg, "PROJECTS_DIR", tmp_path)
 
-    cancelled = []
-    monkeypatch.setattr(rt, "_cancel_infra_run", lambda rid: (cancelled.append(rid), True)[1])
+    run_record = {
+        "run_id": "run_done",
+        "status": "succeeded",
+        "run_command": "cd omc/p_parked/iter_001 && python experiment.py",
+    }
+    monkeypatch.setattr(rt, "_list_infra_runs", lambda limit=100: [run_record])
 
-    sf = _mk_project(tmp_path, "p_dead", {
-        "current_stage": 6, "phase": "failed",
-        "failure_reason": "stage_6_retries_exhausted",
-        "pending_run_ids": ["run_orphan_a", "run_done_b"],
-    })
-    listing = [
-        {"run_id": "run_orphan_a", "status": "running"},
-        {"run_id": "run_done_b", "status": "succeeded"},
-    ]
-
-    n = rt.gc_orphan_runs(all_runs=listing)
-
-    assert n == 1
-    assert cancelled == ["run_orphan_a"], "only the still-active run is cancelled"
-    st = _read(sf)
-    assert st.get("pending_run_ids") in ([], None), "pending cleared → GC is one-shot"
-    assert st.get("orphan_runs_cancelled") == ["run_orphan_a"], "forensics persisted"
-
-
-def test_gc_cancels_runs_missing_from_listing(tmp_path, monkeypatch):
-    """A pending run absent from the listing (pagination / lag) is treated
-    as possibly-alive: cancel is attempted (the infra rejects cancels of
-    already-terminal runs harmlessly)."""
-    import onemancompany.core.config as cfg
-    monkeypatch.setattr(cfg, "PROJECTS_DIR", tmp_path)
-    cancelled = []
-    monkeypatch.setattr(rt, "_cancel_infra_run", lambda rid: (cancelled.append(rid), True)[1])
-
-    _mk_project(tmp_path, "p_dead2", {
-        "current_stage": 6, "phase": "failed",
-        "pending_run_ids": ["run_unlisted"],
+    # State on disk: parked, pending on that run, and the run map ALREADY
+    # equal to what this tick will compute (no change).
+    _mk_project(tmp_path, "p_parked", {
+        "current_stage": 6,
+        "phase": "producer_b_waiting",
+        "pending_run_ids": ["run_done"],
+        "stage_6_runs": {"run_done": rt._summarise_run(run_record)},
     })
 
-    n = rt.gc_orphan_runs(all_runs=[])
+    eng = MagicMock()
+    from onemancompany.core import pipeline_engine as pe
+    monkeypatch.setattr(pe, "get_or_load_pipeline", lambda pid, pdir: eng)
+    monkeypatch.setitem(pe._active_pipelines, "p_parked", eng)
 
-    assert n == 1
-    assert cancelled == ["run_unlisted"]
+    asyncio.run(rt.poll_active_projects())
 
-
-def test_gc_leaves_waiting_pipeline_alone(tmp_path, monkeypatch):
-    """A healthy parked pipeline keeps its pending runs — GC must only
-    touch TERMINAL pipelines."""
-    import onemancompany.core.config as cfg
-    monkeypatch.setattr(cfg, "PROJECTS_DIR", tmp_path)
-    cancelled = []
-    monkeypatch.setattr(rt, "_cancel_infra_run", lambda rid: (cancelled.append(rid), True)[1])
-
-    sf = _mk_project(tmp_path, "p_alive", {
-        "current_stage": 6, "phase": "producer_b_waiting",
-        "pending_run_ids": ["run_live"],
-    })
-
-    n = rt.gc_orphan_runs(all_runs=[{"run_id": "run_live", "status": "running"}])
-
-    assert n == 0
-    assert cancelled == []
-    assert _read(sf).get("pending_run_ids") == ["run_live"]
-
-
-def test_gc_no_candidates_skips_listing_fetch(tmp_path, monkeypatch):
-    """With no terminal+pending projects, the GC must not even hit the
-    infra listing (cron runs every 30s — keep the idle cost zero)."""
-    import onemancompany.core.config as cfg
-    monkeypatch.setattr(cfg, "PROJECTS_DIR", tmp_path)
-
-    def _boom(*a, **k):
-        raise AssertionError("listing must not be fetched with no candidates")
-    monkeypatch.setattr(rt, "_list_infra_runs", _boom)
-
-    _mk_project(tmp_path, "p_done", {
-        "current_stage": 9, "phase": "done", "pending_run_ids": [],
-    })
-
-    assert rt.gc_orphan_runs() == 0
+    eng.on_runs_all_terminal.assert_called_once()

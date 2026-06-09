@@ -1427,10 +1427,13 @@ def test_is_stub_result():
     assert pe.PipelineEngine._is_stub_result("Executed tools: write, read, bash") is True
     assert pe.PipelineEngine._is_stub_result("") is True
     assert pe.PipelineEngine._is_stub_result("# Gate Review\n\n## Decision\n\nPASS — 0.95 confidence.\n\nFull analysis follows... " + "x" * 350) is False
-    # Length threshold: a "Executed: ..." prefix that's followed by a kilobyte
-    # of real tool output is not a stub.
+    # BEHAVIOUR CHANGE (R13-1, run df3fd56612e5): the old design treated a
+    # long "Executed: ..." echo as legitimate output. An 852KB tool-echo of
+    # /api/list_runs then polluted the waiter with 100 account-wide run_ids.
+    # The prefix is the runtime's no-text fallback signature — it is a stub
+    # at ANY length; the real deliverable lives on disk, never in an echo.
     long_executed = "Executed: bash\n" + "real captured output line\n" * 50
-    assert pe.PipelineEngine._is_stub_result(long_executed) is False
+    assert pe.PipelineEngine._is_stub_result(long_executed) is True
 
 
 def test_parse_confidence_handles_unparseable_match(monkeypatch):
@@ -2623,6 +2626,29 @@ def test_dispatch_critic_stage7_injects_result_quality_critic(tmp_path, monkeypa
     )
 
 
+def test_dispatch_critic_stage8_requires_references_figures_and_style(tmp_path, monkeypatch):
+    """#45 (output-quality fix C): the Stage-8 critic prompt must require a
+    resolvable References section (run a1df5c26f6ea shipped a paper with
+    inline citations and NO References section), embedded stage7 figures,
+    statistics style, and a headline-number spot-check."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 8
+    engine._dispatch_critic("Stage 8 paper draft")
+
+    assert dispatched, "Stage 8 critic must be dispatched"
+    desc = dispatched[0][1]
+    assert "References section" in desc
+    assert "stage7_*.png" in desc, "must check the Stage-7 figures are embedded"
+    assert "p < .001" in desc, "must enforce the statistics style rules"
+    assert "stage7_result_analyst.md" in desc, "must spot-check headline numbers"
+
+
 def test_dispatch_producer_stage7_not_in_other_stages(tmp_path, monkeypatch):
     """The Stage 7 trigger must be stage-scoped — Stages 3/4/5/6 producers
     must not carry the result-analysis-runbook trigger."""
@@ -3293,6 +3319,245 @@ def test_data_gate_stage8_passes_when_upstream_stage7_has_data(tmp_path, monkeyp
     assert getattr(engine, "_passed", False) is True
 
 
+class TestPaperNumbersGate:
+    """#44 (output-quality fix B): every high-precision statistic in the
+    Stage-8 paper must be traceable to the upstream Stage 4-7 evidence.
+    Number fabrication is the worst paper failure mode and the Stage 8
+    critic only spot-checks; this is the deterministic backstop."""
+
+    def test_traceable_numbers_pass_including_percent_scale_and_rounding(self):
+        paper = (
+            "Direct-512 accuracy is 16.38% and CoT-512 is 85.97%, a paired "
+            "difference of 69.60 percentage points (Cohen's h = 1.5406)."
+        )
+        upstream = (
+            'RESULT_JSON: {"accuracy_direct": 0.16376, "accuracy_cot": 0.859742}\n'
+            "paired diff: 0.695982\nCohen's h: 1.5406\n"
+        )
+        ok, reason = pe.PipelineEngine._paper_numbers_gate(paper, upstream)
+        assert ok, reason
+
+    def test_fabricated_statistics_fail_and_are_named(self):
+        paper = (
+            "Accuracy reached 87.42% with an effect size of 2.3145, while "
+            "the baseline scored 12.99%."
+        )
+        upstream = 'RESULT_JSON: {"accuracy_cot": 0.8597, "accuracy_direct": 0.1638}'
+        ok, reason = pe.PipelineEngine._paper_numbers_gate(paper, upstream)
+        assert not ok
+        assert "87.42" in reason and "2.3145" in reason
+
+    def test_years_sections_counts_and_low_precision_ignored(self):
+        """Citation years, section refs, sample sizes, token budgets and
+        p < 0.001 style values must never trip the gate."""
+        paper = (
+            "Following [Wei et al., 2022] and Section 5.1, we evaluate all "
+            "1,319 problems with max_tokens 512 (p < 0.001, alpha 0.05)."
+        )
+        ok, reason = pe.PipelineEngine._paper_numbers_gate(paper, "no numbers here")
+        assert ok, reason
+
+    def test_single_orphan_tolerated_but_reported(self):
+        """One unmatched high-precision number could be a legitimate derived
+        value (e.g. an author-computed ratio) — tolerated, but named in the
+        reason so the critic can eyeball it. Two or more → fail."""
+        paper = "CoT reaches 85.97%; the speedup factor is 58.38x."
+        upstream = '"accuracy_cot": 0.8597'
+        ok, reason = pe.PipelineEngine._paper_numbers_gate(paper, upstream)
+        assert ok
+        assert "58.38" in reason
+
+    def test_stage8_gate_rejects_fabricated_paper(self, tmp_path, monkeypatch):
+        """Wire-level: critic PASS on a paper with ≥2 fabricated statistics
+        must flip to the reject path, naming the orphans in the feedback."""
+        redispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, feedback="": redispatched.append(feedback))
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 8
+        engine.state["phase"] = "critic"
+        engine.state["stage_results"] = {
+            "7": "### H1\nDecision: SUPPORTED\naccuracy_cot 0.8597, accuracy_direct 0.1638\n",
+            "8": "# Paper\n\nAccuracy hit 91.23% with effect size 3.1415.",
+        }
+
+        engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+        assert redispatched, "fabricated numbers must trigger the reject path"
+        assert "91.23" in redispatched[0]
+
+    def test_stage8_gate_passes_traceable_paper(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass", lambda self, result, confidence=None: setattr(self, "_passed", True))
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 8
+        engine.state["phase"] = "critic"
+        engine.state["stage_results"] = {
+            "7": "### H1\nDecision: SUPPORTED\naccuracy_cot 0.8597, accuracy_direct 0.1638\n",
+            "8": "# Paper\n\nCoT reaches 85.97% versus 16.38% for direct.",
+        }
+
+        engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.95")
+
+        assert getattr(engine, "_passed", False) is True
+
+
+def test_stub_detects_giant_tool_echo(tmp_path):
+    """REGRESSION (R13-1, run df3fd56612e5): the 6b runner ended with an
+    852KB tool-echo ('Executed: bash\\nbash → {full /api/list_runs dump}').
+    The <300-char heuristic missed it, the waiter's fallback parse then
+    swallowed 100 account-wide run_ids as pending and the pipeline parked
+    on 99 ghosts. The 'Executed: ' prefix IS the runtime's fallback
+    signature — flag it regardless of length."""
+    giant = "Executed: bash\nbash → {'stdout': '" + ("x" * 900_000) + "'}"
+    assert pe.PipelineEngine._is_stub_result(giant) is True
+    assert pe.PipelineEngine._is_stub_result("Executed tools: write, read" + "y" * 5000) is True
+    # Real reports stay non-stub.
+    real = "# Stage 6 report\n\n- run_id: run_a\n- status: succeeded\n" + "analysis " * 100
+    assert pe.PipelineEngine._is_stub_result(real) is False
+
+
+def test_parking_scopes_implausible_pending_to_known_project_runs(tmp_path, monkeypatch):
+    """REGRESSION (R13-1): when the parsed pending list is implausibly large
+    (an account-wide dump leaked into the parse), scope it to the runs the
+    tracker already attributes to THIS project instead of parking on the
+    whole account's history."""
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, r: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    # Tracker already attributed ONE running run to this project.
+    engine.state["stage_6_runs"] = {"run_mine": {"status": "running"}}
+
+    rows = "\n".join(
+        f"- run_id: run_ghost_{i}\n- status: running" for i in range(40)
+    )
+    report = f"## Runs\n- run_id: run_mine\n- status: running\n{rows}\n"
+
+    engine.on_task_complete("00025", "nodeB", report)
+
+    assert engine.state["phase"] == "producer_b_waiting"
+    assert engine.state["pending_run_ids"] == ["run_mine"], (
+        "an implausibly large parse must be scoped to the tracker-known "
+        "project runs, not 41 account-wide ids"
+    )
+
+
+def test_parking_small_pending_kept_even_without_tracker_map(tmp_path, monkeypatch):
+    """Normal path: a fresh park lists its own few runs before the tracker's
+    first poll — keep them verbatim."""
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, r: None)
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+
+    engine.on_task_complete(
+        "00025", "nodeB",
+        "- run_id: run_a\n- status: running\n- run_id: run_b\n- status: still_running\n",
+    )
+
+    assert engine.state["pending_run_ids"] == ["run_a", "run_b"]
+
+
+class TestStage9RevisionLoop:
+    """#46 (output-quality fix D): the Stage-9 peer review's actionable
+    verdict must be CONSUMED, not archived. When the review says
+    MINOR/MAJOR REVISION, the paper-writer gets exactly ONE bounded
+    revision pass, then Stage 9 re-reviews. ACCEPT (or an already-used
+    revision budget) completes as before."""
+
+    def _engine(self, tmp_path, monkeypatch, review_verdict: str, revised: bool = False):
+        rec = {"revision": [], "producer": [], "passed": []}
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_critic_result", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_gate_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_paper_revision",
+                            lambda self: rec["revision"].append(True))
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": rec["producer"].append(feedback))
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass",
+                            lambda self, result, confidence=None: rec["passed"].append(result))
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 9
+        engine.state["phase"] = "critic"
+        if revised:
+            engine.state["paper_revised"] = True
+        engine.state["stage_results"] = {
+            # Real data upstream — the revision loop only makes sense for
+            # papers about actual results (#94 clamp interplay).
+            "6": "- run_id: run_x\n- status: succeeded\n",
+            "7": "### H1\nDecision: SUPPORTED\n",
+            "8": "# Paper v1",
+            "9": f"# Peer Review\n\n## Verdict\n| **Decision** | **{review_verdict}** |\n\nComments: tighten §5.",
+        }
+        return engine, rec
+
+    def test_minor_revision_triggers_one_revision_pass(self, tmp_path, monkeypatch):
+        engine, rec = self._engine(tmp_path, monkeypatch, "MINOR REVISION")
+        engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+        assert rec["revision"] == [True], "review asked for revision — must dispatch the writer"
+        assert rec["passed"] == [], "must NOT complete before the revision pass"
+
+    def test_accept_completes_without_revision(self, tmp_path, monkeypatch):
+        engine, rec = self._engine(tmp_path, monkeypatch, "ACCEPT")
+        engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+        assert rec["revision"] == []
+        assert len(rec["passed"]) == 1
+
+    def test_revision_budget_is_one(self, tmp_path, monkeypatch):
+        """Second time around (paper already revised) MUST complete even if
+        the re-review still says MINOR REVISION — bounded loop."""
+        engine, rec = self._engine(tmp_path, monkeypatch, "MINOR REVISION", revised=True)
+        engine.on_task_complete("critic", "node", "PASS\nConfidence Score: 0.9")
+        assert rec["revision"] == []
+        assert len(rec["passed"]) == 1
+
+    def test_revision_complete_rereviews_stage9(self, tmp_path, monkeypatch):
+        """When the writer's revision lands, the revised paper replaces
+        stage_results['8'] and Stage 9 is re-dispatched for a fresh review."""
+        rec = {"producer": []}
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": rec["producer"].append(feedback))
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 9
+        engine.state["phase"] = "paper_revision"
+        engine.state["stage_results"] = {"8": "# Paper v1", "9": "old review"}
+
+        engine.on_task_complete("00111", "node-rev", "# Paper v2 (revised per review)")
+
+        assert engine.state["paper_revised"] is True
+        assert engine.state["stage_results"]["8"] == "# Paper v2 (revised per review)"
+        assert rec["producer"], "stage 9 must be re-dispatched to review the revision"
+        assert engine.state["phase"] == "producer"
+
+    def test_revision_task_failure_degrades_to_complete(self, tmp_path, monkeypatch):
+        """A failed/cancelled revision task must never strand the pipeline —
+        degrade to completing with the original paper."""
+        rec = {"passed": []}
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass",
+                            lambda self, result, confidence=None: rec["passed"].append(result))
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 9
+        engine.state["phase"] = "paper_revision"
+        engine.state["stage_results"] = {"8": "# Paper v1", "9": "review"}
+
+        engine.on_task_failed("00111", "node-rev", "503")
+
+        assert engine.state["paper_revised"] is True, "budget consumed — no infinite retry"
+        assert len(rec["passed"]) == 1, "must complete with the original paper"
+
+
 def test_stage9_verdict_clamped_to_major_revision_when_no_data(tmp_path, monkeypatch):
     """Stage 9 (self-review) is terminal — it can't be blocked/retried like
     6/7/8. Instead, when the pipeline has no real experimental data, an
@@ -3662,3 +3927,124 @@ def test_stage6_pass_still_advances_normally_not_via_reviewer(tmp_path, monkeypa
     engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
 
     assert advanced == [True] and reviewer == [], "Stage 6 keeps normal advance"
+
+
+# ---------------------------------------------------------------------------
+# Issue #159 — Concurrency cap
+# ---------------------------------------------------------------------------
+
+class TestConcurrencyCap:
+    """Admission control: excess pipeline starts queue instead of dispatch."""
+
+    def _make_engine(self, tmp_path, pid, phase="producer"):
+        eng = pe.PipelineEngine(pid, str(tmp_path / pid), "topic")
+        eng.state["phase"] = phase
+        pe._active_pipelines[pid] = eng
+        return eng
+
+    def teardown_method(self, _):
+        pe._active_pipelines.clear()
+
+    def test_start_queues_when_at_cap(self, tmp_path, monkeypatch):
+        """A new start() must set phase=queued when executing == cap."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 1)
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_memory_state", lambda self: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_timing_state", lambda self: None)
+
+        # One pipeline already executing
+        self._make_engine(tmp_path, "existing", phase="producer")
+
+        # New pipeline — should queue, not dispatch
+        new_eng = pe.PipelineEngine("new-p", str(tmp_path / "new-p"), "topic")
+        pe._active_pipelines["new-p"] = new_eng
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **kw: None)
+        new_eng.start()
+
+        assert new_eng.state["phase"] == "queued", "Should be queued when at cap"
+        assert "new-p" not in dispatched, "Should NOT dispatch when queued"
+
+    def test_start_dispatches_when_below_cap(self, tmp_path, monkeypatch):
+        """start() dispatches immediately when executing < cap."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 2)
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_memory_state", lambda self: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_timing_state", lambda self: None)
+
+        # One executing, cap is 2 — room for one more
+        self._make_engine(tmp_path, "existing", phase="producer")
+
+        new_eng = pe.PipelineEngine("new-p", str(tmp_path / "new-p"), "topic")
+        pe._active_pipelines["new-p"] = new_eng
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **kw: None)
+        new_eng.start()
+
+        assert "new-p" in dispatched, "Should dispatch when below cap"
+        assert new_eng.state["phase"] != "queued"
+
+    def test_dequeue_next_pipeline_promotes_oldest(self, tmp_path, monkeypatch):
+        """dequeue_next_pipeline() picks the queued engine with the earliest
+        queue_requested_at and dispatches it."""
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+
+        older = self._make_engine(tmp_path, "older", phase="queued")
+        older.state["queue_requested_at"] = "1000.0"
+        newer = self._make_engine(tmp_path, "newer", phase="queued")
+        newer.state["queue_requested_at"] = "2000.0"
+
+        result = pe.dequeue_next_pipeline()
+
+        assert result is True
+        assert dispatched == ["older"], "Should promote the oldest queued pipeline"
+
+    def test_on_became_terminal_evicts_and_dequeues(self, tmp_path, monkeypatch):
+        """_on_became_terminal() evicts the finished engine and promotes the
+        next queued pipeline."""
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+
+        done_eng = self._make_engine(tmp_path, "done-p", phase="done")
+        queued_eng = self._make_engine(tmp_path, "queued-p", phase="queued")
+        queued_eng.state["queue_requested_at"] = "1000.0"
+
+        done_eng._on_became_terminal()
+
+        assert "done-p" not in pe._active_pipelines, "Terminal engine must be evicted"
+        assert dispatched == ["queued-p"], "Queued pipeline must be promoted"
+
+    def test_producer_b_waiting_does_not_count_toward_cap(self, tmp_path, monkeypatch):
+        """producer_b_waiting is excluded from the executing count so a
+        long-running remote experiment does not permanently block new starts."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 1)
+        # One pipeline in producer_b_waiting — should NOT count
+        self._make_engine(tmp_path, "waiting-p", phase="producer_b_waiting")
+
+        count = pe._count_executing()
+        assert count == 0, "producer_b_waiting must not count toward the cap"

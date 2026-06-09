@@ -53,6 +53,40 @@ def test_parse_receipt_empty_is_not_ok():
     assert s6.parse_receipt("nothing runnable here").ok is False
 
 
+def test_parse_receipt_python3_entrypoint():
+    """Regression: the entrypoint regex used ``python\\b``, which never matched
+    ``python3 ...`` — the most common form in real experiment receipts. That
+    silently dropped #156's deterministic submit to the unreliable agent runner.
+    """
+    receipt = (
+        "## 4. Runnable Entrypoint\n"
+        "### Smoke (runner runs this FIRST)\n"
+        "cd omc/p1/iter_001 && python3 experiment.py --smoke --seed 42 --output-dir outputs\n"
+        "### Full (runner runs this only if smoke succeeded)\n"
+        "cd omc/p1/iter_001 && python3 experiment.py --seed 42 --n-single 10000 --n-life 10000\n"
+        "- **Local file**: `/tmp/stage6_impl/p1/experiment.py`\n"
+    )
+    r = s6.parse_receipt(receipt, project_id="p1")
+    assert r.ok
+    assert r.smoke_cmd == "cd omc/p1/iter_001 && python3 experiment.py --smoke --seed 42 --output-dir outputs"
+    assert r.full_cmd == "cd omc/p1/iter_001 && python3 experiment.py --seed 42 --n-single 10000 --n-life 10000"
+
+
+def test_parse_receipt_python_versioned_and_uv():
+    assert s6.parse_receipt("### Smoke\npython3.11 run.py --smoke\n").smoke_cmd == "python3.11 run.py --smoke"
+    assert s6.parse_receipt("### Smoke\nuv run experiment.py --smoke\n").smoke_cmd == "uv run experiment.py --smoke"
+
+
+def test_parse_receipt_activate_prefix():
+    """Receipts that source a venv before the interpreter must still parse."""
+    r = s6.parse_receipt(
+        "### Smoke\ncd omc/p1/iter_001 && . .venv/bin/activate && python3 experiment.py --smoke\n",
+        project_id="p1",
+    )
+    assert r.ok
+    assert r.smoke_cmd == "cd omc/p1/iter_001 && . .venv/bin/activate && python3 experiment.py --smoke"
+
+
 def test_extract_run_id_json_and_text():
     assert s6._extract_run_id('{"success": true, "run_id": "run_abc12345"}') == "run_abc12345"
     assert s6._extract_run_id("...submitted run_deadbeef99 to infra...") == "run_deadbeef99"
