@@ -1445,6 +1445,31 @@ class PipelineEngine:
                 "(HARKing); (b) any confirmatory claim without a real "
                 "Stage 6 run_id (fabrication); (c) non-English document.\n\n"
             )
+        # Stage 8 critic grades the PAPER itself: structural completeness
+        # (References is the historically-skipped section — run a1df5c26f6ea
+        # shipped without one), citation resolution, figure embedding, and
+        # statistics style. The deterministic numbers gate (#44) then
+        # backstops statistic traceability after a PASS.
+        elif stage["id"] == 8:
+            desc += (
+                "## REQUIRED FIRST STEP\n"
+                "Grade the Stage 8 paper by asking:\n"
+                "  - Does a References section exist with full entries, and "
+                "does EVERY inline [Author, Year] citation resolve to an "
+                "entry (and every entry get cited at least once in the "
+                "body)? A paper with inline citations but NO References "
+                "section is an auto-REJECT.\n"
+                "  - Are the Stage 7 result figures (stage7_*.png, when they "
+                "exist in the workspace) embedded in the Results section "
+                "with captions?\n"
+                "  - Statistics style: prose statistics at 3-4 significant "
+                "figures (full precision in tables only); p-values as "
+                "'p < .001' never 'p = 0.0'; no pipeline internals "
+                "('RESULT_JSON', 'log_tail', 'the runner', run ids outside "
+                "the reproducibility appendix) leaking into the prose.\n"
+                "  - Spot-check at least 5 headline numbers against "
+                "stage7_result_analyst.md — any mismatch is an auto-REJECT.\n\n"
+            )
         # Cap producer output sent to critic (#62): full cumulative context
         # has been observed to blow Kimi-K2.6's 262K-token window (993K input
         # in late-stage runs), causing ContextWindowExceededError and the
@@ -1509,6 +1534,56 @@ class PipelineEngine:
         self.state["phase"] = "result_review"
         self._save()
         self._dispatch_to_employee(reviewer_id, desc, "Result Review: Stage 7")
+
+    # Verdict patterns the Stage-9 peer review uses to request changes.
+    _REVISION_VERDICT_RE = re.compile(
+        r"(?:verdict|recommendation|decision)\b[^\n]{0,40}?(minor|major)\s+revision",
+        re.IGNORECASE,
+    )
+
+    def _review_requests_revision(self) -> bool:
+        """True iff the Stage-9 peer review's own verdict asks for a
+        MINOR/MAJOR REVISION (read from the canonical deliverable)."""
+        review = self._read_stage_deliverable(
+            9, fallback=(self.state.get("stage_results") or {}).get("9", "")
+        )
+        return bool(self._REVISION_VERDICT_RE.search(review or ""))
+
+    def _dispatch_paper_revision(self) -> None:
+        """Bounded revision loop (#46): give the paper-writer ONE pass to
+        address the Stage-9 review, then Stage 9 re-reviews. Falls back to
+        completing normally if no paper-writer exists — additive, never
+        strands the pipeline."""
+        writer_id = _find_employee_by_skill("paper_writer")
+        if not writer_id:
+            logger.info("[PIPELINE] No paper_writer for revision loop; completing as-is")
+            self.state["paper_revised"] = True
+            self._save()
+            self._on_critic_pass(self.state["stage_results"].get("9", ""), None)
+            return
+        results = self.state.get("stage_results", {}) or {}
+        review = self._read_stage_deliverable(9, fallback=results.get("9", ""))
+        paper = self._read_stage_deliverable(8, fallback=results.get("8", ""))
+        ctx = self._cap_for_critic(
+            f"--- Peer review (address every actionable point) ---\n{review}\n\n"
+            f"--- Current paper ---\n{paper}\n",
+            stage_id=8,
+        )
+        desc = (
+            "Paper Revision (one bounded pass)\n\n"
+            "The Stage-9 peer review of your paper requested revisions. Address "
+            "EVERY actionable comment, keeping all paper_writer rules in force "
+            "(References resolution, statistics style, figure embeds, claim "
+            "traceability — numbers may only come from the Stage 4-7 evidence). "
+            "Update stage8_paper_writer.md IN PLACE in the project workspace and "
+            "submit_result with a summary of what changed per comment. Do NOT "
+            "argue with the review in the paper; fix or explicitly scope-note.\n\n"
+            f"{ctx}"
+        )
+        self.state["phase"] = "paper_revision"
+        self._save()
+        logger.info("[PIPELINE] Stage-9 review requested revisions — dispatching paper-writer (1 bounded pass)")
+        self._dispatch_to_employee(writer_id, desc, "Paper Revision (post-review)")
 
     # Soft cap on bytes sent to the critic as ``producer_output``. 80 KB
     # ≈ 20K tokens, comfortably under the smaller-window critic models
@@ -1744,6 +1819,25 @@ class PipelineEngine:
             if not runs and report_text is not result:
                 runs = self._parse_runner_report_runs(result)
             pending = self._pending_run_ids_from(runs)
+            # R13-1 plausibility scope: a real experiment pends a handful of
+            # runs; dozens means an account-wide listing leaked into the
+            # parse (e.g. a tool-echo of /api/list_runs). Scope to the runs
+            # the tracker already attributes to THIS project (its map is
+            # keyed by the omc/<pid>/<iter> run_command needle).
+            if len(pending) > 8:
+                known = self.state.get("stage_6_runs") or {}
+                scoped = [r for r in pending if r in known]
+                if not scoped:
+                    scoped = self._pending_run_ids_from([
+                        (rid, str((info or {}).get("status", "unknown")))
+                        for rid, info in known.items()
+                    ])
+                logger.warning(
+                    "[PIPELINE] Stage 6b parse yielded {} pending run_ids — "
+                    "implausible; scoped to {} tracker-known project run(s)",
+                    len(pending), len(scoped),
+                )
+                pending = scoped
             if pending:
                 from datetime import datetime, timezone
                 self.state["phase"] = "producer_b_waiting"
@@ -1811,6 +1905,22 @@ class PipelineEngine:
             # Stage 7 passed normally (the analysis is already stored).
             stage7_result = (self.state.get("stage_results") or {}).get("7", result)
             self._on_critic_pass(stage7_result, confidence=None)
+
+        elif self.phase == "paper_revision":
+            # Bounded revision loop (#46): the paper-writer revised the paper
+            # per the Stage-9 review. Store the revision as the new Stage 8
+            # deliverable, consume the one-revision budget, and send Stage 9
+            # back for a fresh review of the revised paper.
+            self.state["stage_results"]["8"] = result
+            self.state["paper_revised"] = True
+            self.state["phase"] = "producer"
+            self._save()
+            logger.info(
+                "[PIPELINE] Paper revision complete — re-dispatching Stage 9 "
+                "to review the revised paper",
+            )
+            self._emit_stage_event("stage_started", 9)
+            self._dispatch_producer()
 
         elif self.phase == "critic":
             # Critic finished → parse decision
@@ -1892,6 +2002,21 @@ class PipelineEngine:
                 # 7 triggers this (it's where real metrics first exist).
                 if stage["id"] == 7:
                     self._dispatch_result_reviewer(confidence)
+                # Bounded revision loop (#46): when the Stage-9 peer review
+                # itself asks for MINOR/MAJOR REVISION, the paper-writer gets
+                # exactly ONE revision pass and Stage 9 re-reviews — review
+                # comments are consumed, not archived. ACCEPT (or an
+                # already-spent budget) completes as before.
+                elif (
+                    stage["id"] == 9
+                    and not self.state.get("paper_revised")
+                    # A clamped no-data MAJOR REVISION (#94) is not fixable by
+                    # rewriting prose — revision only makes sense for papers
+                    # about real results.
+                    and self._pipeline_has_real_data()
+                    and self._review_requests_revision()
+                ):
+                    self._dispatch_paper_revision()
                 else:
                     self._on_critic_pass(self.state["stage_results"].get(str(stage["id"]), ""), confidence)
             else:
@@ -1953,6 +2078,19 @@ class PipelineEngine:
         self._record_active_phase_elapsed(self.phase)
         stage = self._stage_def()
         current_phase = self.phase
+
+        if current_phase == "paper_revision":
+            # Bounded revision loop (#46): a failed revision task must never
+            # strand the pipeline — consume the budget and complete with the
+            # ORIGINAL paper (the review feedback is preserved on disk).
+            logger.warning(
+                "[PIPELINE] Paper-revision task failed ({}) — completing with the "
+                "original paper", (result or "")[:120],
+            )
+            self.state["paper_revised"] = True
+            self._save()
+            self._on_critic_pass(self.state.get("stage_results", {}).get("9", ""), None)
+            return
 
         if current_phase == "critic":
             stored = self.state.get("stage_results", {}).get(str(stage["id"]), "")
@@ -2336,15 +2474,16 @@ class PipelineEngine:
         stub return then defaults to PASS by the old parse logic — closing
         the silent-empty-stage loop #60 / #63 describe.
 
-        Threshold (~300 chars) is empirical: real CCF-A producer outputs are
-        kilobytes; stubs are typically 14-200 chars."""
+        The ``Executed: `` / ``Executed tools: `` prefix IS the runtime's
+        fallback signature — flag it REGARDLESS of length. R13-1 (run
+        df3fd56612e5): an 852KB tool-echo (a full /api/list_runs dump)
+        sailed past the old <300-char heuristic, the waiter's fallback
+        parse swallowed 100 account-wide run_ids as pending, and the
+        pipeline parked on 99 ghosts."""
         if not result:
             return True
         stripped = result.strip()
-        if len(stripped) < 300 and (
-            stripped.startswith("Executed: ")
-            or stripped.startswith("Executed tools: ")
-        ):
+        if stripped.startswith("Executed: ") or stripped.startswith("Executed tools: "):
             return True
         return False
 
@@ -2562,6 +2701,66 @@ class PipelineEngine:
             logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
         return fallback
 
+    # ------------------------------------------------------------------
+    # #44 — paper-numbers gate: every high-precision statistic in the
+    # Stage-8 paper must be traceable to the Stage 4-7 evidence. Number
+    # fabrication is the worst paper failure mode and the LLM critic only
+    # spot-checks; this is the deterministic backstop.
+    #
+    # Claim class: decimals with ≥2 decimal places and ≥3 significant
+    # digits (85.97, 1.5406, 69.60). Deliberately EXCLUDED to avoid false
+    # positives: integers (years, n, token budgets, section refs),
+    # 1-decimal values (5.1), and low-significance values (p < 0.001,
+    # alpha 0.05). Matching allows the writer's rounding (tolerance =
+    # half-ULP at the written precision) and fraction↔percent scaling.
+    # ------------------------------------------------------------------
+    # Trailing guard: block a following digit or ``.digit`` (version strings
+    # like 0.11.0) but NOT sentence punctuation — "…effect size 3.1415." must
+    # still be captured.
+    _PAPER_CLAIM_RE = re.compile(r"(?<![\w.])(\d{1,4}\.\d{2,6})(?!\d)(?!\.\d)")
+    _UPSTREAM_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+    @staticmethod
+    def _sig_digits(tok: str) -> int:
+        return len(tok.replace(".", "").lstrip("0"))
+
+    @classmethod
+    def _paper_numbers_gate(cls, paper_text: str, upstream_text: str) -> tuple[bool, str]:
+        """Return ``(ok, reason)``. ``ok=False`` only when ≥2 high-precision
+        statistics in the paper match nothing upstream — a single orphan is
+        tolerated (could be a legitimate author-derived value) but named in
+        the reason for the critic to eyeball."""
+        claims: list[str] = []
+        seen: set[str] = set()
+        for m in cls._PAPER_CLAIM_RE.finditer(paper_text or ""):
+            tok = m.group(1)
+            if tok not in seen and cls._sig_digits(tok) >= 3:
+                seen.add(tok)
+                claims.append(tok)
+        if not claims:
+            return True, ""
+        upstream_vals = [float(t) for t in cls._UPSTREAM_NUM_RE.findall(upstream_text or "")]
+        unmatched: list[str] = []
+        for tok in claims:
+            d = float(tok)
+            dp = len(tok.split(".")[1])
+            tol = 0.5 * 10 ** (-dp) + 1e-9
+            if not any(
+                abs(v - d) <= tol or abs(v * 100 - d) <= tol or abs(v / 100 - d) <= tol
+                for v in upstream_vals
+            ):
+                unmatched.append(tok)
+        if len(unmatched) >= 2:
+            return False, (
+                "paper contains statistics not traceable to the Stage 4-7 "
+                f"evidence: {', '.join(unmatched)} — every reported number must "
+                "come from stage7_result_analyst.md / the Stage 6 RESULT_JSON "
+                "(or state its derivation next to a traceable source)"
+            )
+        if unmatched:
+            return True, f"1 untraceable statistic tolerated (verify manually): {unmatched[0]}"
+        return True, ""
+
     def _stage_data_gate(self, stage_id: int, result: str) -> tuple[bool, str]:
         """Instance-level gate orchestration used by ``on_task_complete``.
 
@@ -2570,16 +2769,36 @@ class PipelineEngine:
         but requires the UPSTREAM Stage 7 artifact to have carried real data
         — otherwise the paper-writer is writing about nothing. We enforce
         that by re-running the Stage 7 gate against the stored Stage 7
-        result (#96 Failure C).
+        result (#96 Failure C). Stage 8 additionally passes the
+        paper-numbers gate (#44): high-precision statistics must be
+        traceable to the Stage 4-7 evidence.
         """
         ok, reason = self._data_gate(stage_id, result)
         if not ok:
             return ok, reason
         if stage_id == 8:
-            stage7 = self._read_stage_deliverable(7, fallback=(self.state.get("stage_results") or {}).get("7", ""))
+            results = self.state.get("stage_results") or {}
+            stage7 = self._read_stage_deliverable(7, fallback=results.get("7", ""))
             s7_ok, s7_reason = self._data_gate_stage7(stage7)
             if not s7_ok:
                 return False, f"upstream Stage 7 has no confirmatory data ({s7_reason})"
+            # #44 numbers gate — paper vs the union of upstream evidence.
+            paper = self._read_stage_deliverable(8, fallback=result)
+            upstream_parts = [stage7]
+            for sid in (4, 5, 6):
+                upstream_parts.append(
+                    self._read_stage_deliverable(sid, fallback=results.get(str(sid), ""))
+                )
+            receipt = Path(self.project_dir) / "stage6_implementation_receipt.md"
+            try:
+                upstream_parts.append(receipt.read_text(encoding="utf-8"))
+            except OSError:
+                pass
+            nums_ok, nums_reason = self._paper_numbers_gate(paper, "\n".join(upstream_parts))
+            if not nums_ok:
+                return False, nums_reason
+            if nums_reason:
+                logger.info("[PIPELINE] paper-numbers gate: {}", nums_reason)
         return True, ""
 
     def _pipeline_has_real_data(self) -> bool:

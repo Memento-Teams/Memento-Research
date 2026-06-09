@@ -355,23 +355,27 @@ async def poll_active_projects() -> dict[str, int]:
             continue
         if not isinstance(state, dict):
             continue
-        if state.get("stage_6_runs") == updated:
-            continue  # no change, skip the disk write
-
-        state["stage_6_runs"] = updated
-        try:
-            state_file.write_text(yaml.safe_dump(state, default_flow_style=False, allow_unicode=True))
-        except OSError as exc:
-            logger.debug("[run_tracker] failed to save {}: {}", state_file, exc)
-            continue
-        # Mirror into the live engine if it happens to be loaded.
+        # R13-2 (run df3fd56612e5): a no-change tick must skip ONLY the disk
+        # write — never the producer_b_waiting transition below. A run that
+        # was already terminal at park time produces a stable map from the
+        # first poll onward; the old early-continue starved the transition
+        # and the project parked forever (5.5 h on a succeeded run).
+        changed = state.get("stage_6_runs") != updated
         eng = _active_pipelines.get(pid)
-        if eng is not None:
-            eng.state["stage_6_runs"] = updated
-        logger.debug(
-            "[run_tracker] {} run_ids updated for project {} (iter {})",
-            len(updated), pid, iter_id,
-        )
+        if changed:
+            state["stage_6_runs"] = updated
+            try:
+                state_file.write_text(yaml.safe_dump(state, default_flow_style=False, allow_unicode=True))
+            except OSError as exc:
+                logger.debug("[run_tracker] failed to save {}: {}", state_file, exc)
+                continue
+            # Mirror into the live engine if it happens to be loaded.
+            if eng is not None:
+                eng.state["stage_6_runs"] = updated
+            logger.debug(
+                "[run_tracker] {} run_ids updated for project {} (iter {})",
+                len(updated), pid, iter_id,
+            )
 
         # Stage 6b long-running waiter (#93, #97): if this project is parked
         # in producer_b_waiting, drive its transition from disk state +
