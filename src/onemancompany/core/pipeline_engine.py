@@ -2793,7 +2793,7 @@ class PipelineEngine:
             try:
                 upstream_parts.append(receipt.read_text(encoding="utf-8"))
             except OSError:
-                pass
+                pass  # receipt absent before 6a completes — skip silently
             nums_ok, nums_reason = self._paper_numbers_gate(paper, "\n".join(upstream_parts))
             if not nums_ok:
                 return False, nums_reason
