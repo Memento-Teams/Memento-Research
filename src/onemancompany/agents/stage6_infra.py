@@ -33,9 +33,15 @@ _SMOKE_HEADER = re.compile(r"^#+.*\bsmoke\b", re.IGNORECASE | re.MULTILINE)
 _FULL_HEADER = re.compile(r"^#+.*\bfull\b", re.IGNORECASE | re.MULTILINE)
 _LOCAL_FILE = re.compile(r"(?:local file|local path)[^\n]*?(/[\w./+-]+)", re.IGNORECASE)
 _REMOTE_PATH = re.compile(r"(?:remote path|remote dest)[^\n]*?[`'\"]([\w][\w./+-]*)", re.IGNORECASE)
-# A run command: a line that invokes the entrypoint (python / bash / accelerate / torchrun).
-_CMD_LINE = re.compile(r"^\s*`?((?:cd\s+\S+\s*&&\s*)?(?:python|bash|accelerate|torchrun|uv run)\b[^`\n]+)`?\s*$",
-                       re.IGNORECASE | re.MULTILINE)
+# A run command: a line that invokes the entrypoint. Accept versioned/sourced
+# interpreters too — ``python3`` / ``python3.11`` (the ``\b`` after ``python``
+# never matched ``python3``, which silently dropped #156 to the agent runner),
+# and a leading ``. .venv/bin/activate &&`` that experiment receipts commonly emit.
+_CMD_LINE = re.compile(
+    r"^\s*`?((?:cd\s+\S+\s*&&\s*)?(?:\.?\s*\S*activate\s*&&\s*)?"
+    r"(?:python[0-9.]*|bash|accelerate|torchrun|uv(?:\s+run)?)\b[^`\n]+)`?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass
