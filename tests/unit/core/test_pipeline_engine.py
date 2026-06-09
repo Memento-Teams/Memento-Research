@@ -1188,6 +1188,7 @@ def test_on_ceo_approve_revision_keyword_matching(tmp_path, monkeypatch, feedbac
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["current_stage"] = 4
     engine.state["end_stage"] = 9
+    engine.state["phase"] = "gate"  # guard requires gate phase (#157)
     initial_stage = engine.current_stage
 
     engine.on_ceo_approve(feedback)
@@ -4075,3 +4076,103 @@ class TestConcurrencyCap:
 
         count = pe._count_executing()
         assert count == 0, "producer_b_waiting must not count toward the cap"
+
+
+# ---------------------------------------------------------------------------
+# Issue #157 — on_ceo_approve idempotency guard
+# ---------------------------------------------------------------------------
+
+class TestOnCeoApproveIdempotencyGuard:
+    """on_ceo_approve must be a no-op when the pipeline is not at a gate."""
+
+    def test_approve_at_gate_advances(self, tmp_path, monkeypatch):
+        """Normal path: approve at gate phase advances to next stage."""
+        dispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": dispatched.append(self.current_stage))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 7
+        engine.state["end_stage"] = 9
+        engine.state["phase"] = "gate"
+
+        engine.on_ceo_approve()
+
+        assert engine.current_stage == 8, "Should advance to stage 8"
+        assert dispatched == [8], "Should dispatch stage 8 producer"
+
+    def test_approve_during_producer_is_noop(self, tmp_path, monkeypatch):
+        """Duplicate approve while producer is running must not advance (#157)."""
+        dispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": dispatched.append(self.current_stage))
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 8
+        engine.state["end_stage"] = 9
+        engine.state["phase"] = "producer"  # Stage 8 already running
+
+        engine.on_ceo_approve()
+
+        assert engine.current_stage == 8, "Stage must not advance"
+        assert dispatched == [], "No producer dispatch must happen"
+        assert engine.phase == "producer", "Phase must remain producer"
+
+    def test_approve_during_critic_is_noop(self, tmp_path, monkeypatch):
+        """Approve while critic is reviewing must be ignored."""
+        dispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": dispatched.append(self.current_stage))
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 7
+        engine.state["phase"] = "critic"
+
+        engine.on_ceo_approve()
+
+        assert dispatched == [] and engine.current_stage == 7
+
+    def test_approve_on_done_is_noop(self, tmp_path, monkeypatch):
+        """Approve on a finished pipeline must not raise or advance."""
+        dispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": dispatched.append(True))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 9
+        engine.state["phase"] = "done"
+
+        engine.on_ceo_approve()  # must not raise
+
+        assert dispatched == []
+
+    def test_duplicate_approve_does_not_skip_stage(self, tmp_path, monkeypatch):
+        """Regression for #157: two approve signals for stage 7 must not skip
+        stage 8 (paper). First approve at gate advances; second while stage 8
+        producer runs must be a no-op."""
+        dispatched = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": dispatched.append(self.current_stage))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_pipeline_complete", lambda self: None)
+
+        engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        engine.state["current_stage"] = 7
+        engine.state["end_stage"] = 9
+        engine.state["phase"] = "gate"
+
+        # First approve — valid, advances to stage 8
+        engine.on_ceo_approve()
+        assert engine.current_stage == 8
+        assert dispatched == [8]
+
+        # Simulate the real state machine: _dispatch_producer sets phase=producer.
+        # The mock doesn't do this, so set it explicitly to reflect reality.
+        engine.state["phase"] = "producer"
+
+        # Second stale approve must be ignored
+        engine.on_ceo_approve()
+
+        assert engine.current_stage == 8, "Stage 8 must still be running"
+        assert dispatched == [8], "No second dispatch must have happened"
