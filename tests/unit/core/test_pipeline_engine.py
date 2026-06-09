@@ -3927,3 +3927,124 @@ def test_stage6_pass_still_advances_normally_not_via_reviewer(tmp_path, monkeypa
     engine.on_task_complete("critic", "n", "PASS\nConfidence: 0.9")
 
     assert advanced == [True] and reviewer == [], "Stage 6 keeps normal advance"
+
+
+# ---------------------------------------------------------------------------
+# Issue #159 — Concurrency cap
+# ---------------------------------------------------------------------------
+
+class TestConcurrencyCap:
+    """Admission control: excess pipeline starts queue instead of dispatch."""
+
+    def _make_engine(self, tmp_path, pid, phase="producer"):
+        eng = pe.PipelineEngine(pid, str(tmp_path / pid), "topic")
+        eng.state["phase"] = phase
+        pe._active_pipelines[pid] = eng
+        return eng
+
+    def teardown_method(self, _):
+        pe._active_pipelines.clear()
+
+    def test_start_queues_when_at_cap(self, tmp_path, monkeypatch):
+        """A new start() must set phase=queued when executing == cap."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 1)
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_memory_state", lambda self: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_timing_state", lambda self: None)
+
+        # One pipeline already executing
+        self._make_engine(tmp_path, "existing", phase="producer")
+
+        # New pipeline — should queue, not dispatch
+        new_eng = pe.PipelineEngine("new-p", str(tmp_path / "new-p"), "topic")
+        pe._active_pipelines["new-p"] = new_eng
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **kw: None)
+        new_eng.start()
+
+        assert new_eng.state["phase"] == "queued", "Should be queued when at cap"
+        assert "new-p" not in dispatched, "Should NOT dispatch when queued"
+
+    def test_start_dispatches_when_below_cap(self, tmp_path, monkeypatch):
+        """start() dispatches immediately when executing < cap."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 2)
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_memory_state", lambda self: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_ensure_timing_state", lambda self: None)
+
+        # One executing, cap is 2 — room for one more
+        self._make_engine(tmp_path, "existing", phase="producer")
+
+        new_eng = pe.PipelineEngine("new-p", str(tmp_path / "new-p"), "topic")
+        pe._active_pipelines["new-p"] = new_eng
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **kw: None)
+        new_eng.start()
+
+        assert "new-p" in dispatched, "Should dispatch when below cap"
+        assert new_eng.state["phase"] != "queued"
+
+    def test_dequeue_next_pipeline_promotes_oldest(self, tmp_path, monkeypatch):
+        """dequeue_next_pipeline() picks the queued engine with the earliest
+        queue_requested_at and dispatches it."""
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+
+        older = self._make_engine(tmp_path, "older", phase="queued")
+        older.state["queue_requested_at"] = "1000.0"
+        newer = self._make_engine(tmp_path, "newer", phase="queued")
+        newer.state["queue_requested_at"] = "2000.0"
+
+        result = pe.dequeue_next_pipeline()
+
+        assert result is True
+        assert dispatched == ["older"], "Should promote the oldest queued pipeline"
+
+    def test_on_became_terminal_evicts_and_dequeues(self, tmp_path, monkeypatch):
+        """_on_became_terminal() evicts the finished engine and promotes the
+        next queued pipeline."""
+        dispatched = []
+        monkeypatch.setattr(pe, "_find_employee_for_stage", lambda sid, skill: "emp-1")
+        monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                            lambda self, *a: dispatched.append(self.project_id))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                            lambda self, *a, **kw: None)
+
+        done_eng = self._make_engine(tmp_path, "done-p", phase="done")
+        queued_eng = self._make_engine(tmp_path, "queued-p", phase="queued")
+        queued_eng.state["queue_requested_at"] = "1000.0"
+
+        done_eng._on_became_terminal()
+
+        assert "done-p" not in pe._active_pipelines, "Terminal engine must be evicted"
+        assert dispatched == ["queued-p"], "Queued pipeline must be promoted"
+
+    def test_producer_b_waiting_does_not_count_toward_cap(self, tmp_path, monkeypatch):
+        """producer_b_waiting is excluded from the executing count so a
+        long-running remote experiment does not permanently block new starts."""
+        monkeypatch.setattr(pe, "MAX_CONCURRENT_PIPELINE_RUNS", 1)
+        # One pipeline in producer_b_waiting — should NOT count
+        self._make_engine(tmp_path, "waiting-p", phase="producer_b_waiting")
+
+        count = pe._count_executing()
+        assert count == 0, "producer_b_waiting must not count toward the cap"
