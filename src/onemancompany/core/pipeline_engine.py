@@ -53,6 +53,20 @@ MAX_RETRIES = 3
 # Per-target so a code-fix loop and a redesign loop don't share a budget.
 MAX_RESULT_LOOPS = 2
 
+# Concurrency cap (#159): max number of pipelines that may be actively
+# dispatching LLM work at the same time. Excess starts are queued
+# (phase="queued") and dequeued FIFO when a slot frees. Override with
+# OMC_MAX_CONCURRENT_RUNS env var. producer_b_waiting does NOT count
+# toward the cap — the remote infra job is running without using a local
+# LLM slot.
+import os as _os
+MAX_CONCURRENT_PIPELINE_RUNS: int = int(_os.getenv("OMC_MAX_CONCURRENT_RUNS", "2"))
+
+# Phases that consume a local LLM slot and therefore count toward the cap.
+_EXECUTING_PHASES = frozenset({
+    "producer", "producer_b", "producer_b_finalize", "critic", "gate", "paper_revision",
+})
+
 # Canonical default employee per stage, sourced from company/hire_list.json.
 # When multiple hired employees share the same skill, the one originating
 # from the canonical talent_id wins. Falls back to skill-based lookup if
@@ -436,6 +450,40 @@ def get_or_load_pipeline(project_id: str, project_dir: str) -> "PipelineEngine |
     return engine
 
 
+def _count_executing() -> int:
+    """Count pipelines in _active_pipelines that hold a local LLM slot."""
+    return sum(
+        1 for eng in _active_pipelines.values()
+        if eng.state.get("phase") in _EXECUTING_PHASES
+    )
+
+
+def dequeue_next_pipeline() -> bool:
+    """Promote the oldest queued pipeline to executing. Returns True if one
+    was found. Called whenever a pipeline becomes terminal so the next
+    queued run can start immediately without waiting for the next poll.
+    """
+    queued = [
+        eng for eng in _active_pipelines.values()
+        if eng.state.get("phase") == "queued"
+    ]
+    if not queued:
+        return False
+    # FIFO by queue_requested_at timestamp; fall back to project_id for stability.
+    next_eng = min(
+        queued,
+        key=lambda e: (e.state.get("queue_requested_at") or "", e.project_id),
+    )
+    logger.info(
+        "[PIPELINE] Dequeuing {} (was queued at {})",
+        next_eng.project_id, next_eng.state.get("queue_requested_at", "?"),
+    )
+    next_eng.state["phase"] = "producer"
+    next_eng._save()
+    next_eng._dispatch_producer()
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Pipeline Engine
 # ---------------------------------------------------------------------------
@@ -758,6 +806,25 @@ class PipelineEngine:
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("[PIPELINE] project_repo init failed for {}: {}", self.project_dir, exc)
         logger.info("[PIPELINE] Starting from stage {} to stage {}", self.state["current_stage"], self.state["end_stage"])
+        # Admission control (#159): if we are already at the concurrency cap,
+        # park this run as "queued" instead of dispatching. It will be promoted
+        # by dequeue_next_pipeline() when a running pipeline becomes terminal.
+        # Exclude self from the count — our own phase is already "producer" at
+        # this point but we haven't dispatched yet, so we're not truly executing.
+        executing = sum(
+            1 for pid, eng in _active_pipelines.items()
+            if pid != self.project_id and eng.state.get("phase") in _EXECUTING_PHASES
+        )
+        if executing >= MAX_CONCURRENT_PIPELINE_RUNS:
+            import time as _time
+            self.state["phase"] = "queued"
+            self.state["queue_requested_at"] = str(_time.time())
+            self._save()
+            logger.info(
+                "[PIPELINE] Queued {} (cap={}, executing={})",
+                self.project_id, MAX_CONCURRENT_PIPELINE_RUNS, executing,
+            )
+            return
         self._dispatch_producer()
 
     def queue_pending_feedback(self, text: str) -> None:
@@ -987,6 +1054,7 @@ class PipelineEngine:
             logger.error("[PIPELINE] No employee with skill '{}' for stage {}", stage["skill"], stage["id"])
             self.state["phase"] = "failed"
             self._save()
+            self._on_became_terminal()
             return
 
         context = self._build_context()
@@ -1292,6 +1360,7 @@ class PipelineEngine:
             logger.error("[PIPELINE] No experiment_runner employee for Stage 6b")
             self.state["phase"] = "failed"
             self._save()
+            self._on_became_terminal()
             return
 
         context = self._build_context()
@@ -2979,6 +3048,7 @@ class PipelineEngine:
             logger.error("[PIPELINE] No experiment_runner employee for Stage 6b finalize")
             self.state["phase"] = "failed"
             self._save()
+            self._on_became_terminal()
             return
 
         pending = self.state.get("pending_run_ids") or []
@@ -3382,6 +3452,14 @@ class PipelineEngine:
         except Exception as exc:  # noqa: BLE001 — cancellation must never raise
             logger.warning("[PIPELINE] cancel(): failed-event emit raised: {}", exc)
 
+    def _on_became_terminal(self) -> None:
+        """Evict self from the in-memory cache and promote the next queued
+        pipeline (#159). Called from every terminal transition so slots free
+        promptly without waiting for a periodic poll.
+        """
+        _active_pipelines.pop(self.project_id, None)
+        dequeue_next_pipeline()
+
     def _emit_pipeline_failed(self, stage_id: int, reason: str):
         """Mirror of ``_emit_pipeline_complete`` for the failed terminal state.
 
@@ -3403,6 +3481,7 @@ class PipelineEngine:
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping pipeline failed event; no running event loop: {}", exc)
+        self._on_became_terminal()
 
     def _emit_pipeline_complete(self):
         import asyncio
@@ -3422,6 +3501,7 @@ class PipelineEngine:
             loop.create_task(self._emit_async(payload))
         except RuntimeError as exc:
             logger.debug("Skipping pipeline complete event; no running event loop: {}", exc)
+        self._on_became_terminal()
 
     def _mark_ceo_root_finished(self) -> None:
         """On pipeline completion, walk the CEO root through legal status
