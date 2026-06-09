@@ -14,16 +14,17 @@ from onemancompany import main as main_mod
 
 
 # ---------------------------------------------------------------------------
-# NoCacheStaticMiddleware
+# StaticCacheMiddleware
 # ---------------------------------------------------------------------------
 
 
-class TestNoCacheStaticMiddleware:
-    @pytest.mark.asyncio
-    async def test_js_files_get_no_cache_headers(self):
-        middleware = main_mod.NoCacheStaticMiddleware(app=MagicMock())
+class TestStaticCacheMiddleware:
+    @staticmethod
+    async def _dispatch(path: str) -> dict:
+        """Run the middleware against a given request path; return resp headers."""
+        middleware = main_mod.StaticCacheMiddleware(app=MagicMock())
         request = MagicMock()
-        request.url.path = "/app.js"
+        request.url.path = path
 
         response = MagicMock()
         response.headers = {}
@@ -32,67 +33,42 @@ class TestNoCacheStaticMiddleware:
             return response
 
         result = await middleware.dispatch(request, call_next)
-        assert result.headers["Cache-Control"] == "no-cache, no-store, must-revalidate"
+        return result.headers
 
     @pytest.mark.asyncio
-    async def test_css_files_get_no_cache_headers(self):
-        middleware = main_mod.NoCacheStaticMiddleware(app=MagicMock())
-        request = MagicMock()
-        request.url.path = "/style.css"
-
-        response = MagicMock()
-        response.headers = {}
-
-        async def call_next(req):
-            return response
-
-        result = await middleware.dispatch(request, call_next)
-        assert "Cache-Control" in result.headers
+    async def test_js_files_get_revalidate_not_no_store(self):
+        # App modules use no-cache (revalidate via ETag → 304), NOT no-store,
+        # so unchanged files are not re-downloaded on every load.
+        headers = await self._dispatch("/src/main.js")
+        assert headers["Cache-Control"] == "no-cache"
+        assert "no-store" not in headers["Cache-Control"]
 
     @pytest.mark.asyncio
-    async def test_html_files_get_no_cache_headers(self):
-        middleware = main_mod.NoCacheStaticMiddleware(app=MagicMock())
-        request = MagicMock()
-        request.url.path = "/index.html"
-
-        response = MagicMock()
-        response.headers = {}
-
-        async def call_next(req):
-            return response
-
-        result = await middleware.dispatch(request, call_next)
-        assert "Cache-Control" in result.headers
+    async def test_css_files_get_revalidate(self):
+        headers = await self._dispatch("/style.css")
+        assert headers["Cache-Control"] == "no-cache"
 
     @pytest.mark.asyncio
-    async def test_root_path_gets_no_cache_headers(self):
-        middleware = main_mod.NoCacheStaticMiddleware(app=MagicMock())
-        request = MagicMock()
-        request.url.path = "/"
+    async def test_html_files_get_revalidate(self):
+        headers = await self._dispatch("/index.html")
+        assert headers["Cache-Control"] == "no-cache"
 
-        response = MagicMock()
-        response.headers = {}
+    @pytest.mark.asyncio
+    async def test_root_path_gets_revalidate(self):
+        headers = await self._dispatch("/")
+        assert headers["Cache-Control"] == "no-cache"
 
-        async def call_next(req):
-            return response
-
-        result = await middleware.dispatch(request, call_next)
-        assert "Cache-Control" in result.headers
+    @pytest.mark.asyncio
+    async def test_vendor_assets_get_immutable_long_cache(self):
+        # Immutable vendored libs (filename never changes) cache for a year so
+        # the browser never re-fetches the 280KB d3 bundle.
+        headers = await self._dispatch("/vendor/d3.v7.min.js")
+        assert headers["Cache-Control"] == "public, max-age=31536000, immutable"
 
     @pytest.mark.asyncio
     async def test_api_paths_no_cache_header(self):
-        middleware = main_mod.NoCacheStaticMiddleware(app=MagicMock())
-        request = MagicMock()
-        request.url.path = "/api/employees"
-
-        response = MagicMock()
-        response.headers = {}
-
-        async def call_next(req):
-            return response
-
-        result = await middleware.dispatch(request, call_next)
-        assert "Cache-Control" not in result.headers
+        headers = await self._dispatch("/api/employees")
+        assert "Cache-Control" not in headers
 
 
 # ---------------------------------------------------------------------------

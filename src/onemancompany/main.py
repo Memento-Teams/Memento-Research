@@ -12,6 +12,7 @@ import uvicorn
 from dotenv import load_dotenv
 from loguru import logger
 from fastapi import FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -72,13 +73,28 @@ from onemancompany.api.routes import router
 from onemancompany.api.websocket import ws_manager
 
 
-class NoCacheStaticMiddleware(BaseHTTPMiddleware):
-    """Disable browser caching for frontend static files during development."""
+class StaticCacheMiddleware(BaseHTTPMiddleware):
+    """Cache policy for frontend static assets.
+
+    Immutable vendored libraries (``/vendor/*`` — e.g. ``d3.v7.min.js``, whose
+    filename never changes) get a year-long immutable cache so the browser
+    never re-fetches them.  Everything else (``index.html`` and the app
+    modules) uses ``no-cache``: the browser keeps the file but revalidates via
+    the ETag/Last-Modified that StaticFiles emits, so an unchanged file returns
+    304 (no body) and an edited file is picked up immediately.
+
+    This replaces a previous blanket ``no-store``, which disabled the disk
+    cache and 304 revalidation entirely and forced a full re-download of the
+    whole ~500KB frontend on every page load/refresh.
+    """
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
-        if request.url.path.endswith((".js", ".css", ".html")) or request.url.path == "/":
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        path = request.url.path
+        if path.startswith("/vendor/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.endswith((".js", ".css", ".html")) or path == "/":
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 FRONTEND_DIR = Path(__file__).parent.parent.parent / FRONTEND_DIR_NAME
@@ -847,7 +863,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="One Man Company", lifespan=lifespan)
-app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(StaticCacheMiddleware)
+# Compress text responses (HTML/JS/CSS/JSON) on the fly. Added after
+# StaticCacheMiddleware so it is the outermost middleware and compresses the
+# final response body; minimum_size skips tiny payloads where the gzip
+# overhead isn't worth it. WebSocket frames pass through untouched.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.include_router(router)
 # Debug-access layer — full per-run artifact + telemetry exposure for analysis.
 # Additive; disable with OMC_DEBUG_ACCESS=0. Must precede the static catch-all
