@@ -30,7 +30,8 @@ from onemancompany.core.research_memory import ResearchMemoryStore
 # grounds Stage 3 over the arxiv corpus (which subsumes the literature survey),
 # and the raw keyword topic feeds Stage 3 directly (no separate refinement). The
 # remaining stage ids are kept as 3..9 so all stage-specific handling keyed on
-# ``stage["id"] == 4/6/8`` stays valid; lookups are by id, not list position.
+# the stage-specific handling for ids 4 / 6 / 8 stays valid; lookups are by id,
+# not list position.
 STAGES = [
     {"id": 3, "skill": "idea_generator",        "name": "Idea Generation"},
     {"id": 4, "skill": "methodology_designer",  "name": "Methodology Design"},
@@ -57,8 +58,8 @@ MAX_RESULT_LOOPS = 2
 # from the canonical talent_id wins. Falls back to skill-based lookup if
 # the canonical talent is not on the roster.
 STAGE_TALENT_DEFAULTS = {
-    1: "topic-refiner",
-    2: "literature-surveyor",
+    # Stages 1 (topic-refiner) + 2 (literature-surveyor) removed — aigraph grounds
+    # Stage 3 over the arxiv corpus and the keyword feeds it directly.
     3: "idea-generator",
     4: "methodology-designer",
     5: "experiment-designer",
@@ -1187,16 +1188,105 @@ class PipelineEngine:
             emp_name = configs[employee_id].name
         self._emit_stage_event("stage_start", stage["id"], employee_name=emp_name, employee_id=employee_id)
 
+    def _stage6_infra_paths(self):
+        """Locate the experiment-infra skill's scripts dir + config (#156).
+
+        Env-first (``EXPERIMENT_INFRA_SCRIPTS`` / ``STAGE6_INFRA_CONFIG``), else a
+        best-effort glob under the data root. Returns ``(scripts_dict, config_path)``;
+        ``scripts`` is {} if not found (the caller then degrades to the agent runner).
+        Nothing experiment-specific is baked in — same philosophy as #152.
+        """
+        import os as _os
+        from onemancompany.agents import stage6_infra as s6
+        scripts_dir = _os.environ.get("EXPERIMENT_INFRA_SCRIPTS")
+        if not scripts_dir:
+            try:
+                p = Path(self.project_dir)
+                for anc in [p, *p.parents]:
+                    hits = list(anc.glob("**/skills/experiment-infra/scripts"))
+                    if hits:
+                        scripts_dir = str(hits[0])
+                        break
+                    if (anc / "company").is_dir():
+                        break
+            except Exception:  # noqa: BLE001
+                scripts_dir = None
+        scripts = s6.find_infra_scripts(scripts_dir)
+        config = _os.environ.get("STAGE6_INFRA_CONFIG", "")
+        if not config and scripts_dir:
+            cand = Path(scripts_dir).parent / "assets" / "base.conf.json"
+            if cand.exists():
+                config = str(cand)
+        return scripts, config
+
+    def _try_deterministic_stage6_submit(self):
+        """#156: the engine submits the Stage-6 experiment itself, parameterised
+        from the 6a receipt + the experiment-infra skill's OWN scripts (not
+        hardcoded). Returns ``{"run_ids": [...]}`` on success, else None to fall
+        back to the agent runner. Never raises."""
+        try:
+            from onemancompany.agents import stage6_infra as s6
+            receipt_path = Path(self.project_dir) / "stage6_implementation_receipt.md"
+            if not receipt_path.exists():
+                return None
+            receipt = s6.parse_receipt(
+                receipt_path.read_text(encoding="utf-8", errors="replace"),
+                project_id=self.project_id, iteration=self._iteration_id() or "iter_001",
+            )
+            if not receipt.ok:
+                logger.debug("[PIPELINE] #156: no runnable entrypoint in receipt; using agent runner")
+                return None
+            scripts, config = self._stage6_infra_paths()
+            if not (scripts and config):
+                logger.debug("[PIPELINE] #156: experiment-infra scripts/config not found; using agent runner")
+                return None
+            res = s6.submit(receipt, scripts, config, kind="smoke")
+            if not res.ok:
+                logger.warning(
+                    "[PIPELINE] #156: deterministic Stage-6 submit unavailable ({}); using agent runner",
+                    res.error,
+                )
+                return None
+            logger.info("[PIPELINE] #156: Stage-6 smoke submitted by engine — run_id={}", res.run_id)
+            return {"run_ids": [res.run_id]}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[PIPELINE] #156: deterministic submit errored ({}); using agent runner", exc)
+            return None
+
     def _dispatch_producer_b(self, feedback: str = ""):
         """Dispatch Stage 6b — the experiment runner. Runs after Stage 6a
         (code_implementer) produces stage6_implementation_receipt.md.
-        Only called for stage 6; mirrors _dispatch_producer but targets
-        the runner skill and uses the experiment-execution-runbook.
+
+        #156: the engine first tries a DETERMINISTIC submit (parameterised from
+        the 6a receipt + the experiment-infra skill scripts) and parks in
+        ``producer_b_waiting`` so the existing run_tracker → finalize machinery
+        handles polling + the report from a REAL run. Only if infra is
+        unavailable does it fall back to the (unreliable) agent runner.
         """
         stage = self._stage_def()
         if stage["id"] != 6:
             logger.error("[PIPELINE] _dispatch_producer_b called for non-Stage-6 stage {}", stage["id"])
             return
+
+        # --- #156: deterministic engine-driven submit (preferred) ---
+        sub = self._try_deterministic_stage6_submit()
+        if sub and sub.get("run_ids"):
+            from datetime import datetime, timezone
+            self.state["phase"] = "producer_b_waiting"
+            self.state["pending_run_ids"] = sub["run_ids"]
+            self.state["pending_waiting_started_at"] = datetime.now(timezone.utc).isoformat()
+            runs = self.state.setdefault("stage_6_runs", {})
+            for rid in sub["run_ids"]:
+                runs.setdefault(rid, {"status": "running"})
+            self._save()
+            logger.info(
+                "[PIPELINE] Stage 6b submitted deterministically (#156): {} — parked in "
+                "producer_b_waiting; run_tracker will poll to terminal.", sub["run_ids"],
+            )
+            self._emit_stage_event("stage_waiting", stage["id"])
+            return
+
+        # --- fallback: the agent runner (unchanged) ---
         employee_id = _find_stage_6b_employee()
         if not employee_id:
             logger.error("[PIPELINE] No experiment_runner employee for Stage 6b")
