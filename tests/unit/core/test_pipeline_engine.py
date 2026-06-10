@@ -1651,6 +1651,28 @@ def test_dispatch_critic_stage5_injects_experiment_quality_critic_skill(tmp_path
     )
 
 
+def test_dispatch_critic_stage5_enforces_feasibility_first_gate(tmp_path, monkeypatch):
+    """Stage 5 critic must reject designs that skip the feasibility tier or
+    omit the figure manifest — the gate that makes the producer-side
+    feasibility-first requirement (PR #169) actually binding."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "critic-1" if skill == pe.CRITIC_SKILL else None)
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 5
+    engine._dispatch_critic("draft experiment plan")
+
+    desc = dispatched[0][1]
+    low = desc.lower()
+    assert "feasibility" in low, "Stage 5 critic must check for the feasibility tier"
+    assert "figure manifest" in low, "Stage 5 critic must check for the figure manifest"
+    assert "budget" in low, "Stage 5 critic must check the design is budget-bound"
+    assert "reject" in low, "the checks must be REJECT-enforced, not advisory"
+
+
 def test_dispatch_producer_stage5_trigger_not_in_stage4_or_other(tmp_path, monkeypatch):
     """Triggers should be stage-id-scoped — Stage 5 trigger must not appear
     in Stage 4 producer (which has its own methodology trigger) or Stage 3."""
