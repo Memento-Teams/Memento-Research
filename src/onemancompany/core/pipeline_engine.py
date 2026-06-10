@@ -775,7 +775,7 @@ class PipelineEngine:
         )
         return f"iter_{digest}"
 
-    def start(self, start_stage: int = FIRST_STAGE_ID, end_stage: int = LAST_STAGE_ID, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None):
+    def start(self, start_stage: int = FIRST_STAGE_ID, end_stage: int = LAST_STAGE_ID, prior_context: str = "", stage_assignments: dict = None, auto_approve: bool = False, paper_config: dict = None, staged: bool = False):
         """Begin the pipeline from the given stage.
 
         ``auto_approve`` (headless/unattended mode): when True, every CEO gate
@@ -786,6 +786,13 @@ class PipelineEngine:
         "venue": "iclr2026"|"neurips2026"}. Read only when dispatching Stage 8 —
         earlier stages never see it. Persisted into pipeline_state.yaml so a
         revert to Stage 8 reuses the same target format.
+
+        ``staged`` (#feasibility-first, C): when True the pipeline runs a cheap
+        Tier-1 feasibility study FIRST (research_phase="feasibility"); a positive
+        go/no-go signal at the Stage 7 result-review promotes it to the full
+        study (research_phase flips to "full", pipeline returns to Stage 5 to
+        design the rigorous experiment). Default False → research_phase="full"
+        and behaviour is unchanged (zero regression).
         """
         self.state["current_stage"] = max(FIRST_STAGE_ID, min(start_stage, LAST_STAGE_ID))
         self.state["start_stage"] = self.state["current_stage"]
@@ -794,6 +801,7 @@ class PipelineEngine:
         self.state["stage_assignments"] = stage_assignments or {}
         self.state["auto_approve"] = bool(auto_approve)
         self.state["paper_config"] = paper_config or {}
+        self.state["research_phase"] = "feasibility" if staged else "full"
         self.state["phase"] = "producer"
         self.state["retries"] = 0
         self._save()
@@ -2011,6 +2019,14 @@ class PipelineEngine:
                     "proceeding to paper with documented limitation. Reason: {}",
                     target, MAX_RESULT_LOOPS, reason[:200],
                 )
+            # Feasibility-first promotion (C): if this was the cheap Tier-1
+            # feasibility study and the result-reviewer says the signal is
+            # sound (ADVANCE), do NOT go to the paper — promote to the full
+            # study. Flip research_phase, return to Stage 5 to design the
+            # rigorous experiment with the feasibility results as context.
+            if self.state.get("research_phase") == "feasibility":
+                self._promote_to_full_study(result)
+                return
             # ADVANCE, or revert-budget exhausted → proceed to Stage 8 as if
             # Stage 7 passed normally (the analysis is already stored).
             stage7_result = (self.state.get("stage_results") or {}).get("7", result)
@@ -2354,6 +2370,42 @@ class PipelineEngine:
 
         self.state["active_node_id"] = None
         self.state["active_employee_id"] = None
+
+    def _promote_to_full_study(self, feasibility_result: str) -> None:
+        """Feasibility-first promotion (C). The Tier-1 feasibility study
+        produced a positive go/no-go signal, so promote to the full study:
+        flip research_phase to "full", return to Stage 5 to design the
+        rigorous experiment (baselines, ablations, full benchmark), and carry
+        the feasibility findings forward as prior context. Stage 6/7 then
+        re-run on the full design before the pipeline reaches the paper.
+        """
+        self.state["research_phase"] = "full"
+        self.state["feasibility_result"] = feasibility_result
+        # Carry the feasibility findings into the full-study design.
+        prior = self.state.get("prior_context", "") or ""
+        self.state["prior_context"] = (
+            prior + "\n\n## FEASIBILITY RESULTS (Tier 1 — go signal confirmed)\n"
+            "The cheap feasibility study below showed signal; you are now "
+            "designing the FULL rigorous study (field-standard benchmark, "
+            "baseline layers, one ablation per contribution, seeds >= 3, "
+            "figure manifest). Use these findings to size the full study "
+            "(effect size -> power -> sample size) and to choose baselines:\n\n"
+            + (feasibility_result or "")
+        ).strip()
+        # Reset the per-target revert budget for the fresh full run.
+        self.state["result_loops"] = {}
+        self.state["current_stage"] = 5
+        self.state["retries"] = 0
+        self.state["critic_result"] = None
+        self.state["phase"] = "producer"
+        self._save()
+        logger.info(
+            "[PIPELINE] Feasibility signal confirmed (project={}) — promoting "
+            "to FULL study, returning to Stage 5 for rigorous design",
+            self.project_id,
+        )
+        self._emit_stage_event("stage_started", 5)
+        self._dispatch_producer()
 
     # ------------------------------------------------------------------
     # Public API — revert to a previous stage with new instructions

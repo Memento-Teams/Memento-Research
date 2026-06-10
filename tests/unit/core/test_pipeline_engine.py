@@ -4097,3 +4097,96 @@ class TestConcurrencyCap:
 
         count = pe._count_executing()
         assert count == 0, "producer_b_waiting must not count toward the cap"
+
+
+# ---------------------------------------------------------------------------
+# C: feasibility -> full execution split (research_phase state machine)
+# ---------------------------------------------------------------------------
+
+class TestFeasibilityPhaseSplit:
+    """staged=True runs a cheap feasibility study first; a positive go/no-go
+    signal at Stage 7 promotes to the full study (research_phase flips,
+    pipeline returns to Stage 5) instead of going straight to the paper.
+    Default (staged=False) is unchanged — zero regression."""
+
+    def teardown_method(self, _):
+        pe._active_pipelines.clear()
+
+    def test_default_start_is_full_phase(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **k: None)
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.start()
+        assert eng.state.get("research_phase", "full") == "full", "default must be full phase"
+
+    def test_staged_start_sets_feasibility_phase(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer", lambda self, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_iteration_id", lambda self: "iter_001")
+        import onemancompany.core.project_repo as _pr
+        monkeypatch.setattr(_pr, "ensure_initialized", lambda *a, **k: None)
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.start(staged=True)
+        assert eng.state["research_phase"] == "feasibility"
+
+    def test_feasibility_advance_promotes_to_full_not_paper(self, tmp_path, monkeypatch):
+        """ADVANCE at Stage 7 while in feasibility phase must promote to the
+        full study (research_phase=full, current_stage=5, re-dispatch) and NOT
+        call _on_critic_pass (which would go to Stage 8)."""
+        promoted = []
+        paper = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, **k: promoted.append((self.current_stage, self.state.get("research_phase"))))
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass",
+                            lambda self, *a, **k: paper.append(True))
+        monkeypatch.setattr(pe.PipelineEngine, "_parse_result_route",
+                            lambda self, r: ("advance", None, ""))
+
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.state["current_stage"] = 7
+        eng.state["phase"] = "result_review"
+        eng.state["research_phase"] = "feasibility"
+        eng.state["stage_results"] = {"7": "signal found, effect large"}
+
+        eng.on_task_complete("rr", "n", "ADVANCE")
+
+        assert eng.state["research_phase"] == "full", "must flip to full study"
+        assert eng.current_stage == 5, "must return to Stage 5 to design the full study"
+        assert promoted and promoted[-1] == (5, "full"), "must re-dispatch Stage 5 in full phase"
+        assert paper == [], "must NOT proceed to Stage 8 on the feasibility run"
+
+    def test_full_advance_proceeds_to_paper(self, tmp_path, monkeypatch):
+        """ADVANCE in full phase proceeds to Stage 8 normally (no promotion)."""
+        paper = []
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass",
+                            lambda self, *a, **k: paper.append(True))
+        monkeypatch.setattr(pe.PipelineEngine, "_parse_result_route",
+                            lambda self, r: ("advance", None, ""))
+
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.state["current_stage"] = 7
+        eng.state["phase"] = "result_review"
+        eng.state["research_phase"] = "full"
+        eng.state["stage_results"] = {"7": "confirmatory result"}
+
+        eng.on_task_complete("rr", "n", "ADVANCE")
+
+        assert paper == [True], "full phase ADVANCE must proceed to Stage 8"
+
+    def test_non_staged_advance_proceeds_to_paper(self, tmp_path, monkeypatch):
+        """No research_phase set (legacy / non-staged) behaves as full."""
+        paper = []
+        monkeypatch.setattr(pe.PipelineEngine, "_on_critic_pass",
+                            lambda self, *a, **k: paper.append(True))
+        monkeypatch.setattr(pe.PipelineEngine, "_parse_result_route",
+                            lambda self, r: ("advance", None, ""))
+
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.state["current_stage"] = 7
+        eng.state["phase"] = "result_review"
+        eng.state["stage_results"] = {"7": "result"}
+
+        eng.on_task_complete("rr", "n", "ADVANCE")
+
+        assert paper == [True], "non-staged ADVANCE must proceed to Stage 8"
