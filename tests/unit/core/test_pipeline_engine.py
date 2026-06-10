@@ -1022,16 +1022,22 @@ def test_ceo_approval_revision_advance_and_complete(tmp_path, monkeypatch):
     engine.state["end_stage"] = 5
     engine.state["retries"] = 2
     engine.state["critic_result"] = "old"
+    # on_ceo_approve only acts at a gate (#157). In a live run the critic
+    # returns the engine to "gate" between each CEO action; the mock doesn't,
+    # so re-enter the gate before each approve to mirror that.
+    engine.state["phase"] = "gate"
 
     engine.on_ceo_approve("please REVISE the method")
     assert engine.state["retries"] == 0
     assert producer_feedback == [(4, "please REVISE the method")]
 
+    engine.state["phase"] = "gate"
     engine.on_ceo_approve()
     assert engine.current_stage == 5
     assert engine.state["critic_result"] is None
     assert producer_feedback[-1] == (5, "")
 
+    engine.state["phase"] = "gate"
     engine.on_ceo_approve()
     assert engine.phase == "done"
     assert completed == ["p1"]
@@ -1043,6 +1049,7 @@ def test_ceo_revision_updates_research_memory_feedback(tmp_path, monkeypatch):
 
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["stage_results"] = {"3": "producer output"}
+    engine.state["phase"] = "gate"  # on_ceo_approve only acts at a gate (#157)
     memory_id = engine._record_stage_memory(
         pe.STAGES[0],
         producer_result="producer output",
