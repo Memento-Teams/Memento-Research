@@ -962,6 +962,19 @@ async def resume_pipeline_breakpoint(body: dict, request: Request):
         raise HTTPException(status_code=404, detail="No active pipeline found for this project")
 
     logger.info("[PIPELINE_RESUME] stage={} feedback={}", stage, feedback[:100] if feedback else "(none)")
+
+    # Guard (#157): reject stale resumes before they reach the engine so the
+    # caller gets a clear 409 instead of a silent no-op from on_ceo_approve.
+    if engine.phase != "gate":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Pipeline is not at a gate (phase={engine.phase!r}, "
+                f"stage={engine.current_stage}). "
+                "Resume is only valid when the pipeline is waiting for CEO approval."
+            ),
+        )
+
     engine.on_ceo_approve(feedback=feedback)
 
     return {"status": "resumed", "stage": stage, "pipeline_stage": engine.current_stage, "phase": engine.phase}
