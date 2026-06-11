@@ -275,6 +275,19 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .sc-section-content th{background:var(--bg);font-weight:600}
 .sc-section-content hr{border:none;border-top:1px solid var(--border-light);margin:12px 0}
 
+/* ── Multi-Agent Debate transcript (Stage 4/5) — append-only, persistent ── */
+.sc-debate{background:var(--green-subtle);border-left:3px solid var(--green)}
+.sc-debate-summary{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:var(--green);cursor:pointer;user-select:none}
+.sc-debate-body{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.sc-debate-round{font-family:var(--mono);font-size:.74rem;text-transform:uppercase;letter-spacing:.1em;font-weight:700;color:var(--text3);text-align:center;padding:4px 0;border-top:1px dashed var(--border-light);border-bottom:1px dashed var(--border-light);margin:4px 0}
+.sc-debate-turn{background:var(--white,#fff);border:1px solid var(--border-light);border-radius:var(--r);padding:8px 10px}
+.sc-debate-speaker{font-family:var(--mono);font-size:.76rem;font-weight:700;color:var(--green);margin-bottom:4px;line-height:1.2}
+.sc-debate-text{font-size:.8rem;line-height:1.65;color:var(--text2);word-break:break-word}
+.sc-debate-text p{margin:0 0 6px}
+.sc-debate-text p:last-child{margin-bottom:0}
+.sc-debate-verdict{border-color:var(--gold);background:var(--gold-subtle,rgba(200,160,60,.08))}
+.sc-debate-verdict .sc-debate-speaker{color:var(--gold)}
+
 /* ── Literature-conflict-graph (Stage 3 talent) — hypothesis cards + ID hover ── */
 .lcg-advisor{padding:10px 12px;background:var(--green-subtle);border-left:3px solid var(--green);border-radius:var(--r);margin:0 0 12px}
 .lcg-advisor-label{font-family:var(--mono);font-size:.66rem;color:var(--green);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
@@ -1522,6 +1535,49 @@ function updateCritic(cardId, content) {
   if (el) el.innerHTML = _renderMd(_clean(content));
   _scroll();
 }
+
+// Append a single multi-agent-debate utterance to the stage card. Unlike
+// updateProducer (one slot, overwrites itself), this is APPEND-ONLY: every
+// round header, every participant's speech, and the judge's verdict stay on
+// screen so the user can read the whole debate at their own pace.
+//   role 'system' → round header / consensus divider
+//   role 'judge'  → final verdict block
+//   else          → a participant's turn
+function appendDebateMessage(cardId, { speaker, role, message, title }) {
+  const card = document.getElementById('sc-' + cardId);
+  if (!card || !message || !message.trim()) return;
+
+  // One persistent debate panel per card, created on first utterance.
+  let body = document.getElementById('sc-debate-body-' + cardId);
+  if (!body) {
+    const sec = document.createElement('details');
+    sec.className = 'sc-section sc-debate';
+    sec.id = 'sc-debate-' + cardId;
+    sec.open = true;
+    sec.innerHTML = `<summary class="sc-debate-summary">${_clean(title || 'Multi-Agent Debate')}</summary>`
+      + `<div class="sc-debate-body" id="sc-debate-body-${cardId}"></div>`;
+    card.querySelector('.sc-body').appendChild(sec);
+    body = document.getElementById('sc-debate-body-' + cardId);
+  }
+
+  const entry = document.createElement('div');
+  const cleanMsg = _clean(message);
+  if (role === 'system') {
+    entry.className = 'sc-debate-round';
+    entry.textContent = cleanMsg.replace(/[─—-]{2,}/g, '').trim() || cleanMsg;
+  } else if (role === 'judge') {
+    entry.className = 'sc-debate-turn sc-debate-verdict';
+    entry.innerHTML = `<div class="sc-debate-speaker">⚖️ ${_clean(speaker || 'Judge')}</div>`
+      + `<div class="sc-debate-text">${_renderMd(cleanMsg)}</div>`;
+  } else {
+    entry.className = 'sc-debate-turn';
+    entry.innerHTML = `<div class="sc-debate-speaker">${_clean(speaker || 'Participant')}</div>`
+      + `<div class="sc-debate-text">${_renderMd(cleanMsg)}</div>`;
+  }
+  body.appendChild(entry);
+  _scroll();
+}
+window.appendDebateMessage = appendDebateMessage;
 
 // Live activity line under the stage card head — shows a one-line
 // summary of what the agent is doing right now (latest tool call /

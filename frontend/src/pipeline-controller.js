@@ -15,6 +15,7 @@ export class PipelineController {
 
     adapter.on('stage_start', (e) => this.handleStageStart(e));
     adapter.on('meeting_message', (e) => this.handleMeetingMessage(e));
+    adapter.on('debate_message', (e) => this.handleDebateMessage(e));
     adapter.on('stage_complete', (e) => this.handleStageComplete(e));
     adapter.on('stage_reviewing', (e) => this.handleStageReviewing(e));
     adapter.on('stage_failed', (e) => this.handleStageFailed(e));
@@ -108,6 +109,39 @@ export class PipelineController {
     // guard evaluated to ``'undefined'`` and the call was skipped).
     if (typeof window !== 'undefined' && typeof window.setStageActivity === 'function') {
       window.setStageActivity(cardId, message);
+    }
+  }
+
+  // Append-only debate transcript. Unlike handleMeetingMessage (single
+  // producer slot that overwrites itself), every debate speech is appended
+  // and persists in the stage card, so the user can read each round's full
+  // exchange between all participants at their own pace.
+  handleDebateMessage({ speaker, role, message }) {
+    if (!message || !message.trim()) return;
+
+    const sid = this.currentStage;
+    if (!sid) {
+      postNotice(`<strong>${speaker || 'Debate'}</strong>: ${message}`, 'info');
+      return;
+    }
+
+    const cardId = this._ensureCard(sid);
+    const stageName = this._getStageName(sid);
+
+    // Reflect live debate state in the active-agent bar without touching the
+    // producer body (that belongs to the stage's own draft output).
+    const bar = document.getElementById('activeAgentBar');
+    const label = document.getElementById('activeAgentLabel');
+    if (bar && label) {
+      bar.style.display = 'flex';
+      bar.className = 'active-agent-bar';
+      label.textContent = role === 'judge'
+        ? `Stage ${sid}: ${stageName} — debate verdict`
+        : `Stage ${sid}: ${stageName} — debate: ${speaker || 'participant'}`;
+    }
+
+    if (typeof appendDebateMessage === 'function') {
+      appendDebateMessage(cardId, { speaker, role, message, title: `Debate on ${stageName}` });
     }
   }
 
