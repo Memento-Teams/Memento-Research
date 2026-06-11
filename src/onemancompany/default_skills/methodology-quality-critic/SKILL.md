@@ -24,7 +24,7 @@ framework. See D10 below.
 
 ## What You Are Grading
 
-CCF-A methodology sections are evaluated on these 10 dimensions. Use them as a
+CCF-A methodology sections are evaluated on these 12 dimensions. Use them as a
 literal checklist. Score each PASS or FAIL with a one-sentence rationale, then
 aggregate.
 
@@ -102,6 +102,39 @@ This is a **hard gate** — methodologies without a figure are rejected
 outright. The producer renders the figure via the
 `paper-framework-figure` skill (nano banana via OpenRouter).
 
+### D11 — Method Formalization (equations + pseudocode)
+A methodology that only describes *how it will be tested* but never
+*formalizes the method itself* is shallow. Grade the method's
+mathematical content:
+- ✅ The method/objective is stated in **real mathematics** — objective
+  or loss function, key quantities defined, and any derivation or
+  complexity claim — using LaTeX (`$...$` inline, `$$...$$` displayed).
+  A reader must be able to reimplement from the equations.
+- ✅ At least one **pseudocode / Algorithm block** for the core
+  procedure (Input / Output / numbered steps), so the method is
+  unambiguous.
+- ❌ Only decorative notation (e.g. `$\alpha = 0.05$`) with no objective
+  function, no derivation, no algorithm → FAIL. Run a0aee5044ce2's
+  methodology had ~zero real equations and zero pseudocode despite a
+  novel method (PA-OPD/EG-OPD) — exactly the gap this dimension closes.
+- ❌ A pure comparison study (no proposed method) is exempt from the
+  algorithm requirement but must still formalize the metrics/estimands
+  it compares.
+
+### D12 — Contribution & Novelty
+- ✅ An explicit statement of what is **NEW** versus prior work — why
+  this is a contribution, not a trivial recombination — grounded in the
+  Stage 2/3 claim IDs.
+- ✅ The novelty claim is specific (names the gap in prior work it
+  fills), not "to the best of our knowledge, we are the first to …"
+  boilerplate.
+- ❌ No contributions/novelty section, or a vague one that any paper in
+  the area could copy verbatim → FAIL.
+
+D11 and D12 are **methodological-depth gates**: a methodology with no
+equations, no pseudocode (for a method paper), or no novelty claim is
+shallow and rejected, the same class as a missing framework figure.
+
 ### D9 — Language & Style (academic prose quality)
 A CCF-A reviewer will downgrade a structurally complete methodology if the
 writing is sloppy. Grade the prose against academic standards.
@@ -159,6 +192,8 @@ Per-dimension scoring:
   D8  Citation of Debate     : PASS / FAIL — <one sentence>
   D9  Language & Style       : PASS / FAIL — <one sentence>
   D10 Framework Figure       : PASS / FAIL — <one sentence>
+  D11 Method Formalization   : PASS / FAIL — <one sentence>
+  D12 Contribution & Novelty : PASS / FAIL — <one sentence>
 
 If REJECT, list the specific section(s) the producer must rewrite, with
 example improvements drawn from the debate transcript where possible.
@@ -171,12 +206,15 @@ example improvements drawn from the debate transcript where possible.
 - **0.55–0.74** Several FAILs including D3/D4/D5 — methodology unfinished; REJECT.
 - **0.00–0.54** Structural failure (missing sections, no transcript, document not in English, hallucinated content). REJECT immediately.
 
-**Decision rule**: ALL of D1, D2, D3, D4, D5, D10 must PASS to issue PASS.
-D6/D7/D8/D9 failures alone are not auto-REJECT but should pull confidence
-below 0.85 — flag in reasoning so the producer fixes them before paper
-time. **Exception**: a D9 failure caused by the document being in a
+**Decision rule**: ALL of D1, D2, D3, D4, D5, D10, D11, D12 must PASS to
+issue PASS. D6/D7/D8/D9 failures alone are not auto-REJECT but should pull
+confidence below 0.85 — flag in reasoning so the producer fixes them before
+paper time. **Exception**: a D9 failure caused by the document being in a
 non-English language IS auto-REJECT — the writing-style sub-failures (mixed
-tense, switching terminology) are not.
+tense, switching terminology) are not. **D11 exemption**: a pure comparison
+study (no proposed method) is exempt from the pseudocode/Algorithm
+requirement but must still formalize its estimands/metrics; it is NOT exempt
+from D12 (it must still state what is novel about the comparison/finding).
 
 D10 (Framework Figure) is non-negotiable: every CCF-A methodology ships
 with a figure, no exceptions. If the producer hits D10 FAIL repeatedly,
