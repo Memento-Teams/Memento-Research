@@ -89,6 +89,28 @@ def test_is_transient_network_error_rejects_unrelated_errors():
     assert not base_mod._is_transient_network_error(ValueError("bad input"))
 
 
+def test_is_transient_network_error_classifies_openai_connection_error():
+    """The OpenAI SDK wraps connection drops in openai.APIConnectionError
+    (str == 'Connection error.') — NOT a raw httpx type. Live failure
+    f0e6cec47ea9: this bubbled past the L1 retry and consumed a Stage-6
+    retry, exhausting the budget on a transient blip. Must be transient."""
+    import openai
+    exc = openai.APIConnectionError(message="Connection error.",
+                                    request=httpx.Request("POST", "http://x"))
+    assert base_mod._is_transient_network_error(exc)
+
+
+def test_is_transient_network_error_classifies_connection_error_message():
+    """Even an opaque wrapper carrying 'Connection error.' must be transient."""
+    assert base_mod._is_transient_network_error(RuntimeError("Error: Connection error."))
+
+
+def test_is_transient_network_error_classifies_openai_timeout():
+    import openai
+    exc = openai.APITimeoutError(request=httpx.Request("POST", "http://x"))
+    assert base_mod._is_transient_network_error(exc)
+
+
 @pytest.mark.asyncio
 async def test_run_streamed_retries_on_transient_remote_protocol_error():
     """First astream_events attempt raises; second attempt succeeds."""
