@@ -2624,6 +2624,40 @@ def test_dispatch_producer_stage7_injects_result_analysis_runbook_trigger(tmp_pa
     )
 
 
+def test_dispatch_producer_stage7_requires_result_figures(tmp_path, monkeypatch):
+    """Stage 7 producer must be instructed to GENERATE result figures
+    (stage7_*.png) per the Stage 5 figure manifest via the result-figures
+    skill. Audit B1: all 5 historical papers embedded only the Stage-4
+    framework figure and ZERO result figures — because the critic checked
+    for figures (D11) and a result-figures skill exists, but the producer
+    was never told to render them. This wires the missing middle step."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: f"emp-{skill}" if skill else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 7
+    engine._dispatch_producer()
+
+    desc = dispatched[0][1]
+    low = desc.lower()
+    assert "result-figures" in low or "stage7_" in low, (
+        "Stage 7 dispatch must instruct generating result figures "
+        "(result-figures skill / stage7_*.png)"
+    )
+    assert "figure manifest" in low or "manifest" in low, (
+        "Stage 7 dispatch must tie figure generation to the Stage 5 figure manifest"
+    )
+    assert ".png" in low, (
+        "Stage 7 dispatch must require concrete PNG figure outputs"
+    )
+
+
 def test_dispatch_critic_stage7_injects_result_quality_critic(tmp_path, monkeypatch):
     """Stage 7 critic dispatch must instruct the reviewer to load the
     result-quality-critic runbook so HARKing is auto-REJECTED."""
