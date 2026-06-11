@@ -22,6 +22,13 @@ globalThis.getStageCard = () => {};
 globalThis.setCardStatus = () => {};
 globalThis.showPipelineBar = () => {};
 globalThis.postNotice = () => {};
+// Debate transcript renderers — record calls so we can assert that debate
+// messages are APPENDED (persistent) and never sent through updateProducer
+// (single-slot, overwrites itself).
+let appended = [];
+let producerWrites = [];
+globalThis.appendDebateMessage = (cardId, entry) => { appended.push({ cardId, ...entry }); };
+globalThis.updateProducer = (cardId, content) => { producerWrites.push({ cardId, content }); };
 
 const { PipelineController } = await import('./pipeline-controller.js');
 
@@ -80,6 +87,47 @@ test('cross-project Stage 1 (the reported symptom) is suppressed', () => {
   c.currentStage = 5;
   c.handleBreakpointHit({ stage: 1, project_id: 'projectB' });  // background run hits its stage-1 gate
   assert.equal(opened.length, 0, 'the exact #123 repro must not pop a Stage 1 dialog');
+});
+
+console.log('\nhandleDebateMessage append-only transcript');
+
+function debateController() {
+  appended = [];
+  producerWrites = [];
+  const c = new PipelineController(fakeAdapter);
+  c.currentStage = 4; // methodology design
+  c.stageCardIds[4] = 'stage4';
+  return c;
+}
+
+test('debate speech is appended to the transcript, never via updateProducer', () => {
+  const c = debateController();
+  c.handleDebateMessage({ speaker: 'Ada', role: 'debater', message: 'Batch the writes.' });
+  assert.equal(appended.length, 1, 'one appended debate entry expected');
+  assert.equal(appended[0].cardId, 'stage4');
+  assert.equal(appended[0].speaker, 'Ada');
+  assert.equal(appended[0].message, 'Batch the writes.');
+  assert.equal(appended[0].title, 'Debate on Methodology Design', 'panel title names the stage');
+  assert.equal(producerWrites.length, 0, 'debate must not overwrite the producer slot');
+});
+
+test('every speaker in a round is kept (no overwrite)', () => {
+  const c = debateController();
+  c.handleDebateMessage({ speaker: 'SYSTEM', role: 'system', message: '── Round 1 ──' });
+  c.handleDebateMessage({ speaker: 'Ada', role: 'debater', message: 'Position A.' });
+  c.handleDebateMessage({ speaker: 'Linus', role: 'debater', message: 'Position B.' });
+  c.handleDebateMessage({ speaker: 'SYSTEM', role: 'system', message: '── Round 2 ──' });
+  c.handleDebateMessage({ speaker: 'Ada', role: 'debater', message: 'Refined A.' });
+  assert.equal(appended.length, 5, 'all round headers + all speakers retained, nothing collapsed');
+  assert.deepEqual(appended.map(a => a.message), [
+    '── Round 1 ──', 'Position A.', 'Position B.', '── Round 2 ──', 'Refined A.',
+  ]);
+});
+
+test('blank debate messages are dropped', () => {
+  const c = debateController();
+  c.handleDebateMessage({ speaker: 'Ada', role: 'debater', message: '   ' });
+  assert.equal(appended.length, 0);
 });
 
 if (failures) { console.error(`\n${failures} test(s) failed`); process.exit(1); }

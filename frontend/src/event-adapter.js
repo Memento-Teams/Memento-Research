@@ -6,6 +6,7 @@ export class EventAdapter {
     this.handlers = {
       stage_start: [],
       meeting_message: [],
+      debate_message: [],
       gate_decision: [],
       stage_complete: [],
       stage_reviewing: [],
@@ -377,7 +378,25 @@ export class EventAdapter {
     const content = p.content || p.message || '';
     if (!content.trim()) return;
 
-    const speakerName = p.speaker_name || `Speaker ${p.speaker_id}`;
+    const speakerName = p.speaker_name || p.speaker || `Speaker ${p.speaker_id}`;
+
+    // Synchronous multi-agent debate (Stage 4/5 draft→debate→revise). Every
+    // round emits a header (role 'system') and one message per participant
+    // (role 'debater'), closing with the judge's verdict (role 'judge').
+    // These must NOT go through meeting_message → updateProducer, which is a
+    // single slot that overwrites itself: the user would only ever see the
+    // last speaker, flashing past. Route them to an append-only transcript
+    // channel that persists every round and every speaker, keeping the
+    // backend-assigned role so headers / speeches / verdict render distinctly.
+    if ((p.room_id || p.meeting_id) === 'debate') {
+      this.emit('debate_message', {
+        speaker: speakerName,
+        role: p.role || 'debater',
+        message: content,
+      });
+      return;
+    }
+
     const role = this._inferRoleFromName(speakerName);
 
     this.emit('meeting_message', {
