@@ -4075,3 +4075,66 @@ class TestConcurrencyCap:
 
         count = pe._count_executing()
         assert count == 0, "producer_b_waiting must not count toward the cap"
+
+
+# ---------------------------------------------------------------------------
+# Stage 6a resume-from-prior-state on retry (A1/C3) — live failure f0e6cec47ea9
+# ---------------------------------------------------------------------------
+
+class TestStage6ResumeFromPriorWork:
+    """When a Stage 6a attempt wrote code into upstream/ but died before the
+    receipt (e.g. transient Connection error), the retry must be told to
+    FINISH THE TAIL (commit + receipt + push), not restart analysis."""
+
+    def _mk_upstream(self, proj, staged=True, receipt=False):
+        import subprocess
+        up = proj / "upstream"
+        up.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=str(up), check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(up), check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=str(up), check=True)
+        (up / "base.py").write_text("# base\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(up), check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=str(up), check=True)
+        if staged:
+            (up / "experiment.py").write_text("# 6a wrote this\n")
+            subprocess.run(["git", "add", "-A"], cwd=str(up), check=True)
+        if receipt:
+            (proj / "stage6_implementation_receipt.md").write_text("# receipt\n" * 30)
+
+    def test_detect_returns_resume_when_code_staged_no_receipt(self, tmp_path):
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        self._mk_upstream(tmp_path, staged=True, receipt=False)
+        msg = eng._detect_stage6_prior_work()
+        assert "RESUME FROM PRIOR STATE" in msg
+        assert "receipt" in msg.lower()
+        assert "experiment.py" in msg  # names the staged file
+
+    def test_detect_empty_when_receipt_exists(self, tmp_path):
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        self._mk_upstream(tmp_path, staged=True, receipt=True)
+        assert eng._detect_stage6_prior_work() == ""
+
+    def test_detect_empty_when_no_upstream(self, tmp_path):
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        assert eng._detect_stage6_prior_work() == ""
+
+    def test_stage6_retry_feedback_carries_resume(self, tmp_path, monkeypatch):
+        captured = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": captured.append(feedback))
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_record_active_phase_elapsed", lambda self, p: None)
+
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.state["current_stage"] = 6
+        eng.state["phase"] = "producer"
+        eng.state["retries"] = 0
+        self._mk_upstream(tmp_path, staged=True, receipt=False)
+
+        eng.on_task_failed("00103", "n", "Error: Connection error.")
+
+        assert captured, "retry must re-dispatch the producer"
+        assert "RESUME FROM PRIOR STATE" in captured[0], (
+            "Stage 6 retry feedback must carry the resume-from-prior-work signal"
+        )
