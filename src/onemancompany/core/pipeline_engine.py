@@ -1216,6 +1216,21 @@ class PipelineEngine:
                 "falsification checks, and cap the overall verdict at whatever "
                 "coverage Stage 6 actually delivered. Do not invent new tests, "
                 "do not substitute metrics, do not HARK.\n"
+                "\n## REQUIRED — GENERATE RESULT FIGURES (do not skip)\n"
+                "After the statistics are computed, render the result figures "
+                "the Stage 5 FIGURE MANIFEST specifies. For each manifest row "
+                'call load_skill("result-figures") and follow it to plot the '
+                "RESULT_JSON field named in the manifest, saving each as a "
+                "`stage7_<name>.png` in the project workspace and embedding it "
+                "in the report with a numbered caption "
+                "(`![Figure N: ...](stage7_<name>.png)`). The figure's values "
+                "MUST match the Section-3 confirmatory tables. If Stage 5 did "
+                "not lock a manifest, still produce at least one figure of the "
+                "primary metric/effect with its CI. The Stage 7 critic grades "
+                "D11 Result Figures — a report with confirmatory numbers but no "
+                "`stage7_*.png` is incomplete. (Historical gap B1: every prior "
+                "paper shipped with only the Stage-4 framework figure and zero "
+                "result figures because this step was never required.)\n"
             )
         # Stage 8 (Paper Generation) renders the CCF-A paper from Stage 4
         # methodology + Stage 5 plan + Stage 6 run + Stage 7 results. A
