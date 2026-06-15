@@ -144,8 +144,8 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         import openai
         if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
             return True
-    except Exception:  # pragma: no cover — openai always installed in practice
-        pass
+    except Exception as _exc:  # pragma: no cover — openai always installed in practice
+        logger.debug("openai unavailable for transient-error check: {}", _exc)
     msg = str(exc).lower()
     return any(marker in msg for marker in _TRANSIENT_NETWORK_MARKERS)
 
