@@ -2536,6 +2536,18 @@ class PipelineEngine:
 
     def on_ceo_approve(self, feedback: str = ""):
         """CEO approved the current stage. Advance or re-run."""
+        # Idempotency guard (#157): only act when the pipeline is actually
+        # waiting at a gate. A stale / duplicate approve (retried HTTP call,
+        # race between manual and auto-approver, or a breakpoint resume for a
+        # stage that already advanced) must not advance a stage that is already
+        # executing — doing so skips the running producer entirely.
+        if self.phase != "gate":
+            logger.info(
+                "[PIPELINE] on_ceo_approve ignored — not at gate "
+                "(phase={}, stage={})", self.phase, self.current_stage,
+            )
+            return
+
         stage = self._stage_def()
 
         if feedback and any(kw in feedback.upper() for kw in self._REVISION_KEYWORDS):
