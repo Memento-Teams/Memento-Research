@@ -3392,6 +3392,53 @@ def test_data_gate_stage7_passes_with_one_supported_hypothesis():
     assert ok is True, reason
 
 
+def test_data_gate_stage7_reads_horizontal_results_table():
+    """Sibling of the Stage-6 table bug (run fa50cb183b3c): the result-analyst
+    commonly writes one row per hypothesis in a Markdown table with a Decision
+    column. The gate must read that column — not only inline ``Decision:`` —
+    so a valid analysis isn't falsely failed for formatting."""
+    report = (
+        "## Results\n\n"
+        "| Hypothesis | Decision | p-value | effect |\n"
+        "|---|---|---|---|\n"
+        "| H1 | SUPPORTED | 0.01 | 0.6 |\n"
+        "| H2 | NOT SUPPORTED | 0.20 | 0.1 |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_reads_vertical_decision_table():
+    """The vertical key-value layout ``| Decision | SUPPORTED |`` must parse,
+    while a horizontal HEADER (Decision as a middle column) must NOT capture
+    the next column name as a verdict."""
+    report = (
+        "## H1\n| Field | Value |\n|---|---|\n| Decision | `SUPPORTED` |\n| p | 0.01 |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_table_still_blocks_all_no_data():
+    """The table reader must not WEAKEN the gate: an all-NOT-TESTED/BLOCKED
+    results table still fails (no experiment ran)."""
+    report = (
+        "| Hypothesis | Verdict |\n|---|---|\n"
+        "| H1 | NOT TESTED |\n| H2 | BLOCKED |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
+    assert "no-data" in reason.lower() or "no experiment" in reason.lower()
+
+
+def test_data_gate_stage7_ignores_prose_supported():
+    """A stray "supported" in prose (no decision label, no table) must NOT
+    pass the gate — the column reader only reads designated cells."""
+    report = "The direction is well supported by prior work, but we ran nothing.\n"
+    ok, _ = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
+
+
 def test_data_gate_blocks_stage6_advance_when_critic_passed_but_no_data(tmp_path, monkeypatch):
     """The flagship #27 behavior: critic votes PASS on a well-written Stage 6
     report, but every run is still_running (no real data). The data gate must

@@ -3100,6 +3100,22 @@ class PipelineEngine:
         r"(?:decision|verdict)\b\W*?[:：]\s*\*{0,2}\s*([A-Za-z][\w ]*)",
         re.IGNORECASE,
     )
+    # Vertical key-value table row: ``| Decision | `SUPPORTED` |``. Anchored
+    # to the FIRST cell (``^\|``) so a horizontal header
+    # ``| H1 | Decision | p-value |`` (where "Decision" is a middle column,
+    # not a row label) does NOT capture the next column name. The Stage 6
+    # data-gate had this exact table-blindness (run fa50cb183b3c) — Stage 7
+    # has the same gate, so harden it the same way.
+    _STAGE7_VERTICAL_DECISION_RE = re.compile(
+        r"^\s*\|\s*(?:decision|verdict|outcome|conclusion)\b\s*\|\s*"
+        r"[`*'\"]*([A-Za-z][\w ]*?)[`*'\"]*\s*\|",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    # Header cell naming the decision column in a horizontal results table
+    # (one row per hypothesis). Used to locate which column holds the verdict.
+    _STAGE7_DECISION_COL_RE = re.compile(
+        r"\b(?:decision|verdict|outcome|conclusion|result)\b", re.IGNORECASE
+    )
     # Decisions that mean "the experiment did NOT produce data for this
     # hypothesis". Everything else (SUPPORTED, NOT SUPPORTED, REJECTED,
     # CONFIRMED, PASS, FAIL, INCONCLUSIVE, …) means a test actually ran —
@@ -3117,16 +3133,61 @@ class PipelineEngine:
         return re.sub(r"[\s_]+", " ", raw).strip().upper()
 
     @classmethod
+    def _stage7_table_decisions(cls, text: str) -> list[str]:
+        """Extract decision cells from a horizontal Markdown results table
+        whose header names a Decision/Verdict/Outcome column (the common
+        Stage-7 layout: one row per hypothesis). Reads ONLY the designated
+        column — no prose scanning — so it cannot false-positive on a stray
+        "supported" in body text."""
+        out: list[str] = []
+        lines = (text or "").splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.count("|") >= 2 and cls._STAGE7_DECISION_COL_RE.search(line):
+                header = [c.strip() for c in line.strip().strip("|").split("|")]
+                col_idx = next(
+                    (j for j, c in enumerate(header) if cls._STAGE7_DECISION_COL_RE.search(c)),
+                    None,
+                )
+                nxt = lines[i + 1] if i + 1 < len(lines) else ""
+                # A real table header is followed by a |---|---| separator row.
+                if col_idx is not None and set(nxt.replace("|", "").strip()) <= set("-: "):
+                    j = i + 2
+                    while j < len(lines) and lines[j].count("|") >= 2:
+                        row = [c.strip() for c in lines[j].strip().strip("|").split("|")]
+                        if col_idx < len(row) and row[col_idx]:
+                            cell = row[col_idx].strip("`*'\" ")
+                            if cell:
+                                out.append(cls._normalise_decision(cell))
+                        j += 1
+                    i = j
+                    continue
+            i += 1
+        return out
+
+    @classmethod
     def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
         """Stage 7 passes if ≥1 hypothesis/check has a decision indicating a
         test actually ran. The gate blocks "no experiment ran" (every
         decision is NOT TESTED / INCONCLUSIVE_DUE_TO_COVERAGE / BLOCKED), NOT
         "effect not found" — a ``NOT SUPPORTED`` / null result IS data and
-        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e)."""
+        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e).
+
+        Decisions are collected from three layouts so a valid analysis is not
+        falsely failed for formatting: inline ``Decision: X``, the vertical
+        row form ``| Decision | X |``, and a horizontal results table with a
+        Decision/Verdict column (run fa50cb183b3c showed the Stage 6 twin of
+        this gate dying on a table-formatted report)."""
         decisions = [
             cls._normalise_decision(m.group(1))
             for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
         ]
+        decisions += [
+            cls._normalise_decision(m.group(1))
+            for m in cls._STAGE7_VERTICAL_DECISION_RE.finditer(result or "")
+        ]
+        decisions += cls._stage7_table_decisions(result or "")
         if not decisions:
             return False, "no hypothesis/check decision lines found in result analysis"
         tested = [d for d in decisions if d not in cls._STAGE7_NO_DATA_DECISIONS]
