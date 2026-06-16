@@ -3350,12 +3350,16 @@ class PipelineEngine:
         # Stripping ``*``/``_`` also normalises ``Decision: **PASS**``.
         text = re.sub(r"[*_]", "", text)
         upper = text.upper()
-        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
-        compact = re.sub(r"[\s|*_]+", " ", upper)
-        if " DECISION PASS " in compact:
-            return True
-        if " DECISION REJECT " in compact:
-            return False
+        # Table-format ``| Decision | PASS |`` / ``| **Verdict** | `REJECT` |``.
+        # Collapse pipes / emphasis / backticks so a backtick-wrapped cell
+        # value parses, and accept Verdict/Recommendation labels too — not
+        # only "Decision" (same decoration-blindness class as the data gates).
+        compact = re.sub(r"[\s|*_`]+", " ", upper)
+        for label in ("DECISION", "VERDICT", "RECOMMENDATION"):
+            if f" {label} PASS " in compact:
+                return True
+            if f" {label} REJECT " in compact:
+                return False
         # Labeled verdict anywhere in the text.
         m = cls._VERDICT_LABEL_RE.search(text)
         if m:
@@ -3481,8 +3485,12 @@ class PipelineEngine:
     @staticmethod
     def _parse_confidence(result: str) -> float | None:
         import re
-        # Match patterns like "confidence: 0.72" or "Confidence Score: 0.8".
-        m = re.search(r'confidence(?:\s+score)?[:\s]*([01]\.?\d*)', result, re.IGNORECASE)
+        # Match "confidence: 0.72", "Confidence Score: 0.8", and the decorated
+        # forms the critic actually uses — ``**Confidence**: **0.92**`` and the
+        # table cell ``| Confidence | 0.92 |``. ``\W*?`` (lazy non-word chars)
+        # absorbs the ``**`` / ``|`` / ``:`` markers between the label and the
+        # number without requiring them (run fa50cb183b3c lost a real 0.92).
+        m = re.search(r'confidence(?:\s+score)?\W*?([01]\.?\d*)', result, re.IGNORECASE)
         if m:
             try:
                 return float(m.group(1))

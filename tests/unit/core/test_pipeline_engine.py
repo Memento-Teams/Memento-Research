@@ -1497,6 +1497,32 @@ def test_parse_confidence_handles_unparseable_match(monkeypatch):
     assert pe.PipelineEngine._parse_confidence("confidence: bad") is None
 
 
+def test_parse_confidence_handles_bold_and_table_decorations():
+    """LIVE gap (run fa50cb183b3c): the real gate review wrote
+    ``**Confidence**: **0.92**`` and ``| Confidence | 0.92 |`` — the old
+    ``[:\\s]*`` separator couldn't cross the ``**``/``|`` markers, so the
+    critic's stated confidence was lost (parsed as None)."""
+    assert pe.PipelineEngine._parse_confidence("**Confidence**: **0.92**") == 0.92
+    assert pe.PipelineEngine._parse_confidence("| Confidence | 0.92 |") == 0.92
+    assert pe.PipelineEngine._parse_confidence("Confidence Score: 0.8") == 0.8
+    # Plain prose with no value must still yield None (no false reading).
+    assert pe.PipelineEngine._parse_confidence("confident in the approach") is None
+
+
+def test_verdict_from_text_handles_table_and_backtick_verdicts():
+    """Same decoration-blindness class as the data gates: a verdict written
+    as a backtick-wrapped table cell, or labeled ``Verdict``/``Recommendation``
+    rather than ``Decision``, must still parse."""
+    V = pe.PipelineEngine._verdict_from_text
+    assert V("| Decision | PASS |") is True
+    assert V("| Verdict | `REJECT` |") is False
+    assert V("| Recommendation | `PASS` |") is True
+    assert V("**Decision**: **PASS**") is True
+    # A per-dimension row must NOT be read as the overall verdict (#19), and
+    # a bare prose mention stays ambiguous.
+    assert V("Looks good, I'd pass this.") is None
+
+
 def test_event_emitters_skip_when_no_running_loop(tmp_path):
     engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
     engine.state["stage_results"] = {"1": "done"}
