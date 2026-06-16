@@ -409,6 +409,85 @@ async def test_emit_pipeline_failed_publishes_payload(tmp_path, monkeypatch):
 # ===========================================================================
 
 
+def test_canonical_runs_block_is_authoritative_over_prose():
+    """Durable fix for the recurring report-format whack-a-mole (runs
+    fa50cb183b3c table form, 9dd6160ea99b 'Validated run:' form): when the
+    runner emits a machine-readable ```runs block, the engine parses ONLY
+    that — deterministic, immune to whatever prose/label the LLM chose, and
+    immune to stray run-ids in the Limitations narrative."""
+    report = (
+        "## Results\n\n"
+        "- Validated run: `run_8e540235b830`\n- Status: succeeded\n\n"
+        "## 5. Limitations\n"
+        "First full run `run_1ea2dbecbae2` failed with OOM; cleanup "
+        "`run_eaddfe8cadff` freed it.\n\n"
+        "```runs\n"
+        "run_8e540235b830  succeeded\n"
+        "run_dace6992d448  succeeded\n"
+        "```\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_8e540235b830", "succeeded"),
+        ("run_dace6992d448", "succeeded"),
+    ], "the ```runs block must win; the OOM/cleanup run-ids in prose must NOT appear"
+    assert pe.PipelineEngine._data_gate_stage6(report)[0] is True
+
+
+def test_canonical_runs_block_skips_header_and_tolerates_pipes():
+    """The block parser tolerates an optional header row and pipe/backtick
+    decorations, and an empty block authoritatively means zero runs."""
+    report = (
+        "```runs\n"
+        "| run_id | status |\n"
+        "| run_aaa111bbb222 | `succeeded` |\n"
+        "| run_ccc333ddd444 | still_running |\n"
+        "```\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_aaa111bbb222", "succeeded"),
+        ("run_ccc333ddd444", "still_running"),
+    ]
+    # empty block = authoritative "no runs"
+    assert pe.PipelineEngine._parse_runner_report_runs("```runs\n```\n") == []
+
+
+def test_no_canonical_block_falls_back_to_prose_heuristic():
+    """Backward compatibility: reports without a ```runs block still use the
+    existing label/table heuristic (no regression for already-good reports)."""
+    report = "- **run_id**: `run_d032e33e194a`\n- **status**: succeeded\n"
+    assert pe.PipelineEngine._parse_runner_report_runs(report) == [
+        ("run_d032e33e194a", "succeeded"),
+    ]
+
+
+def test_producer_b_stub_with_ondisk_report_salvages_instead_of_rerouting(tmp_path, monkeypatch):
+    """LIVE regression (run 9dd6160ea99b): the 6b runner wrote a full report
+    with two `succeeded` runs but its submit_result was an "Executed: bash"
+    stub. The stub branch rerouted to 6a and the finished experiment was
+    discarded → retries exhausted → failed. Now: a 6b stub with a
+    data-bearing on-disk report falls through to normal handling (critic),
+    not a 6a reroute."""
+    rerouted, critic = [], []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": rerouted.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic",
+                        lambda self, r: critic.append(r))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    skill = engine._stage_def(6).get("skill", "")
+    report = "Runs complete.\n\n```runs\nrun_aaa111bbb222 succeeded\n```\n"
+    (tmp_path / f"stage6_{skill}.md").write_text(report, encoding="utf-8")
+
+    engine.on_task_complete("00025", "node6b", "Executed: bash")  # stub submit_result
+
+    assert rerouted == [], "must NOT reroute to 6a when the on-disk report has real runs"
+    assert len(critic) == 1, "should proceed to the critic with the salvaged report"
+
+
 def test_parse_runner_report_runs_extracts_id_status_pairs():
     """The parser handles the runner's various Markdown decorations:
     bold-bracketed labels, backtick-wrapped ids, plain text."""

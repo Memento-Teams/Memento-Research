@@ -1794,7 +1794,26 @@ class PipelineEngine:
             # NOT store as the stage deliverable, where the critic would
             # see only tool names and (under the old default-PASS parser)
             # silently advance. Closes #60 fix #2 / #63 fix #4.
-            if self._is_stub_result(result):
+            is_stub = self._is_stub_result(result)
+            # Stage 6b salvage: the runner often does the work (writes a full
+            # stage6_experimentalist.md with terminal runs) but its FINAL turn
+            # returns an empty "Executed: bash" stub (run 9dd6160ea99b: a 7.6KB
+            # report with two `succeeded` runs, yet submit_result was a stub).
+            # Rerouting to 6a then discards a finished experiment. If the
+            # on-disk report has data-bearing runs, treat the report as the
+            # result and fall through to the normal producer_b handling
+            # (mirrors the critic's on-disk gate_review fallback).
+            if is_stub and self.phase == "producer_b":
+                ondisk = self._read_stage_deliverable(6, fallback="")
+                if ondisk and self._data_gate_stage6(ondisk)[0]:
+                    logger.warning(
+                        "[PIPELINE] Stage 6b submit_result was a stub, but the on-disk "
+                        "report has data-bearing runs — using the report instead of "
+                        "rerouting to 6a."
+                    )
+                    result = ondisk
+                    is_stub = False
+            if is_stub:
                 feedback = (
                     f"Your submit_result was a stub: {result.strip()[:200]!r}. "
                     "This happens when the agent runtime falls back to summarising tool names "
@@ -2791,11 +2810,59 @@ class PipelineEngine:
                 out.append(line)
         return "".join(out)
 
+    # Machine-readable runs block the runner is instructed to emit:
+    #   ```runs
+    #   run_8e540235b830  succeeded
+    #   run_dace6992d448  succeeded
+    #   ```
+    # When present it is AUTHORITATIVE — parsed deterministically and immune
+    # to whatever prose/label/table the LLM wrapped the run around (the
+    # recurring report-format whack-a-mole: fa50cb183b3c used a vertical
+    # table, 9dd6160ea99b used "- Validated run: `x`"). Only this block is
+    # read, so stray run-ids in the Limitations narrative (failed/cleanup
+    # runs) cannot become phantom-pending runs.
+    _CANONICAL_RUNS_FENCE_RE = re.compile(
+        r"```+[ \t]*runs[ \t]*\r?\n(.*?)```", re.IGNORECASE | re.DOTALL
+    )
+
+    @classmethod
+    def _parse_canonical_runs_block(cls, report: str) -> list[tuple[str, str]] | None:
+        """Parse the runner's ```runs block. Returns the (run_id, status)
+        list when a block is present (possibly empty — authoritative "no
+        runs"), or ``None`` when there is no such block so the caller falls
+        back to the prose heuristic. One run per line: ``<run_id> <status>``
+        with optional ``|`` / ``=`` / ``:`` separators and markdown ticks."""
+        m = cls._CANONICAL_RUNS_FENCE_RE.search(report or "")
+        if m is None:
+            return None
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw in m.group(1).splitlines():
+            line = raw.strip()
+            if not line or set(line) <= set("-:| "):  # blank or table separator
+                continue
+            toks = [
+                t.strip("`*'\" ")
+                for t in re.split(r"[\s|=:]+", line.strip("|").strip())
+                if t.strip("`*'\" ")
+            ]
+            if len(toks) < 2:
+                continue
+            rid, status = toks[0], toks[1].lower()
+            if rid.lower() in {"run_id", "run", "id", "runid", "status"}:  # header row
+                continue
+            if rid in seen:
+                continue
+            seen.add(rid)
+            out.append((rid, status))
+        return out
+
     @classmethod
     def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
         """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
 
-        Walks the report top-to-bottom and pairs each ``run_id:`` line with
+        Prefers the authoritative ```runs block when present; otherwise walks
+        the report top-to-bottom and pairs each ``run_id:`` line with
         the next ``status:`` line that follows it within the same run-block.
         Tolerates the various Markdown decorations the runner uses (e.g.
         backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
@@ -2809,6 +2876,10 @@ class PipelineEngine:
         """
         if not report:
             return []
+        # Authoritative machine-readable block wins over the prose heuristic.
+        canonical = cls._parse_canonical_runs_block(report)
+        if canonical is not None:
+            return canonical
         scan_text = cls._strip_fenced_code_blocks(report)
         run_id_hits = [
             (m.start(), m.group(1))
