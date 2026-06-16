@@ -1841,6 +1841,18 @@ class PipelineEngine:
                         )
                         self._dispatch_producer(feedback=rebuild_feedback)
                     else:
+                        # Stage 6a stub when code is already written/committed:
+                        # the generic "re-run the full task" feedback is exactly
+                        # wrong — it makes the agent restart and stub again until
+                        # exhaustion (live failure 8656229d336f: adaptation
+                        # committed, receipt missing, 3 stubs → failed). Inject
+                        # the resume signal so the retry just finishes the tail
+                        # (commit/receipt/push) instead of restarting. Mirrors
+                        # the on_task_failed path (A1/C3).
+                        if stage["id"] == 6:
+                            resume = self._detect_stage6_prior_work()
+                            if resume:
+                                feedback = resume + "\n\n" + feedback
                         self._dispatch_producer(feedback=feedback)
                     return
                 logger.warning(
@@ -2303,6 +2315,16 @@ class PipelineEngine:
                 f"Producer for Stage {stage['id']} ({stage['name']}) failed without producing a deliverable. "
                 f"Failure context:\n{truncated}"
             )
+            # Stage 6a resume signal (A1/C3): if a prior attempt already wrote
+            # code into upstream/ but the task died (e.g. transient
+            # "Connection error.") before committing + writing the receipt,
+            # the retry must FINISH THE TAIL, not restart analysis. Live
+            # failure f0e6cec47ea9: 6 files staged in upstream/, no commit, no
+            # receipt, 3 retries each restarted and re-died → exhausted.
+            if stage["id"] == 6:
+                resume = self._detect_stage6_prior_work()
+                if resume:
+                    failure_feedback = resume + "\n\n" + failure_feedback
         retries = self.state.get("retries", 0)
         if retries < MAX_RETRIES:
             self.state["retries"] = retries + 1
@@ -2355,6 +2377,53 @@ class PipelineEngine:
             )
         self._emit_stage_event("stage_complete", stage["id"], confidence=confidence)
         self._emit_gate_event(stage["id"], confidence)
+
+    def _detect_stage6_prior_work(self) -> str:
+        """Return a resume instruction if a prior Stage 6a attempt already
+        wrote code into ``upstream/`` (or staged it) but never produced the
+        receipt — so the retry FINISHES THE TAIL instead of restarting (A1/C3).
+
+        Returns "" when there is no salvageable prior work (clean clone, or
+        no upstream/ at all, or the receipt already exists).
+        """
+        import subprocess
+        proj = Path(self.project_dir)
+        upstream = proj / "upstream"
+        receipt = proj / "stage6_implementation_receipt.md"
+        if not (upstream / ".git").exists():
+            return ""
+        if receipt.exists() and receipt.stat().st_size >= 200:
+            return ""  # tail already finished — nothing to resume
+        try:
+            dirty = subprocess.run(
+                ["git", "status", "--short"], cwd=str(upstream),
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            adapt = subprocess.run(
+                ["git", "log", "--oneline", "-5"], cwd=str(upstream),
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug("[PIPELINE] stage6 prior-work probe failed: {}", exc)
+            return ""
+        has_staged = bool(dirty)
+        has_adapt_commit = "Stage 6 adaptation" in adapt
+        if not (has_staged or has_adapt_commit):
+            return ""
+        changed = "\n".join(dirty.splitlines()[:20]) or "(committed, working tree clean)"
+        return (
+            "## RESUME FROM PRIOR STATE — DO NOT RESTART (A1/C3)\n"
+            "A previous Stage 6a attempt ALREADY wrote implementation code into "
+            "upstream/ but died before finishing (often a transient "
+            "'Connection error.'). Do NOT re-clone, re-analyze, or rewrite the "
+            "code. Inventory what exists and complete ONLY the missing tail:\n"
+            "  1. cd upstream && git add -A && git commit -m 'Stage 6 adaptation: <one-liner>' "
+            "(if not already committed)\n"
+            "  2. write stage6_implementation_receipt.md (the runner BLOCKS without it)\n"
+            "  3. push via fast_push_code.sh and verify\n"
+            "This is a ~2-minute finish, not a fresh task. Existing upstream/ changes:\n"
+            f"{changed}\n"
+        )
 
     async def _cancel_active_task_and_wait(self, *, timeout: float = 5.0) -> None:
         """Cancel the engine's active producer/critic task and wait for it
