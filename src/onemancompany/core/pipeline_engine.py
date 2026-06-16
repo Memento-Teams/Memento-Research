@@ -3140,9 +3140,40 @@ class PipelineEngine:
         if self.phase != "producer_b_waiting":
             return
         pending = self.state.get("pending_run_ids") or []
+        stage_6_runs = self.state.get("stage_6_runs", {}) or {}
+
+        # C3/H1 salvage: if some submitted runs already reached a data-bearing
+        # terminal status, do NOT throw the whole run away because slower runs
+        # blew the deadline. Finalize a coverage-limited report from what
+        # completed — the same path on_runs_all_terminal takes — so the
+        # pipeline advances to the critic / Stage 7 with the data we DO have.
+        # Only fall through to "failed" when zero runs produced usable data.
+        completed = [
+            rid for rid in pending
+            if isinstance(stage_6_runs, dict)
+            and stage_6_runs.get(rid, {}).get("status") in self._RUN_DATA_OK_STATUSES
+        ]
+        if completed:
+            timed_out = [rid for rid in pending if rid not in completed]
+            logger.warning(
+                "[PIPELINE] Stage 6b max-wait timeout ({}s) — SALVAGING {} data-bearing "
+                "run(s); {} still-pending run(s) recorded as timed-out (coverage-limited).",
+                wait_seconds, len(completed), len(timed_out),
+            )
+            self.state["stage6_salvage_timeout"] = {
+                "wait_seconds": wait_seconds,
+                "completed": completed,
+                "timed_out": timed_out,
+            }
+            self.state["phase"] = "producer_b_finalize"
+            self._save()
+            self._dispatch_producer_b_finalize()
+            return
+
         logger.warning(
-            "[PIPELINE] Stage 6b max-wait timeout ({}s) — {} pending runs still active. "
-            "Marking pipeline failed; CEO can inspect pending_run_ids for forensics.",
+            "[PIPELINE] Stage 6b max-wait timeout ({}s) — {} pending runs still active, "
+            "none data-bearing. Marking pipeline failed; CEO can inspect pending_run_ids "
+            "for forensics.",
             wait_seconds, len(pending),
         )
         stage = self._stage_def()
@@ -3175,6 +3206,10 @@ class PipelineEngine:
             "[PIPELINE] Stage 6b waiting → finalize: {} run_ids now terminal",
             len(pending),
         )
+        # All runs reached terminal status normally → this is a FULL finalize,
+        # not a timeout salvage. Clear any stale coverage-limited flag from a
+        # prior attempt so the finalize dispatch doesn't inject a bogus caveat.
+        self.state.pop("stage6_salvage_timeout", None)
         self.state["phase"] = "producer_b_finalize"
         self._save()
         self._dispatch_producer_b_finalize()
@@ -3222,6 +3257,23 @@ class PipelineEngine:
             "write the FINAL stage6_experimentalist.md.\n\n"
             f"Pending run_ids (now terminal, snapshot from run_tracker):\n{digest}\n\n"
         )
+        salvage = self.state.get("stage6_salvage_timeout")
+        if salvage:
+            timed_out = salvage.get("timed_out") or []
+            completed = salvage.get("completed") or []
+            desc += (
+                "## ⚠️ COVERAGE-LIMITED FINALIZE (max-wait timeout salvage)\n"
+                f"The {salvage.get('wait_seconds','?')}s wait deadline tripped while "
+                f"{len(timed_out)} run(s) were still pending. We are salvaging the "
+                f"{len(completed)} run(s) that DID complete rather than discarding the "
+                "study. When you write the report:\n"
+                f"- Analyse ONLY the completed runs: {', '.join(completed) or '(none)'}\n"
+                f"- Record the still-pending runs as **NOT-COMPLETED (timed out)**, "
+                f"do NOT treat them as data: {', '.join(timed_out) or '(none)'}\n"
+                "- Add an explicit **Coverage limitation** line at the top of the "
+                "report stating which conditions/runs are missing, so Stage 7 and the "
+                "paper carry the caveat honestly (do not silently drop it).\n\n"
+            )
         user_feedback = self._consume_pending_feedback()
         if user_feedback:
             desc += (
