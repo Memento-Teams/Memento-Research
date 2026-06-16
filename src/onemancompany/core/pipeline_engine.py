@@ -1841,6 +1841,18 @@ class PipelineEngine:
                         )
                         self._dispatch_producer(feedback=rebuild_feedback)
                     else:
+                        # Stage 6a stub when code is already written/committed:
+                        # the generic "re-run the full task" feedback is exactly
+                        # wrong — it makes the agent restart and stub again until
+                        # exhaustion (live failure 8656229d336f: adaptation
+                        # committed, receipt missing, 3 stubs → failed). Inject
+                        # the resume signal so the retry just finishes the tail
+                        # (commit/receipt/push) instead of restarting. Mirrors
+                        # the on_task_failed path (A1/C3).
+                        if stage["id"] == 6:
+                            resume = self._detect_stage6_prior_work()
+                            if resume:
+                                feedback = resume + "\n\n" + feedback
                         self._dispatch_producer(feedback=feedback)
                     return
                 logger.warning(

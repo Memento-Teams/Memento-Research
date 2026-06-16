@@ -4235,6 +4235,41 @@ class TestStage6ResumeFromPriorWork:
         assert "RESUME FROM PRIOR STATE" in captured[0], (
             "Stage 6 retry feedback must carry the resume-from-prior-work signal"
         )
+
+    def test_stage6_stub_completion_carries_resume(self, tmp_path, monkeypatch):
+        """Live failure 8656229d336f: 6a wrote+committed code but returned a
+        14-char stub, so it went through on_task_complete's stub-retry path
+        (NOT on_task_failed). That path told the agent to 're-run the full
+        task' — wrong when only the receipt is missing — and it stubbed to
+        exhaustion. The stub retry for Stage 6 must also carry the resume
+        signal so the agent finishes the tail instead of restarting."""
+        captured = []
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                            lambda self, feedback="": captured.append(feedback))
+        monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event", lambda self, *a, **k: None)
+        monkeypatch.setattr(pe.PipelineEngine, "_record_active_phase_elapsed", lambda self, p: None)
+
+        eng = pe.PipelineEngine("p1", str(tmp_path), "topic")
+        eng.state["current_stage"] = 6
+        eng.state["phase"] = "producer"
+        eng.state["retries"] = 0
+        # committed adaptation, no receipt → resume should fire
+        self._mk_upstream(tmp_path, staged=False, receipt=False)
+        import subprocess
+        up = tmp_path / "upstream"
+        (up / "experiment.py").write_text("# 6a wrote this\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(up), check=True)
+        subprocess.run(["git", "commit", "-qm", "Stage 6 adaptation: x"], cwd=str(up), check=True)
+
+        eng.on_task_complete("00103", "n", "Executed: bash")  # 14-char stub
+
+        assert captured, "stub retry must re-dispatch the producer"
+        assert "RESUME FROM PRIOR STATE" in captured[0], (
+            "Stage 6 stub-retry feedback must also carry the resume signal"
+        )
+
+
 # C: feasibility -> full execution split (research_phase state machine)
 # ---------------------------------------------------------------------------
 
