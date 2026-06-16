@@ -88,6 +88,11 @@ _TRANSIENT_NETWORK_MARKERS = (
     "connection broken",
     "server disconnected",
     "remote protocol error",
+    # OpenAI SDK's APIConnectionError renders as exactly "Connection error."
+    # — the single most common transient LLM failure. Live failure
+    # f0e6cec47ea9: it bubbled past L1 and consumed a Stage-6 retry.
+    "connection error",
+    "request timed out",
 )
 
 
@@ -131,6 +136,16 @@ def _is_transient_network_error(exc: BaseException) -> bool:
         ),
     ):
         return True
+    # The OpenAI SDK wraps network failures in its own exception types that
+    # are NOT httpx instances (APIConnectionError str == "Connection error.",
+    # APITimeoutError). These are the most common transient LLM failures and
+    # must be retried at L1, not bubbled up to consume a stage retry.
+    try:
+        import openai
+        if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+            return True
+    except Exception as _exc:  # pragma: no cover — openai always installed in practice
+        logger.debug("openai unavailable for transient-error check: {}", _exc)
     msg = str(exc).lower()
     return any(marker in msg for marker in _TRANSIENT_NETWORK_MARKERS)
 
