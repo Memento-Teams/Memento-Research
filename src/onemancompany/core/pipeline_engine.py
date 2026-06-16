@@ -1813,6 +1813,17 @@ class PipelineEngine:
                     )
                     result = ondisk
                     is_stub = False
+            # Stage 6a salvage: a 6a stub that nonetheless committed the
+            # adaptation should NOT re-run full 6a (which just re-stubs). Fall
+            # through to the hard-gate, which synthesizes the missing receipt
+            # from git state and proceeds to 6b (run c49e8a914f5a).
+            if is_stub and self.phase == "producer" and self.current_stage == 6:
+                if self._synthesize_stage6_receipt():
+                    logger.warning(
+                        "[PIPELINE] Stage 6a stub but adaptation is committed — "
+                        "synthesized the receipt; proceeding via the hard-gate."
+                    )
+                    is_stub = False
             if is_stub:
                 feedback = (
                     f"Your submit_result was a stub: {result.strip()[:200]!r}. "
@@ -1887,6 +1898,10 @@ class PipelineEngine:
                 # that always ends BLOCKED. Catch it here.
                 receipt_path = Path(self.project_dir) / "stage6_implementation_receipt.md"
                 upstream_dir = Path(self.project_dir) / "upstream"
+                # Salvage: if the adaptation is committed but the receipt is
+                # missing (implementer stubbed before Phase 5), synthesize it
+                # from git state rather than burning a retry that re-stubs.
+                self._synthesize_stage6_receipt()
                 missing = []
                 if not receipt_path.exists() or receipt_path.stat().st_size < 200:
                     missing.append("stage6_implementation_receipt.md (must exist and be non-trivial)")
@@ -3004,6 +3019,70 @@ class PipelineEngine:
         except (OSError, ValueError) as exc:
             logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
         return fallback
+
+    def _synthesize_stage6_receipt(self) -> bool:
+        """6a salvage: if the implementer committed a Stage-6 adaptation to
+        ``upstream/`` but left no receipt — its final turn returned an empty
+        "Executed: bash" stub before writing Phase 5 (run c49e8a914f5a) — the
+        whole stage dies at the 6a hard-gate even though the code is done.
+
+        Reconstruct a minimal receipt from git state so the 6b runner can
+        proceed. Returns True iff a non-trivial receipt now exists. Refuses
+        (returns False) when there is no committed adaptation to salvage —
+        a genuinely empty 6a must still fail.
+        """
+        receipt = Path(self.project_dir) / "stage6_implementation_receipt.md"
+        try:
+            if receipt.exists() and receipt.stat().st_size >= 200:
+                return True
+        except OSError:
+            return False
+        upstream = Path(self.project_dir) / "upstream"
+        if not (upstream / ".git").exists():
+            return False
+        import subprocess
+
+        def _git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=str(upstream),
+                capture_output=True, text=True, timeout=15,
+            ).stdout.strip()
+
+        try:
+            dirty = _git("status", "--short")
+            head = _git("rev-parse", "HEAD")
+            subject = _git("log", "-1", "--format=%s")
+            diffstat = _git("show", "--stat", "--format=%h %s", "HEAD")
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug("[PIPELINE] 6a receipt synthesis git probe failed: {}", exc)
+            return False
+        # Salvage only a CLEAN tree carrying an adaptation commit (not the bare
+        # pinned checkout) — otherwise there is no committed work to record.
+        if dirty or not head:
+            return False
+        if "adapt" not in subject.lower() and "stage 6" not in subject.lower():
+            return False
+        body = (
+            "# Stage 6a — Implementation Receipt (engine-synthesized)\n\n"
+            "> ⚠️ Auto-generated from git state: the implementer committed the\n"
+            "> Stage 6 adaptation to `upstream/` but its final turn returned no\n"
+            "> text (stub) before writing this receipt. Reconstructed so the\n"
+            "> Stage 6b runner can proceed instead of discarding finished code.\n\n"
+            "## 0. Pin status\n"
+            f"- `adaptation_commit`: `{head[:12]} {subject}`\n\n"
+            "## Changed files (git show --stat HEAD)\n\n"
+            "```\n" + (diffstat or "(unavailable)") + "\n```\n\n"
+            "## Runnable entrypoint\n"
+            "- Not captured (implementer stubbed). The runner derives the run\n"
+            "  command from `stage5_experiment_designer.md` / "
+            "`stage5_codebase_pin.md`.\n"
+        )
+        try:
+            receipt.write_text(body, encoding="utf-8")
+            return receipt.stat().st_size >= 200
+        except OSError as exc:
+            logger.debug("[PIPELINE] 6a receipt synthesis write failed: {}", exc)
+            return False
 
     # ------------------------------------------------------------------
     # #44 — paper-numbers gate: every high-precision statistic in the
