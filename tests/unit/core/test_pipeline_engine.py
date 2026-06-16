@@ -1554,6 +1554,39 @@ def test_dispatch_producer_stage4_injects_methodology_debate_skill_trigger(tmp_p
     )
 
 
+def test_dispatch_producer_stage4_requires_methodological_depth(tmp_path, monkeypatch):
+    """Stage 4 dispatch must demand formal methodological depth — a formal
+    Method section with equations, a pseudocode/Algorithm block, and an
+    explicit Contributions/novelty statement. Audit M1: even the most
+    rigorous historical methodology (a0aee5044ce2) had zero pseudocode, ~no
+    real equations, and one novelty mention — the bar only graded experiment
+    rigor, never the method's formalization."""
+    dispatched = []
+    monkeypatch.setattr(pe, "_find_employee_by_skill",
+                        lambda skill: "emp-meth" if skill == "methodology_designer" else None)
+    monkeypatch.setattr(pe, "load_employee_configs", lambda: {})
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_to_employee",
+                        lambda self, *args: dispatched.append(args))
+    monkeypatch.setattr(pe.PipelineEngine, "_emit_stage_event",
+                        lambda self, *args, **kwargs: None)
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 4
+    engine._dispatch_producer()
+
+    desc = dispatched[0][1]
+    low = desc.lower()
+    assert "pseudocode" in low or "algorithm" in low, (
+        "Stage 4 dispatch must require a pseudocode / Algorithm block"
+    )
+    assert "equation" in low or "formal" in low or "$" in desc, (
+        "Stage 4 dispatch must require formal equations / mathematical formalization"
+    )
+    assert "contribution" in low or "novel" in low, (
+        "Stage 4 dispatch must require an explicit contributions / novelty statement"
+    )
+
+
 def test_dispatch_producer_non_stage4_does_not_inject_debate_skill(tmp_path, monkeypatch):
     """Stages other than 4 must not contain the methodology-debate-convener trigger."""
     dispatched = []
