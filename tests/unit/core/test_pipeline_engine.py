@@ -409,6 +409,146 @@ async def test_emit_pipeline_failed_publishes_payload(tmp_path, monkeypatch):
 # ===========================================================================
 
 
+def test_canonical_runs_block_is_authoritative_over_prose():
+    """Durable fix for the recurring report-format whack-a-mole (runs
+    fa50cb183b3c table form, 9dd6160ea99b 'Validated run:' form): when the
+    runner emits a machine-readable ```runs block, the engine parses ONLY
+    that — deterministic, immune to whatever prose/label the LLM chose, and
+    immune to stray run-ids in the Limitations narrative."""
+    report = (
+        "## Results\n\n"
+        "- Validated run: `run_8e540235b830`\n- Status: succeeded\n\n"
+        "## 5. Limitations\n"
+        "First full run `run_1ea2dbecbae2` failed with OOM; cleanup "
+        "`run_eaddfe8cadff` freed it.\n\n"
+        "```runs\n"
+        "run_8e540235b830  succeeded\n"
+        "run_dace6992d448  succeeded\n"
+        "```\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_8e540235b830", "succeeded"),
+        ("run_dace6992d448", "succeeded"),
+    ], "the ```runs block must win; the OOM/cleanup run-ids in prose must NOT appear"
+    assert pe.PipelineEngine._data_gate_stage6(report)[0] is True
+
+
+def test_canonical_runs_block_skips_header_and_tolerates_pipes():
+    """The block parser tolerates an optional header row and pipe/backtick
+    decorations, and an empty block authoritatively means zero runs."""
+    report = (
+        "```runs\n"
+        "| run_id | status |\n"
+        "| run_aaa111bbb222 | `succeeded` |\n"
+        "| run_ccc333ddd444 | still_running |\n"
+        "```\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_aaa111bbb222", "succeeded"),
+        ("run_ccc333ddd444", "still_running"),
+    ]
+    # empty block = authoritative "no runs"
+    assert pe.PipelineEngine._parse_runner_report_runs("```runs\n```\n") == []
+
+
+def test_no_canonical_block_falls_back_to_prose_heuristic():
+    """Backward compatibility: reports without a ```runs block still use the
+    existing label/table heuristic (no regression for already-good reports)."""
+    report = "- **run_id**: `run_d032e33e194a`\n- **status**: succeeded\n"
+    assert pe.PipelineEngine._parse_runner_report_runs(report) == [
+        ("run_d032e33e194a", "succeeded"),
+    ]
+
+
+def _make_committed_upstream(path, subject="Stage 6 adaptation: GSM benchmark"):
+    """A clean upstream/ git repo with a base commit + an adaptation commit."""
+    import os, subprocess
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    def g(*a):
+        subprocess.run(["git", *a], cwd=str(path), env=env, check=True,
+                       capture_output=True, text=True)
+    path.mkdir(parents=True, exist_ok=True)
+    g("init", "-q", "-b", "main")
+    (path / "base.py").write_text("x = 1\n")
+    g("add", "."); g("commit", "-q", "-m", "base")
+    (path / "benchmark.py").write_text("# adapted\nprint('run')\n")
+    g("add", "."); g("commit", "-q", "-m", subject)
+
+
+def test_stage6a_stub_with_committed_adaptation_synthesizes_receipt(tmp_path, monkeypatch):
+    """LIVE regression (run c49e8a914f5a): 6a committed the adaptation but its
+    final turn stubbed before writing the receipt → hard-gate fail → exhausted.
+    Now the engine synthesizes the receipt from git state and proceeds to 6b
+    instead of re-running (and re-stubbing) full 6a."""
+    dispatched_b, rerouted = [], []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b",
+                        lambda self: dispatched_b.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": rerouted.append(feedback))
+    _make_committed_upstream(tmp_path / "upstream")
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer"
+    engine.on_task_complete("00103", "node6a", "Executed: bash")  # 6a stub
+
+    receipt = tmp_path / "stage6_implementation_receipt.md"
+    assert receipt.exists() and receipt.stat().st_size >= 200, "receipt must be synthesized"
+    assert "adaptation_commit" in receipt.read_text()
+    assert dispatched_b == [True], "must proceed to 6b"
+    assert rerouted == [], "must NOT re-run full 6a"
+
+
+def test_stage6a_stub_without_committed_work_still_fails(tmp_path, monkeypatch):
+    """The salvage must not paper over a genuinely empty 6a: a stub with no
+    committed adaptation (no upstream) does NOT synthesize a receipt — it
+    re-runs 6a as before."""
+    dispatched_b, rerouted = [], []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer_b",
+                        lambda self: dispatched_b.append(True))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": rerouted.append(feedback))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer"
+    engine.on_task_complete("00103", "node6a", "Executed: bash")
+
+    assert not (tmp_path / "stage6_implementation_receipt.md").exists()
+    assert dispatched_b == [], "no committed work → must not advance to 6b"
+    assert len(rerouted) == 1, "must re-run 6a"
+
+
+def test_producer_b_stub_with_ondisk_report_salvages_instead_of_rerouting(tmp_path, monkeypatch):
+    """LIVE regression (run 9dd6160ea99b): the 6b runner wrote a full report
+    with two `succeeded` runs but its submit_result was an "Executed: bash"
+    stub. The stub branch rerouted to 6a and the finished experiment was
+    discarded → retries exhausted → failed. Now: a 6b stub with a
+    data-bearing on-disk report falls through to normal handling (critic),
+    not a 6a reroute."""
+    rerouted, critic = [], []
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_producer",
+                        lambda self, feedback="": rerouted.append(feedback))
+    monkeypatch.setattr(pe.PipelineEngine, "_dispatch_critic",
+                        lambda self, r: critic.append(r))
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b"
+    skill = engine._stage_def(6).get("skill", "")
+    report = "Runs complete.\n\n```runs\nrun_aaa111bbb222 succeeded\n```\n"
+    (tmp_path / f"stage6_{skill}.md").write_text(report, encoding="utf-8")
+
+    engine.on_task_complete("00025", "node6b", "Executed: bash")  # stub submit_result
+
+    assert rerouted == [], "must NOT reroute to 6a when the on-disk report has real runs"
+    assert len(critic) == 1, "should proceed to the critic with the salvaged report"
+
+
 def test_parse_runner_report_runs_extracts_id_status_pairs():
     """The parser handles the runner's various Markdown decorations:
     bold-bracketed labels, backtick-wrapped ids, plain text."""
@@ -485,6 +625,46 @@ def test_parse_runner_report_runs_drops_placeholders():
     rids = [rid for rid, _ in pairs]
     assert "real_run_xyz" in rids
     assert all(rid.lower() not in {"none", "missing"} for rid in rids)
+
+
+def test_parse_runner_report_runs_handles_vertical_markdown_table():
+    """LIVE REGRESSION (run fa50cb183b3c): the runner wrote each field as a
+    two-cell Markdown table row — ``| run_id | `run_x` |`` / ``| status |
+    `succeeded` |`` — instead of the inline ``run_id: x`` form. The parser
+    only understood the colon form, so a clean experiment with two
+    ``succeeded`` runs parsed as ZERO runs → data-gate FAIL overrode the
+    critic's PASS → the whole Stage 6 died at retries-exhausted."""
+    report = (
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| run_id | `run_94770b1537b6` |\n"
+        "| status | `succeeded` |\n\n"
+        "Parsed `RESULT_JSON`: {...}\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| run_id | `run_d07b5daba3a7` |\n"
+        "| status | `succeeded` |\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_94770b1537b6", "succeeded"),
+        ("run_d07b5daba3a7", "succeeded"),
+    ]
+    assert pe.PipelineEngine._data_gate_stage6(report)[0] is True
+
+
+def test_parse_runner_report_runs_ignores_horizontal_header_columns():
+    """The pipe separator must NOT turn a horizontal summary header
+    (``| run_id | status | cost |``) into a spurious run whose id is the
+    next COLUMN NAME (``status``). Column-name words are denylisted."""
+    report = (
+        "| run_id | status | cost |\n"
+        "|--------|--------|------|\n"
+        "| run_realjob9 | succeeded | $0 |\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "status" not in rids and "cost" not in rids
 
 
 def test_runs_have_pending_distinguishes_terminal_from_active():
@@ -1455,6 +1635,32 @@ def test_parse_confidence_handles_unparseable_match(monkeypatch):
     monkeypatch.setattr(re, "search", lambda *args, **kwargs: BadMatch())
 
     assert pe.PipelineEngine._parse_confidence("confidence: bad") is None
+
+
+def test_parse_confidence_handles_bold_and_table_decorations():
+    """LIVE gap (run fa50cb183b3c): the real gate review wrote
+    ``**Confidence**: **0.92**`` and ``| Confidence | 0.92 |`` — the old
+    ``[:\\s]*`` separator couldn't cross the ``**``/``|`` markers, so the
+    critic's stated confidence was lost (parsed as None)."""
+    assert pe.PipelineEngine._parse_confidence("**Confidence**: **0.92**") == 0.92
+    assert pe.PipelineEngine._parse_confidence("| Confidence | 0.92 |") == 0.92
+    assert pe.PipelineEngine._parse_confidence("Confidence Score: 0.8") == 0.8
+    # Plain prose with no value must still yield None (no false reading).
+    assert pe.PipelineEngine._parse_confidence("confident in the approach") is None
+
+
+def test_verdict_from_text_handles_table_and_backtick_verdicts():
+    """Same decoration-blindness class as the data gates: a verdict written
+    as a backtick-wrapped table cell, or labeled ``Verdict``/``Recommendation``
+    rather than ``Decision``, must still parse."""
+    V = pe.PipelineEngine._verdict_from_text
+    assert V("| Decision | PASS |") is True
+    assert V("| Verdict | `REJECT` |") is False
+    assert V("| Recommendation | `PASS` |") is True
+    assert V("**Decision**: **PASS**") is True
+    # A per-dimension row must NOT be read as the overall verdict (#19), and
+    # a bare prose mention stays ambiguous.
+    assert V("Looks good, I'd pass this.") is None
 
 
 def test_event_emitters_skip_when_no_running_loop(tmp_path):
@@ -3350,6 +3556,53 @@ def test_data_gate_stage7_passes_with_one_supported_hypothesis():
     )
     ok, reason = pe.PipelineEngine._data_gate(7, report)
     assert ok is True, reason
+
+
+def test_data_gate_stage7_reads_horizontal_results_table():
+    """Sibling of the Stage-6 table bug (run fa50cb183b3c): the result-analyst
+    commonly writes one row per hypothesis in a Markdown table with a Decision
+    column. The gate must read that column — not only inline ``Decision:`` —
+    so a valid analysis isn't falsely failed for formatting."""
+    report = (
+        "## Results\n\n"
+        "| Hypothesis | Decision | p-value | effect |\n"
+        "|---|---|---|---|\n"
+        "| H1 | SUPPORTED | 0.01 | 0.6 |\n"
+        "| H2 | NOT SUPPORTED | 0.20 | 0.1 |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_reads_vertical_decision_table():
+    """The vertical key-value layout ``| Decision | SUPPORTED |`` must parse,
+    while a horizontal HEADER (Decision as a middle column) must NOT capture
+    the next column name as a verdict."""
+    report = (
+        "## H1\n| Field | Value |\n|---|---|\n| Decision | `SUPPORTED` |\n| p | 0.01 |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is True, reason
+
+
+def test_data_gate_stage7_table_still_blocks_all_no_data():
+    """The table reader must not WEAKEN the gate: an all-NOT-TESTED/BLOCKED
+    results table still fails (no experiment ran)."""
+    report = (
+        "| Hypothesis | Verdict |\n|---|---|\n"
+        "| H1 | NOT TESTED |\n| H2 | BLOCKED |\n"
+    )
+    ok, reason = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
+    assert "no-data" in reason.lower() or "no experiment" in reason.lower()
+
+
+def test_data_gate_stage7_ignores_prose_supported():
+    """A stray "supported" in prose (no decision label, no table) must NOT
+    pass the gate — the column reader only reads designated cells."""
+    report = "The direction is well supported by prior work, but we ran nothing.\n"
+    ok, _ = pe.PipelineEngine._data_gate(7, report)
+    assert ok is False
 
 
 def test_data_gate_blocks_stage6_advance_when_critic_passed_but_no_data(tmp_path, monkeypatch):

@@ -1794,7 +1794,37 @@ class PipelineEngine:
             # NOT store as the stage deliverable, where the critic would
             # see only tool names and (under the old default-PASS parser)
             # silently advance. Closes #60 fix #2 / #63 fix #4.
-            if self._is_stub_result(result):
+            is_stub = self._is_stub_result(result)
+            # Stage 6b salvage: the runner often does the work (writes a full
+            # stage6_experimentalist.md with terminal runs) but its FINAL turn
+            # returns an empty "Executed: bash" stub (run 9dd6160ea99b: a 7.6KB
+            # report with two `succeeded` runs, yet submit_result was a stub).
+            # Rerouting to 6a then discards a finished experiment. If the
+            # on-disk report has data-bearing runs, treat the report as the
+            # result and fall through to the normal producer_b handling
+            # (mirrors the critic's on-disk gate_review fallback).
+            if is_stub and self.phase == "producer_b":
+                ondisk = self._read_stage_deliverable(6, fallback="")
+                if ondisk and self._data_gate_stage6(ondisk)[0]:
+                    logger.warning(
+                        "[PIPELINE] Stage 6b submit_result was a stub, but the on-disk "
+                        "report has data-bearing runs — using the report instead of "
+                        "rerouting to 6a."
+                    )
+                    result = ondisk
+                    is_stub = False
+            # Stage 6a salvage: a 6a stub that nonetheless committed the
+            # adaptation should NOT re-run full 6a (which just re-stubs). Fall
+            # through to the hard-gate, which synthesizes the missing receipt
+            # from git state and proceeds to 6b (run c49e8a914f5a).
+            if is_stub and self.phase == "producer" and self.current_stage == 6:
+                if self._synthesize_stage6_receipt():
+                    logger.warning(
+                        "[PIPELINE] Stage 6a stub but adaptation is committed — "
+                        "synthesized the receipt; proceeding via the hard-gate."
+                    )
+                    is_stub = False
+            if is_stub:
                 feedback = (
                     f"Your submit_result was a stub: {result.strip()[:200]!r}. "
                     "This happens when the agent runtime falls back to summarising tool names "
@@ -1868,6 +1898,10 @@ class PipelineEngine:
                 # that always ends BLOCKED. Catch it here.
                 receipt_path = Path(self.project_dir) / "stage6_implementation_receipt.md"
                 upstream_dir = Path(self.project_dir) / "upstream"
+                # Salvage: if the adaptation is committed but the receipt is
+                # missing (implementer stubbed before Phase 5), synthesize it
+                # from git state rather than burning a retry that re-stubs.
+                self._synthesize_stage6_receipt()
                 missing = []
                 if not receipt_path.exists() or receipt_path.stat().st_size < 200:
                     missing.append("stage6_implementation_receipt.md (must exist and be non-trivial)")
@@ -2722,16 +2756,21 @@ class PipelineEngine:
     _RUN_ID_RE = re.compile(
         # Tolerates Markdown decorations: ``run_id:``, ``**run_id**:``,
         # ``- **run_id**: `run_x```, etc. The ``\W*?`` between ``id`` and
-        # the colon absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
-        # after the colon absorbs leading quote / backtick wrappers.
-        r"run[_\s-]*id\b\W*?[:=]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
+        # the separator absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
+        # after it absorbs leading quote / backtick wrappers.
+        # The separator class includes ``|`` so the two-cell Markdown table
+        # form ``| run_id | `run_x` |`` also matches (run fa50cb183b3c wrote
+        # the report this way; the colon-only regex parsed ZERO runs and a
+        # clean experiment died at the data gate).
+        r"run[_\s-]*id\b\W*?[:=|]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
         re.IGNORECASE,
     )
     _STATUS_LINE_RE = re.compile(
-        # Tolerates plain ``status:`` AND decorated ``- **status**:`` forms.
+        # Tolerates plain ``status:``, decorated ``- **status**:``, AND the
+        # ``| status | `succeeded` |`` table-cell form (``|`` separator).
         # ``\W*?`` (lazy non-word chars) absorbs optional Markdown bold/italic
         # markers without requiring them.
-        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=]\s*[`'\"*]*([a-z_\-]+)",
+        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=|]\s*[`'\"*]*([a-z_\-]+)",
         re.IGNORECASE | re.MULTILINE,
     )
 
@@ -2786,11 +2825,59 @@ class PipelineEngine:
                 out.append(line)
         return "".join(out)
 
+    # Machine-readable runs block the runner is instructed to emit:
+    #   ```runs
+    #   run_8e540235b830  succeeded
+    #   run_dace6992d448  succeeded
+    #   ```
+    # When present it is AUTHORITATIVE — parsed deterministically and immune
+    # to whatever prose/label/table the LLM wrapped the run around (the
+    # recurring report-format whack-a-mole: fa50cb183b3c used a vertical
+    # table, 9dd6160ea99b used "- Validated run: `x`"). Only this block is
+    # read, so stray run-ids in the Limitations narrative (failed/cleanup
+    # runs) cannot become phantom-pending runs.
+    _CANONICAL_RUNS_FENCE_RE = re.compile(
+        r"```+[ \t]*runs[ \t]*\r?\n(.*?)```", re.IGNORECASE | re.DOTALL
+    )
+
+    @classmethod
+    def _parse_canonical_runs_block(cls, report: str) -> list[tuple[str, str]] | None:
+        """Parse the runner's ```runs block. Returns the (run_id, status)
+        list when a block is present (possibly empty — authoritative "no
+        runs"), or ``None`` when there is no such block so the caller falls
+        back to the prose heuristic. One run per line: ``<run_id> <status>``
+        with optional ``|`` / ``=`` / ``:`` separators and markdown ticks."""
+        m = cls._CANONICAL_RUNS_FENCE_RE.search(report or "")
+        if m is None:
+            return None
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for raw in m.group(1).splitlines():
+            line = raw.strip()
+            if not line or set(line) <= set("-:| "):  # blank or table separator
+                continue
+            toks = [
+                t.strip("`*'\" ")
+                for t in re.split(r"[\s|=:]+", line.strip("|").strip())
+                if t.strip("`*'\" ")
+            ]
+            if len(toks) < 2:
+                continue
+            rid, status = toks[0], toks[1].lower()
+            if rid.lower() in {"run_id", "run", "id", "runid", "status"}:  # header row
+                continue
+            if rid in seen:
+                continue
+            seen.add(rid)
+            out.append((rid, status))
+        return out
+
     @classmethod
     def _parse_runner_report_runs(cls, report: str) -> list[tuple[str, str]]:
         """Extract ``[(run_id, status), ...]`` pairs from a 6b runner report.
 
-        Walks the report top-to-bottom and pairs each ``run_id:`` line with
+        Prefers the authoritative ```runs block when present; otherwise walks
+        the report top-to-bottom and pairs each ``run_id:`` line with
         the next ``status:`` line that follows it within the same run-block.
         Tolerates the various Markdown decorations the runner uses (e.g.
         backtick-quoted, asterisk-bold, plain ``run_id: run_x`` styles).
@@ -2804,11 +2891,23 @@ class PipelineEngine:
         """
         if not report:
             return []
+        # Authoritative machine-readable block wins over the prose heuristic.
+        canonical = cls._parse_canonical_runs_block(report)
+        if canonical is not None:
+            return canonical
         scan_text = cls._strip_fenced_code_blocks(report)
         run_id_hits = [
             (m.start(), m.group(1))
             for m in cls._RUN_ID_RE.finditer(scan_text)
-            if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
+            # Denylist: placeholders + Markdown table COLUMN NAMES. With the
+            # ``|`` separator now allowed, a horizontal header
+            # ``| run_id | status | cost |`` would otherwise capture the next
+            # column name ("status") as a bogus run_id.
+            if m.group(1).lower() not in {
+                "run_id", "rid", "none", "null", "missing", "n_a", "n/a",
+                "status", "cost", "gpu", "value", "field", "metric",
+                "result", "notes", "command", "actual", "estimated",
+            }
         ]
         status_hits = [
             (m.start(), m.group(1).lower())
@@ -2920,6 +3019,70 @@ class PipelineEngine:
         except (OSError, ValueError) as exc:
             logger.debug("[PIPELINE] could not read stage {} deliverable: {}", stage_id, exc)
         return fallback
+
+    def _synthesize_stage6_receipt(self) -> bool:
+        """6a salvage: if the implementer committed a Stage-6 adaptation to
+        ``upstream/`` but left no receipt — its final turn returned an empty
+        "Executed: bash" stub before writing Phase 5 (run c49e8a914f5a) — the
+        whole stage dies at the 6a hard-gate even though the code is done.
+
+        Reconstruct a minimal receipt from git state so the 6b runner can
+        proceed. Returns True iff a non-trivial receipt now exists. Refuses
+        (returns False) when there is no committed adaptation to salvage —
+        a genuinely empty 6a must still fail.
+        """
+        receipt = Path(self.project_dir) / "stage6_implementation_receipt.md"
+        try:
+            if receipt.exists() and receipt.stat().st_size >= 200:
+                return True
+        except OSError:
+            return False
+        upstream = Path(self.project_dir) / "upstream"
+        if not (upstream / ".git").exists():
+            return False
+        import subprocess
+
+        def _git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=str(upstream),
+                capture_output=True, text=True, timeout=15,
+            ).stdout.strip()
+
+        try:
+            dirty = _git("status", "--short")
+            head = _git("rev-parse", "HEAD")
+            subject = _git("log", "-1", "--format=%s")
+            diffstat = _git("show", "--stat", "--format=%h %s", "HEAD")
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug("[PIPELINE] 6a receipt synthesis git probe failed: {}", exc)
+            return False
+        # Salvage only a CLEAN tree carrying an adaptation commit (not the bare
+        # pinned checkout) — otherwise there is no committed work to record.
+        if dirty or not head:
+            return False
+        if "adapt" not in subject.lower() and "stage 6" not in subject.lower():
+            return False
+        body = (
+            "# Stage 6a — Implementation Receipt (engine-synthesized)\n\n"
+            "> ⚠️ Auto-generated from git state: the implementer committed the\n"
+            "> Stage 6 adaptation to `upstream/` but its final turn returned no\n"
+            "> text (stub) before writing this receipt. Reconstructed so the\n"
+            "> Stage 6b runner can proceed instead of discarding finished code.\n\n"
+            "## 0. Pin status\n"
+            f"- `adaptation_commit`: `{head[:12]} {subject}`\n\n"
+            "## Changed files (git show --stat HEAD)\n\n"
+            "```\n" + (diffstat or "(unavailable)") + "\n```\n\n"
+            "## Runnable entrypoint\n"
+            "- Not captured (implementer stubbed). The runner derives the run\n"
+            "  command from `stage5_experiment_designer.md` / "
+            "`stage5_codebase_pin.md`.\n"
+        )
+        try:
+            receipt.write_text(body, encoding="utf-8")
+            return receipt.stat().st_size >= 200
+        except OSError as exc:
+            logger.debug("[PIPELINE] 6a receipt synthesis write failed: {}", exc)
+            return False
 
     # ------------------------------------------------------------------
     # #44 — paper-numbers gate: every high-precision statistic in the
@@ -3087,6 +3250,22 @@ class PipelineEngine:
         r"(?:decision|verdict)\b\W*?[:：]\s*\*{0,2}\s*([A-Za-z][\w ]*)",
         re.IGNORECASE,
     )
+    # Vertical key-value table row: ``| Decision | `SUPPORTED` |``. Anchored
+    # to the FIRST cell (``^\|``) so a horizontal header
+    # ``| H1 | Decision | p-value |`` (where "Decision" is a middle column,
+    # not a row label) does NOT capture the next column name. The Stage 6
+    # data-gate had this exact table-blindness (run fa50cb183b3c) — Stage 7
+    # has the same gate, so harden it the same way.
+    _STAGE7_VERTICAL_DECISION_RE = re.compile(
+        r"^\s*\|\s*(?:decision|verdict|outcome|conclusion)\b\s*\|\s*"
+        r"[`*'\"]*([A-Za-z][\w ]*?)[`*'\"]*\s*\|",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    # Header cell naming the decision column in a horizontal results table
+    # (one row per hypothesis). Used to locate which column holds the verdict.
+    _STAGE7_DECISION_COL_RE = re.compile(
+        r"\b(?:decision|verdict|outcome|conclusion|result)\b", re.IGNORECASE
+    )
     # Decisions that mean "the experiment did NOT produce data for this
     # hypothesis". Everything else (SUPPORTED, NOT SUPPORTED, REJECTED,
     # CONFIRMED, PASS, FAIL, INCONCLUSIVE, …) means a test actually ran —
@@ -3104,16 +3283,61 @@ class PipelineEngine:
         return re.sub(r"[\s_]+", " ", raw).strip().upper()
 
     @classmethod
+    def _stage7_table_decisions(cls, text: str) -> list[str]:
+        """Extract decision cells from a horizontal Markdown results table
+        whose header names a Decision/Verdict/Outcome column (the common
+        Stage-7 layout: one row per hypothesis). Reads ONLY the designated
+        column — no prose scanning — so it cannot false-positive on a stray
+        "supported" in body text."""
+        out: list[str] = []
+        lines = (text or "").splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line.count("|") >= 2 and cls._STAGE7_DECISION_COL_RE.search(line):
+                header = [c.strip() for c in line.strip().strip("|").split("|")]
+                col_idx = next(
+                    (j for j, c in enumerate(header) if cls._STAGE7_DECISION_COL_RE.search(c)),
+                    None,
+                )
+                nxt = lines[i + 1] if i + 1 < len(lines) else ""
+                # A real table header is followed by a |---|---| separator row.
+                if col_idx is not None and set(nxt.replace("|", "").strip()) <= set("-: "):
+                    j = i + 2
+                    while j < len(lines) and lines[j].count("|") >= 2:
+                        row = [c.strip() for c in lines[j].strip().strip("|").split("|")]
+                        if col_idx < len(row) and row[col_idx]:
+                            cell = row[col_idx].strip("`*'\" ")
+                            if cell:
+                                out.append(cls._normalise_decision(cell))
+                        j += 1
+                    i = j
+                    continue
+            i += 1
+        return out
+
+    @classmethod
     def _data_gate_stage7(cls, result: str) -> tuple[bool, str]:
         """Stage 7 passes if ≥1 hypothesis/check has a decision indicating a
         test actually ran. The gate blocks "no experiment ran" (every
         decision is NOT TESTED / INCONCLUSIVE_DUE_TO_COVERAGE / BLOCKED), NOT
         "effect not found" — a ``NOT SUPPORTED`` / null result IS data and
-        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e)."""
+        must pass (#27 Stage 7 false-positive caught by the 4→9 e2e).
+
+        Decisions are collected from three layouts so a valid analysis is not
+        falsely failed for formatting: inline ``Decision: X``, the vertical
+        row form ``| Decision | X |``, and a horizontal results table with a
+        Decision/Verdict column (run fa50cb183b3c showed the Stage 6 twin of
+        this gate dying on a table-formatted report)."""
         decisions = [
             cls._normalise_decision(m.group(1))
             for m in cls._HYPOTHESIS_DECISION_RE.finditer(result or "")
         ]
+        decisions += [
+            cls._normalise_decision(m.group(1))
+            for m in cls._STAGE7_VERTICAL_DECISION_RE.finditer(result or "")
+        ]
+        decisions += cls._stage7_table_decisions(result or "")
         if not decisions:
             return False, "no hypothesis/check decision lines found in result analysis"
         tested = [d for d in decisions if d not in cls._STAGE7_NO_DATA_DECISIONS]
@@ -3276,12 +3500,16 @@ class PipelineEngine:
         # Stripping ``*``/``_`` also normalises ``Decision: **PASS**``.
         text = re.sub(r"[*_]", "", text)
         upper = text.upper()
-        # Table-format ``| Decision | PASS |`` / ``| **Decision** | **PASS** |``.
-        compact = re.sub(r"[\s|*_]+", " ", upper)
-        if " DECISION PASS " in compact:
-            return True
-        if " DECISION REJECT " in compact:
-            return False
+        # Table-format ``| Decision | PASS |`` / ``| **Verdict** | `REJECT` |``.
+        # Collapse pipes / emphasis / backticks so a backtick-wrapped cell
+        # value parses, and accept Verdict/Recommendation labels too — not
+        # only "Decision" (same decoration-blindness class as the data gates).
+        compact = re.sub(r"[\s|*_`]+", " ", upper)
+        for label in ("DECISION", "VERDICT", "RECOMMENDATION"):
+            if f" {label} PASS " in compact:
+                return True
+            if f" {label} REJECT " in compact:
+                return False
         # Labeled verdict anywhere in the text.
         m = cls._VERDICT_LABEL_RE.search(text)
         if m:
@@ -3407,8 +3635,12 @@ class PipelineEngine:
     @staticmethod
     def _parse_confidence(result: str) -> float | None:
         import re
-        # Match patterns like "confidence: 0.72" or "Confidence Score: 0.8".
-        m = re.search(r'confidence(?:\s+score)?[:\s]*([01]\.?\d*)', result, re.IGNORECASE)
+        # Match "confidence: 0.72", "Confidence Score: 0.8", and the decorated
+        # forms the critic actually uses — ``**Confidence**: **0.92**`` and the
+        # table cell ``| Confidence | 0.92 |``. ``\W*?`` (lazy non-word chars)
+        # absorbs the ``**`` / ``|`` / ``:`` markers between the label and the
+        # number without requiring them (run fa50cb183b3c lost a real 0.92).
+        m = re.search(r'confidence(?:\s+score)?\W*?([01]\.?\d*)', result, re.IGNORECASE)
         if m:
             try:
                 return float(m.group(1))
