@@ -487,6 +487,46 @@ def test_parse_runner_report_runs_drops_placeholders():
     assert all(rid.lower() not in {"none", "missing"} for rid in rids)
 
 
+def test_parse_runner_report_runs_handles_vertical_markdown_table():
+    """LIVE REGRESSION (run fa50cb183b3c): the runner wrote each field as a
+    two-cell Markdown table row — ``| run_id | `run_x` |`` / ``| status |
+    `succeeded` |`` — instead of the inline ``run_id: x`` form. The parser
+    only understood the colon form, so a clean experiment with two
+    ``succeeded`` runs parsed as ZERO runs → data-gate FAIL overrode the
+    critic's PASS → the whole Stage 6 died at retries-exhausted."""
+    report = (
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| run_id | `run_94770b1537b6` |\n"
+        "| status | `succeeded` |\n\n"
+        "Parsed `RESULT_JSON`: {...}\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| run_id | `run_d07b5daba3a7` |\n"
+        "| status | `succeeded` |\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    assert pairs == [
+        ("run_94770b1537b6", "succeeded"),
+        ("run_d07b5daba3a7", "succeeded"),
+    ]
+    assert pe.PipelineEngine._data_gate_stage6(report)[0] is True
+
+
+def test_parse_runner_report_runs_ignores_horizontal_header_columns():
+    """The pipe separator must NOT turn a horizontal summary header
+    (``| run_id | status | cost |``) into a spurious run whose id is the
+    next COLUMN NAME (``status``). Column-name words are denylisted."""
+    report = (
+        "| run_id | status | cost |\n"
+        "|--------|--------|------|\n"
+        "| run_realjob9 | succeeded | $0 |\n"
+    )
+    pairs = pe.PipelineEngine._parse_runner_report_runs(report)
+    rids = [rid for rid, _ in pairs]
+    assert "status" not in rids and "cost" not in rids
+
+
 def test_runs_have_pending_distinguishes_terminal_from_active():
     assert pe.PipelineEngine._runs_have_pending([("r1", "running")]) is True
     assert pe.PipelineEngine._runs_have_pending([("r1", "still_running")]) is True

@@ -2722,16 +2722,21 @@ class PipelineEngine:
     _RUN_ID_RE = re.compile(
         # Tolerates Markdown decorations: ``run_id:``, ``**run_id**:``,
         # ``- **run_id**: `run_x```, etc. The ``\W*?`` between ``id`` and
-        # the colon absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
-        # after the colon absorbs leading quote / backtick wrappers.
-        r"run[_\s-]*id\b\W*?[:=]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
+        # the separator absorbs trailing ``**``/``\`` markers; the ``[`'\"*]*``
+        # after it absorbs leading quote / backtick wrappers.
+        # The separator class includes ``|`` so the two-cell Markdown table
+        # form ``| run_id | `run_x` |`` also matches (run fa50cb183b3c wrote
+        # the report this way; the colon-only regex parsed ZERO runs and a
+        # clean experiment died at the data gate).
+        r"run[_\s-]*id\b\W*?[:=|]\s*[`'\"*]*([A-Za-z][A-Za-z0-9_.\-]{4,})",
         re.IGNORECASE,
     )
     _STATUS_LINE_RE = re.compile(
-        # Tolerates plain ``status:`` AND decorated ``- **status**:`` forms.
+        # Tolerates plain ``status:``, decorated ``- **status**:``, AND the
+        # ``| status | `succeeded` |`` table-cell form (``|`` separator).
         # ``\W*?`` (lazy non-word chars) absorbs optional Markdown bold/italic
         # markers without requiring them.
-        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=]\s*[`'\"*]*([a-z_\-]+)",
+        r"^\s*(?:[-*]\s*)?\W*?status\b\W*?[:=|]\s*[`'\"*]*([a-z_\-]+)",
         re.IGNORECASE | re.MULTILINE,
     )
 
@@ -2808,7 +2813,15 @@ class PipelineEngine:
         run_id_hits = [
             (m.start(), m.group(1))
             for m in cls._RUN_ID_RE.finditer(scan_text)
-            if m.group(1).lower() not in {"run_id", "rid", "none", "null", "missing", "n_a", "n/a"}
+            # Denylist: placeholders + Markdown table COLUMN NAMES. With the
+            # ``|`` separator now allowed, a horizontal header
+            # ``| run_id | status | cost |`` would otherwise capture the next
+            # column name ("status") as a bogus run_id.
+            if m.group(1).lower() not in {
+                "run_id", "rid", "none", "null", "missing", "n_a", "n/a",
+                "status", "cost", "gpu", "value", "field", "metric",
+                "result", "notes", "command", "actual", "estimated",
+            }
         ]
         status_hits = [
             (m.start(), m.group(1).lower())
