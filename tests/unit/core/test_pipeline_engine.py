@@ -997,6 +997,35 @@ def test_on_runs_wait_timeout_no_usable_data_still_fails(tmp_path, monkeypatch):
     assert gate_events == [(6, None, True)]
 
 
+def test_on_runs_all_terminal_clears_stale_salvage_flag(tmp_path, monkeypatch):
+    """A normal full completion (all runs terminal) is NOT coverage-limited, so
+    it must clear any stale ``stage6_salvage_timeout`` left over from a prior
+    Stage 6 attempt — otherwise the finalize dispatch would wrongly inject a
+    coverage caveat into a fully-covered report."""
+    finalize_dispatched = []
+    monkeypatch.setattr(
+        pe.PipelineEngine, "_dispatch_producer_b_finalize",
+        lambda self: finalize_dispatched.append(True),
+    )
+
+    engine = pe.PipelineEngine("p1", str(tmp_path), "topic")
+    engine.state["current_stage"] = 6
+    engine.state["phase"] = "producer_b_waiting"
+    engine.state["pending_run_ids"] = ["run_a"]
+    # Stale flag from an earlier coverage-limited attempt.
+    engine.state["stage6_salvage_timeout"] = {
+        "wait_seconds": 1, "completed": ["old"], "timed_out": ["older"],
+    }
+
+    engine.on_runs_all_terminal()
+
+    assert finalize_dispatched == [True]
+    assert engine.state["phase"] == "producer_b_finalize"
+    assert "stage6_salvage_timeout" not in engine.state, (
+        "full completion must clear the stale salvage flag"
+    )
+
+
 def test_on_runs_wait_timeout_idempotent_outside_waiting(tmp_path, monkeypatch):
     """If run_tracker fires the deadline callback after the engine
     already advanced (race), the call must be a no-op."""

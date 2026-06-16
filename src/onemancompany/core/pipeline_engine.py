@@ -3206,6 +3206,10 @@ class PipelineEngine:
             "[PIPELINE] Stage 6b waiting → finalize: {} run_ids now terminal",
             len(pending),
         )
+        # All runs reached terminal status normally → this is a FULL finalize,
+        # not a timeout salvage. Clear any stale coverage-limited flag from a
+        # prior attempt so the finalize dispatch doesn't inject a bogus caveat.
+        self.state.pop("stage6_salvage_timeout", None)
         self.state["phase"] = "producer_b_finalize"
         self._save()
         self._dispatch_producer_b_finalize()
